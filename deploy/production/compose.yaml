@@ -27,13 +27,16 @@ x-server: &server
 
 services:
   migrate:
-    <<: *server
     image: registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-migrate:${APP_SHA:?APP_SHA is required}
     command: ["-command", "up"]
     environment:
-      <<: *server-environment
       WEAVEPRESS_DATABASE_DSN: ${WEAVEPRESS_DB_MIGRATION_DSN:?migration DSN is required}
+    volumes:
+      - ./config.yaml:/app/configs/config.yaml:ro
     networks: [infra]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
     profiles: [migrate]
     restart: "no"
     mem_limit: 256m
@@ -43,6 +46,10 @@ services:
     <<: *server
     image: registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-api:${APP_SHA:?APP_SHA is required}
     container_name: weavepress-api
+    networks:
+      app:
+        aliases: [weavepress-api]
+      infra:
     restart: unless-stopped
     mem_limit: 384m
     cpus: 0.75

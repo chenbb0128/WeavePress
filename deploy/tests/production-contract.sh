@@ -78,8 +78,8 @@ assert_proxy_location() {
     return 1
   fi
   require_directive_in_block "$block_file" \
-    'proxy_pass[[:space:]]+http://api:8080;' \
-    'proxy_pass http://api:8080;' "$location_header" || return 1
+    'proxy_pass[[:space:]]+http://weavepress-api:8080;' \
+    'proxy_pass http://weavepress-api:8080;' "$location_header" || return 1
   require_directive_in_block "$block_file" \
     'proxy_set_header[[:space:]]+X-Forwarded-Proto[[:space:]]+\$http_x_forwarded_proto;' \
     'proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;' "$location_header" || return 1
@@ -172,21 +172,26 @@ run_gateway_self_test() {
   local health_mutant="$contract_temp_dir/health-upstream.conf"
   local metrics_mutant="$contract_temp_dir/metrics-proxy.conf"
   local proto_mutant="$contract_temp_dir/forwarded-proto.conf"
+  local generic_upstream_mutant="$contract_temp_dir/generic-upstream.conf"
 
   assert_gateway_contract "$gateway"
 
   mutate_location_literal "$gateway" 'location = /health' \
-    'proxy_pass http://api:8080;' \
-    $'# proxy_pass http://api:8080;\n        proxy_pass http://wrong-api:8080;' "$health_mutant"
+    'proxy_pass http://weavepress-api:8080;' \
+    $'# proxy_pass http://weavepress-api:8080;\n        proxy_pass http://wrong-api:8080;' "$health_mutant"
   mutate_location_literal "$gateway" 'location = /metrics' \
-    'return 404;' $'# return 404;\n        proxy_pass http://api:8080;' "$metrics_mutant"
+    'return 404;' $'# return 404;\n        proxy_pass http://weavepress-api:8080;' "$metrics_mutant"
   mutate_location_literal "$gateway" 'location /api/' \
     'proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;' \
     $'# proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;\n        proxy_set_header X-Forwarded-Proto $scheme;' "$proto_mutant"
+  mutate_location_literal "$gateway" 'location /api/' \
+    'proxy_pass http://weavepress-api:8080;' \
+    'proxy_pass http://api:8080;' "$generic_upstream_mutant"
 
   expect_gateway_rejection 'health proxy commented and upstream changed' "$health_mutant"
   expect_gateway_rejection 'metrics return commented and endpoint proxied' "$metrics_mutant"
   expect_gateway_rejection 'Proto header commented and changed to $scheme' "$proto_mutant"
+  expect_gateway_rejection 'unique upstream changed to generic service alias' "$generic_upstream_mutant"
 }
 
 render_compose_model() {
@@ -232,7 +237,7 @@ case "${1:-}" in
     render_compose_model "$compose_model"
     python3 -B "$compose_contract" "$compose_model"
 
-    docker run --rm --add-host api:127.0.0.1 \
+    docker run --rm --add-host weavepress-api:127.0.0.1 \
       -v "$gateway:/etc/nginx/conf.d/default.conf:ro" \
       nginx:1.27-alpine nginx -t
     ;;
