@@ -44,14 +44,6 @@ def validate_compose(model: object) -> list[str]:
         if repository in INFRASTRUCTURE_IMAGES:
             errors.append(f"{name} uses infrastructure image {repository}")
 
-        extends = service.get("extends")
-        if isinstance(extends, dict):
-            extends_service = str(extends.get("service", "")).lower()
-        else:
-            extends_service = str(extends or "").lower()
-        if extends_service in INFRASTRUCTURE_IMAGES:
-            errors.append(f"{name} extends infrastructure service {extends_service}")
-
     return errors
 
 
@@ -92,16 +84,12 @@ def run_self_test(baseline: object) -> int:
     def replace_worker_with_mysql(model: dict[str, Any]) -> None:
         model["services"]["worker"]["image"] = "mysql:8.4"
 
-    def extend_redis_service(model: dict[str, Any]) -> None:
-        model["services"]["api"]["extends"] = {"service": "redis"}
-
     mutations = (
         ("extra db with mysql image", add_db),
         ("extra cache with redis image", add_cache),
         ("api host network mode", enable_host_mode),
         ("gateway published port", publish_gateway_port),
         ("worker replaced with mysql image", replace_worker_with_mysql),
-        ("api extends redis service", extend_redis_service),
     )
     for name, mutate in mutations:
         mutant = copy.deepcopy(baseline)

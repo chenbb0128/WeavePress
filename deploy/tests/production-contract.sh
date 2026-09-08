@@ -28,8 +28,8 @@ extract_location_block() {
       print
       opening_line = $0
       closing_line = $0
-      depth += gsub(/{/, "", opening_line)
-      depth -= gsub(/}/, "", closing_line)
+      depth += gsub(/\{/, "", opening_line)
+      depth -= gsub(/\}/, "", closing_line)
       if (depth == 0) {
         found = 1
         exit
@@ -141,8 +141,8 @@ mutate_location_literal() {
       if (capturing) {
         opening_line = $0
         closing_line = $0
-        depth += gsub(/{/, "", opening_line)
-        depth -= gsub(/}/, "", closing_line)
+        depth += gsub(/\{/, "", opening_line)
+        depth -= gsub(/\}/, "", closing_line)
         if (depth == 0) {
           capturing = 0
         }
@@ -198,6 +198,51 @@ render_compose_model() {
     -f "$compose_file" config --format json > "$output_file"
 }
 
+assert_source_compose_contract() {
+  local source_file="$1"
+
+  if grep -Eq '^[[:space:]]*extends[[:space:]]*:' "$source_file"; then
+    printf 'Production Compose must not use an active extends key: %s\n' "$source_file" >&2
+    return 1
+  fi
+}
+
+run_source_compose_self_test() {
+  local base_fixture="$contract_temp_dir/extends-base.yaml"
+  local extends_fixture="$contract_temp_dir/with-extends.yaml"
+  local comment_fixture="$contract_temp_dir/commented-extends.yaml"
+
+  cat > "$base_fixture" <<'YAML'
+services:
+  base-api:
+    image: example/base-api:latest
+YAML
+  cat > "$extends_fixture" <<'YAML'
+services:
+  api:
+    extends:
+      file: ./extends-base.yaml
+      service: base-api
+YAML
+  cat > "$comment_fixture" <<'YAML'
+services:
+  api:
+    # extends:
+    image: example/api:latest
+YAML
+
+  docker compose -f "$extends_fixture" config --quiet
+  docker compose -f "$comment_fixture" config --quiet
+  if assert_source_compose_contract "$extends_fixture" >/dev/null 2>&1; then
+    printf 'Source Compose contract accepted an active extends key.\n' >&2
+    return 1
+  fi
+  printf 'Source Compose mutation rejected: active extends key\n'
+
+  assert_source_compose_contract "$comment_fixture"
+  printf 'Source Compose fixture accepted: commented extends key\n'
+}
+
 case "${1:-}" in
   --gateway-only)
     if [[ $# -ne 2 ]]; then
@@ -213,6 +258,13 @@ case "${1:-}" in
     fi
     run_gateway_self_test
     ;;
+  --source-compose-self-test)
+    if [[ $# -ne 1 ]]; then
+      printf 'Usage: %s --source-compose-self-test\n' "$0" >&2
+      exit 2
+    fi
+    run_source_compose_self_test
+    ;;
   --self-test)
     if [[ $# -ne 1 ]]; then
       printf 'Usage: %s --self-test\n' "$0" >&2
@@ -220,12 +272,15 @@ case "${1:-}" in
     fi
     compose_model="$contract_temp_dir/compose.json"
     run_gateway_self_test
+    run_source_compose_self_test
+    assert_source_compose_contract "$compose_file"
     render_compose_model "$compose_model"
     python3 -B "$compose_contract" --self-test "$compose_model"
     ;;
   '')
     assert_gateway_contract "$gateway"
     compose_model="$contract_temp_dir/compose.json"
+    assert_source_compose_contract "$compose_file"
     render_compose_model "$compose_model"
     python3 -B "$compose_contract" "$compose_model"
 
