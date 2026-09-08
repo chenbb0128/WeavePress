@@ -1,6 +1,7 @@
 package aiwriting
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -31,6 +32,65 @@ func TestAnalysisPromptTreatsArticleAsUntrustedData(t *testing.T) {
 	}
 	if strings.Count(messages[1].Content, "</SOURCE_ARTICLE>") != 1 {
 		t.Fatalf("source boundary can be injected: %s", messages[1].Content)
+	}
+}
+
+func TestSourcePromptUsesBlocksWithoutDuplicatingPlainText(t *testing.T) {
+	const body = "只应发送一次的正文"
+	source := SourceDocument{
+		PlainText: body,
+		Blocks:    []SourceBlock{{ID: "B1", Type: "paragraph", Text: body}},
+	}
+
+	messages := BuildAnalysisMessages(source)
+
+	if count := strings.Count(messages[1].Content, body); count != 1 {
+		t.Fatalf("body count = %d: %s", count, messages[1].Content)
+	}
+	if strings.Contains(messages[1].Content, `"plainText"`) {
+		t.Fatalf("plainText duplicated alongside blocks: %s", messages[1].Content)
+	}
+}
+
+func TestSourcePromptOmitsArticleAndAssetURLs(t *testing.T) {
+	source := SourceDocument{Article: workspace.Article{
+		ID:           12,
+		OriginalURL:  "https://origin.example/private",
+		CanonicalURL: "https://canonical.example/private",
+		Assets: []workspace.Asset{{
+			ID:             7,
+			ArticleID:      12,
+			DownloadStatus: "completed",
+			SourceURL:      "https://asset.example/private.jpg",
+		}},
+	}, Blocks: []SourceBlock{{ID: "B1", Type: "paragraph", Text: "正文"}}}
+
+	analysisMessages := BuildAnalysisMessages(source)
+	generationMessages, err := BuildGenerationMessages(source, validAnalysis(), validGenerationParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []string{analysisMessages[1].Content, generationMessages[1].Content} {
+		for _, forbidden := range []string{"origin.example", "canonical.example", "asset.example"} {
+			if strings.Contains(message, forbidden) {
+				t.Fatalf("prompt leaked %q: %s", forbidden, message)
+			}
+		}
+	}
+}
+
+func TestSourcePromptWrapsPlainTextAsFallbackBlock(t *testing.T) {
+	const body = "没有结构化 Blocks 的正文"
+
+	messages := BuildAnalysisMessages(SourceDocument{PlainText: body})
+
+	for _, want := range []string{`"blocks":[`, `"id":"B1"`, `"type":"paragraph"`, body} {
+		if !strings.Contains(messages[1].Content, want) {
+			t.Fatalf("fallback missing %q: %s", want, messages[1].Content)
+		}
+	}
+	if strings.Contains(messages[1].Content, `"plainText"`) {
+		t.Fatalf("fallback retained plainText field: %s", messages[1].Content)
 	}
 }
 
@@ -81,6 +141,17 @@ func TestGenerationPromptValidatesParameters(t *testing.T) {
 	_, err := BuildGenerationMessages(SourceDocument{}, Analysis{}, GenerationParams{})
 	if err == nil {
 		t.Fatal("expected invalid parameters")
+	}
+}
+
+func TestGenerationPromptRejectsAngleOutsideAnalysis(t *testing.T) {
+	params := validGenerationParams()
+	params.AngleID = "A999"
+
+	_, err := BuildGenerationMessages(SourceDocument{}, validAnalysis(), params)
+
+	if !errors.Is(err, ErrInvalidParameters) {
+		t.Fatalf("error = %v", err)
 	}
 }
 

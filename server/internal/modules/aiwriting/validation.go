@@ -66,6 +66,18 @@ func ValidateGenerationParams(params GenerationParams) error {
 	return nil
 }
 
+func ValidateGenerationRequest(analysis Analysis, params GenerationParams) error {
+	if err := ValidateGenerationParams(params); err != nil {
+		return err
+	}
+	for _, angle := range analysis.Angles {
+		if angle.ID == params.AngleID {
+			return nil
+		}
+	}
+	return invalidParameters("angleId does not belong to the analysis")
+}
+
 func ValidateAnalysis(source SourceDocument, output AnalysisOutput) error {
 	if strings.TrimSpace(output.Summary) == "" {
 		return invalidOutput("summary is required")
@@ -202,7 +214,7 @@ func ValidateGeneration(source SourceDocument, analysis Analysis, assets map[uin
 				return fmt.Errorf("%w: image assetId is required", ErrAssetInvalid)
 			}
 			asset, ok := assets[*block.AssetID]
-			if !ok || asset.ArticleID != source.Article.ID || asset.DownloadStatus != "completed" {
+			if !ok || asset.ID != *block.AssetID || asset.ArticleID != source.Article.ID || asset.DownloadStatus != "completed" {
 				return fmt.Errorf("%w: asset %d", ErrAssetInvalid, *block.AssetID)
 			}
 		default:
@@ -217,7 +229,21 @@ func ValidateGeneration(source SourceDocument, analysis Analysis, assets map[uin
 }
 
 func DecodeAnalysisOutput(raw string) (AnalysisOutput, error) {
-	return decodeStrictJSON[AnalysisOutput](raw)
+	output, err := decodeStrictJSON[AnalysisOutput](raw)
+	if err != nil {
+		return AnalysisOutput{}, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+		return AnalysisOutput{}, fmt.Errorf("%w: %v", ErrOutputInvalid, err)
+	}
+	for _, field := range []string{"facts", "viewpoints", "quotes", "risks", "angles"} {
+		value, ok := fields[field]
+		if !ok || strings.TrimSpace(string(value)) == "null" {
+			return AnalysisOutput{}, invalidOutput(field + " must be a non-null array")
+		}
+	}
+	return output, nil
 }
 
 func DecodeGenerationOutput(raw string) (GenerationOutput, error) {
@@ -286,12 +312,11 @@ func validateSourceBlockIDs(ids []string, blocks map[string]SourceBlock) error {
 
 func generationOverlapsSource(source SourceDocument, blocks []GeneratedBlock) bool {
 	windows := make(map[string]struct{})
-	if len(source.Blocks) > 0 {
-		for _, block := range source.Blocks {
-			addRuneWindows(windows, block.Text)
-		}
-	} else {
+	if source.PlainText != "" {
 		addRuneWindows(windows, source.PlainText)
+	}
+	for _, block := range source.Blocks {
+		addRuneWindows(windows, block.Text)
 	}
 	if len(windows) == 0 {
 		return false

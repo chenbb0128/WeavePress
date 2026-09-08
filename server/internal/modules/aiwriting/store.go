@@ -40,6 +40,7 @@ type Store interface {
 	GetAnalysis(context.Context, uint64) (Analysis, error)
 	ListAnalyses(context.Context, uint64, int, int) (Page[Analysis], error)
 	GetGeneration(context.Context, uint64) (Generation, error)
+	GetGenerationByJobID(context.Context, uint64) (Generation, error)
 	SetJobRunning(context.Context, uint64) error
 	CompleteAnalysis(context.Context, uint64, AnalysisOutput, TokenUsage) (Analysis, error)
 	CompleteGeneration(context.Context, uint64, GenerationOutput, editorial.GeneratedDraftInput, TokenUsage) (Generation, error)

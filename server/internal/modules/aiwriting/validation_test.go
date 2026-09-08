@@ -72,6 +72,23 @@ func TestValidateGenerationParams(t *testing.T) {
 	}
 }
 
+func TestValidateGenerationRequestRejectsUnknownAnalysisAngle(t *testing.T) {
+	params := validGenerationParams()
+	params.AngleID = "A999"
+
+	err := ValidateGenerationRequest(Analysis{AnalysisOutput: validAnalysisOutput()}, params)
+
+	if !errors.Is(err, ErrInvalidParameters) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestValidateGenerationRequestAcceptsAnalysisAngle(t *testing.T) {
+	if err := ValidateGenerationRequest(Analysis{AnalysisOutput: validAnalysisOutput()}, validGenerationParams()); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestValidateAnalysisRejectsUnknownSourceBlock(t *testing.T) {
 	source := analysisSource()
 	output := validAnalysisOutput()
@@ -198,6 +215,18 @@ func TestValidateGenerationRejectsCrossArticleOrIncompleteAsset(t *testing.T) {
 	}
 }
 
+func TestValidateGenerationRejectsAssetMapKeyIDMismatch(t *testing.T) {
+	assets := map[uint64]workspace.Asset{
+		7: {ID: 8, ArticleID: 12, DownloadStatus: "completed"},
+	}
+
+	err := ValidateGeneration(generationSource(), validAnalysis(), assets, validGenerationOutput())
+
+	if !errors.Is(err, ErrAssetInvalid) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestValidateGenerationRejectsInvalidBlocks(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -275,6 +304,39 @@ func TestValidateGenerationDoesNotJoinSourceBlocksForOverlap(t *testing.T) {
 	}
 }
 
+func TestValidateGenerationChecksPlainTextAlongsideSourceBlocks(t *testing.T) {
+	copied := strings.Repeat("原", 80)
+	source := SourceDocument{
+		PlainText: copied,
+		Blocks:    []SourceBlock{{ID: "B1", Text: "结构化块与纯文本内容不同"}},
+	}
+	output := GenerationOutput{Title: "新标题", Digest: "摘要", Blocks: []GeneratedBlock{{Type: "paragraph", Text: copied}}}
+
+	err := ValidateGeneration(source, Analysis{}, nil, output)
+
+	if !errors.Is(err, ErrExcessiveSourceOverlap) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestValidateGenerationDoesNotJoinGeneratedBlocksForOverlap(t *testing.T) {
+	left := strings.Repeat("甲", 40)
+	right := strings.Repeat("乙", 40)
+	source := SourceDocument{PlainText: left + right}
+	output := GenerationOutput{
+		Title:  "新标题",
+		Digest: "摘要",
+		Blocks: []GeneratedBlock{
+			{Type: "paragraph", Text: left},
+			{Type: "paragraph", Text: right},
+		},
+	}
+
+	if err := ValidateGeneration(source, Analysis{}, nil, output); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestValidateGenerationAllowsLongDirectQuote(t *testing.T) {
 	quoted := strings.Repeat("原", 80)
 	source := SourceDocument{PlainText: quoted}
@@ -329,6 +391,58 @@ func TestDecodeOutputsRequireOneStrictJSONObject(t *testing.T) {
 	}
 }
 
+func TestDecodeAnalysisOutputRequiresNonNullArrayFields(t *testing.T) {
+	valid := map[string]any{
+		"summary":    "摘要",
+		"facts":      []any{},
+		"viewpoints": []any{},
+		"quotes":     []any{},
+		"risks":      []any{},
+		"angles":     []any{},
+	}
+
+	encoded, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeAnalysisOutput(string(encoded)); err != nil {
+		t.Fatalf("empty arrays should decode: %v", err)
+	}
+
+	for _, field := range []string{"facts", "viewpoints", "quotes", "risks", "angles"} {
+		t.Run(field+" missing", func(t *testing.T) {
+			input := cloneJSONMap(valid)
+			delete(input, field)
+			raw, marshalErr := json.Marshal(input)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if _, err := DecodeAnalysisOutput(string(raw)); !errors.Is(err, ErrOutputInvalid) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+		t.Run(field+" null", func(t *testing.T) {
+			input := cloneJSONMap(valid)
+			input[field] = nil
+			raw, marshalErr := json.Marshal(input)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if _, err := DecodeAnalysisOutput(string(raw)); !errors.Is(err, ErrOutputInvalid) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func cloneJSONMap(source map[string]any) map[string]any {
+	result := make(map[string]any, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
+}
+
 func analysisSource() SourceDocument {
 	blocks := []SourceBlock{{ID: "B1", Type: "paragraph", Text: "原文事实和逐字引用"}, {ID: "B2", Type: "paragraph", Text: "作者认为需要谨慎"}}
 	return SourceDocument{Blocks: blocks, BlockByID: map[string]SourceBlock{"B1": blocks[0], "B2": blocks[1]}}
@@ -357,7 +471,18 @@ func validAnalysis() Analysis {
 	return Analysis{AnalysisOutput: AnalysisOutput{
 		Facts:  []Fact{{ID: "F1", Text: "来源事实", SourceBlockIDs: []string{"B1"}, Confidence: "high"}},
 		Quotes: []Quote{{ID: "Q1", Text: "原句", SourceBlockID: "B1"}},
+		Angles: []Angle{{ID: "A1"}, {ID: "A2"}, {ID: "A3"}},
 	}}
+}
+
+func validGenerationParams() GenerationParams {
+	return GenerationParams{
+		AngleID:        "A1",
+		Audience:       "技术团队",
+		Tone:           "professional",
+		TargetWords:    1_000,
+		IdempotencyKey: "request-12345678",
+	}
 }
 
 func generationAssets() map[uint64]workspace.Asset {
