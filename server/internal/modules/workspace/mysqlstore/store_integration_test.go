@@ -659,6 +659,35 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 	if rollbackStatus != aiwriting.JobRunning || rollbackTitle != "" || rollbackDraftID.Valid {
 		t.Fatalf("rollback state status=%q title=%q draft=%#v", rollbackStatus, rollbackTitle, rollbackDraftID)
 	}
+	if err := aiStore.SetJobFailure(ctx, rollbackJob.ID, "FINAL", "等待人工重试", false, aiwriting.TokenUsage{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE ai_jobs SET retryable = TRUE WHERE id = ?`, rollbackJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	retriedGenerationJob, err := aiStore.RetryJob(ctx, rollbackJob.ID, secondUser.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retriedGenerationJob.RequestedBy != firstUser.ID {
+		t.Errorf("retried generation requested_by = %d, want original requester %d", retriedGenerationJob.RequestedBy, firstUser.ID)
+	}
+	retriedGenerationWithEvents, err := aiStore.GetJob(ctx, rollbackJob.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRetryMessage := fmt.Sprintf("用户 %d 手动重试 AI 任务", secondUser.ID)
+	if got := retriedGenerationWithEvents.Events[len(retriedGenerationWithEvents.Events)-1].Message; got != wantRetryMessage {
+		t.Errorf("generation retry event = %q, want %q", got, wantRetryMessage)
+	}
+	reusedRollbackGeneration, reusedRollbackJob, reused, err := aiStore.CreateGenerationJob(ctx, rollbackInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reused || reusedRollbackGeneration.ID != rollbackGeneration.ID || reusedRollbackJob.ID != rollbackJob.ID {
+		t.Errorf("generation retry idempotency: generation=%d job=%d reused=%v, want generation=%d job=%d reused=true",
+			reusedRollbackGeneration.ID, reusedRollbackJob.ID, reused, rollbackGeneration.ID, rollbackJob.ID)
+	}
 
 	jobsPage, err := aiStore.ListJobs(ctx, aiwriting.JobFilter{Type: aiwriting.JobTypeGeneration, Status: aiwriting.JobCompleted, ArticleID: articleID}, 1, 10)
 	if err != nil || jobsPage.Total != 1 || len(jobsPage.Items) != 1 || jobsPage.Items[0].Article == nil || jobsPage.Items[0].Article.Title != "AI 测试文章" || jobsPage.Items[0].Article.SourceName != "测试来源" {
@@ -701,7 +730,7 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	retried, err := aiStore.RetryJob(ctx, failureJob.ID, secondUser.ID)
-	if err != nil || retried.Status != aiwriting.JobQueued || retried.RequestedBy != secondUser.ID || retried.ManualRetries != 1 || retried.ErrorCode != "" || retried.FinishedAt != nil {
+	if err != nil || retried.Status != aiwriting.JobQueued || retried.RequestedBy != firstUser.ID || retried.ManualRetries != 1 || retried.ErrorCode != "" || retried.FinishedAt != nil {
 		t.Fatalf("retried job=%#v err=%v", retried, err)
 	}
 	if _, err := aiStore.RetryJob(ctx, failureJob.ID, firstUser.ID); !errors.Is(err, aiwriting.ErrJobNotRetryable) {

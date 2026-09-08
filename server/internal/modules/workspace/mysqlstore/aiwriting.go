@@ -531,16 +531,17 @@ func (s *AIStore) RetryJob(ctx context.Context, id, requestedBy uint64) (aiwriti
 		return aiwriting.Job{}, err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE ai_jobs SET status = 'queued', requested_by = ?,
+	result, err := tx.ExecContext(ctx, `UPDATE ai_jobs SET status = 'queued',
 		manual_retries = manual_retries + 1, error_code = '', error_message = '', finished_at = NULL
-		WHERE id = ? AND status = 'failed' AND retryable = TRUE`, requestedBy, id)
+		WHERE id = ? AND status = 'failed' AND retryable = TRUE`, id)
 	if err != nil {
 		return aiwriting.Job{}, err
 	}
 	if affected, _ := result.RowsAffected(); affected == 0 {
 		return aiwriting.Job{}, aiwriting.ErrJobNotRetryable
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO ai_job_events (job_id, status, message) VALUES (?, 'queued', '用户手动重试 AI 任务')`, id); err != nil {
+	retryMessage := truncateRunes(fmt.Sprintf("用户 %d 手动重试 AI 任务", requestedBy), 1024)
+	if _, err = tx.ExecContext(ctx, `INSERT INTO ai_job_events (job_id, status, message) VALUES (?, 'queued', ?)`, id, retryMessage); err != nil {
 		return aiwriting.Job{}, err
 	}
 	if err = tx.Commit(); err != nil {
