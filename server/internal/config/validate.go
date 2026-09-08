@@ -111,7 +111,7 @@ func (c AIConfig) Validate(env string) error {
 		return fmt.Errorf("config ai.temperature must be between 0 and 2")
 	}
 	provider := strings.ToLower(strings.TrimSpace(c.Provider))
-	if provider != "openai-compatible" && (c.Enabled || provider != "") {
+	if provider != "openai-compatible" {
 		return fmt.Errorf("config ai.provider only supports openai-compatible")
 	}
 

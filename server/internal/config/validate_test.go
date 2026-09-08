@@ -117,13 +117,13 @@ func TestAIConfigValidate(t *testing.T) {
 			name: "disabled",
 			mutate: func(cfg *AIConfig) {
 				cfg.Enabled = false
-				cfg.Provider = ""
 				cfg.BaseURL = ""
 				cfg.APIKey = ""
 				cfg.Model = ""
 			},
 			env: "local",
 		},
+		{name: "disabled with empty provider", mutate: func(cfg *AIConfig) { cfg.Enabled = false; cfg.Provider = "" }, env: "local", want: "provider"},
 		{name: "missing base url", mutate: func(cfg *AIConfig) { cfg.BaseURL = "" }, env: "local", want: "base_url"},
 		{name: "missing api key", mutate: func(cfg *AIConfig) { cfg.APIKey = "" }, env: "local", want: "api_key"},
 		{name: "missing model", mutate: func(cfg *AIConfig) { cfg.Model = "" }, env: "local", want: "model"},
