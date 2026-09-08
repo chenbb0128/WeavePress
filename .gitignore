@@ -3,6 +3,7 @@
 .vscode/
 *.log
 .pnpm-store/
+.worktrees/
 
 server/data/
 server/.cache/
