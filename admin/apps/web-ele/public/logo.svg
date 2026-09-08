@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Nova Admin">
+  <defs>
+    <linearGradient id="nova-gradient" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#60a5fa"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#nova-gradient)"/>
+  <text x="32" y="43" data-template-initial="N" fill="#fff" font-family="Arial, sans-serif" font-size="34" font-weight="700" text-anchor="middle">N</text>
+</svg>

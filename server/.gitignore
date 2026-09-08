@@ -1,0 +1,61 @@
+# Binaries and build output
+/bin/
+/dist/
+/build/
+/tmp/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+coverage.out
+coverage.html
+
+# Go workspace/cache files
+go.work
+go.work.sum
+.cache/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Local config overrides
+/configs/config.local.yaml
+/configs/config.*.local.yaml
+
+# Generated runtime data
+/data/
+/logs/
+*.log
+
+# Docker compose local overrides
+compose.override.yaml
+docker-compose.override.yml
+
+# IDE/editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*.tmp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Tooling
+.scannerwork/
+.redocly/
+.nyc_output/

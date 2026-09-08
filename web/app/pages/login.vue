@@ -1,0 +1,8 @@
+<script setup lang="ts">
+const route = useRoute(); const auth = useAuthStore(); const username = ref(''); const password = ref(''); const error = ref('');
+async function submit() { error.value = ''; try { await auth.login(username.value.trim(), password.value); await navigateTo(typeof route.query.redirect === 'string' ? route.query.redirect : '/'); } catch (reason: unknown) { const failure = reason as { data?: { message?: string } } | null; error.value = failure?.data?.message || '登录失败，请检查用户名和密码'; } }
+</script>
+
+<template>
+  <main class="grid min-h-screen place-items-center p-6"><section class="wp-card w-full max-w-md p-8 sm:p-10"><div class="mb-8"><span class="grid size-12 place-items-center rounded-2xl bg-emerald-700 text-xl font-bold text-white">织</span><h1 class="mt-5 text-3xl font-bold">进入内容中心</h1><p class="mt-2 text-gray-500">使用管理员分配的内部账号登录 WeavePress。</p></div><form class="space-y-5" @submit.prevent="submit"><label class="block"><span class="mb-2 block text-sm font-medium">用户名</span><input v-model="username" autocomplete="username" class="w-full rounded-xl border border-black/15 bg-white px-4 py-3 outline-none focus:border-emerald-600" required></label><label class="block"><span class="mb-2 block text-sm font-medium">密码</span><input v-model="password" autocomplete="current-password" class="w-full rounded-xl border border-black/15 bg-white px-4 py-3 outline-none focus:border-emerald-600" minlength="8" required type="password"></label><p v-if="error" class="rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ error }}</p><button class="w-full rounded-xl bg-emerald-700 px-4 py-3 font-medium text-white hover:bg-emerald-800 disabled:opacity-60" :disabled="auth.busy">{{ auth.busy ? '登录中…' : '登录' }}</button></form></section></main>
+</template>

@@ -1,0 +1,98 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root_pass
+      MYSQL_DATABASE: weavepress
+      MYSQL_USER: weavepress
+      MYSQL_PASSWORD: weavepress_pass
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+00:00
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uweavepress -pweavepress_pass --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - redis_data:/data
+
+  migrate:
+    build:
+      context: .
+      dockerfile: deployments/Dockerfile
+      args:
+        TARGET: migrate
+    command: ["-command", "up"]
+    environment:
+      WEAVEPRESS_DATABASE_ENABLED: "false"
+      WEAVEPRESS_DATABASE_DSN: weavepress:weavepress_pass@tcp(mysql:3306)/weavepress
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: deployments/Dockerfile
+      args:
+        TARGET: api
+    environment:
+      WEAVEPRESS_HTTP_ADDR: :8080
+      WEAVEPRESS_DATABASE_ENABLED: "true"
+      WEAVEPRESS_DATABASE_DSN: weavepress:weavepress_pass@tcp(mysql:3306)/weavepress
+      WEAVEPRESS_REDIS_ENABLED: "true"
+      WEAVEPRESS_REDIS_ADDR: redis:6379
+      WEAVEPRESS_REDIS_KEY_PREFIX: weavepress:compose
+      WEAVEPRESS_OBSERVABILITY_METRICS_ENABLED: "true"
+      WEAVEPRESS_OBSERVABILITY_METRICS_PATH: /metrics
+      WEAVEPRESS_OBSERVABILITY_METRICS_NAMESPACE: weavepress
+      WEAVEPRESS_OBSERVABILITY_TRACING_ENABLED: "false"
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: .
+      dockerfile: deployments/Dockerfile
+      args:
+        TARGET: worker
+    environment:
+      WEAVEPRESS_DATABASE_ENABLED: "false"
+      WEAVEPRESS_REDIS_ENABLED: "true"
+      WEAVEPRESS_REDIS_ADDR: redis:6379
+      WEAVEPRESS_REDIS_KEY_PREFIX: weavepress:compose
+      WEAVEPRESS_WORKER_ENABLED: "true"
+      WEAVEPRESS_WORKER_CONCURRENCY: "10"
+      WEAVEPRESS_OBSERVABILITY_TRACING_ENABLED: "false"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  mysql_data:
+  redis_data:

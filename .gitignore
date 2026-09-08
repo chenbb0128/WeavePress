@@ -1,0 +1,12 @@
+.env
+.idea/
+.vscode/
+*.log
+.pnpm-store/
+
+server/data/
+server/.cache/
+admin/node_modules/
+web/node_modules/
+web/.nuxt/
+web/.output/

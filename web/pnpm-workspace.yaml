@@ -1,0 +1,11 @@
+allowBuilds:
+  esbuild: true
+  unrs-resolver: true
+  vue-demi: true
+onlyBuiltDependencies:
+  - esbuild
+  - unrs-resolver
+  - vue-demi
+overrides:
+  '@napi-rs/wasm-runtime': 1.2.2
+  confbox: 0.3.1

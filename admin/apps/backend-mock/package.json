@@ -1,0 +1,19 @@
+{
+  "name": "@vben/backend-mock",
+  "version": "0.1.0",
+  "description": "Local mock service for Nova Admin",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "build": "nitro build",
+    "start": "nitro dev"
+  },
+  "dependencies": {
+    "jsonwebtoken": "catalog:",
+    "nitropack": "catalog:"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "catalog:",
+    "h3": "catalog:"
+  }
+}
