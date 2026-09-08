@@ -139,6 +139,9 @@ func (c AIConfig) Validate(env string) error {
 	if parsed.Host == "" || (scheme != "http" && scheme != "https") {
 		return fmt.Errorf("config ai.base_url must be an absolute HTTP or HTTPS URL")
 	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return fmt.Errorf("config ai.base_url must not contain user info, query or fragment")
+	}
 	normalizedEnv := strings.ToLower(strings.TrimSpace(env))
 	if c.Enabled && (normalizedEnv == "prod" || normalizedEnv == "production") && scheme != "https" {
 		return fmt.Errorf("config ai.base_url must use HTTPS in production")

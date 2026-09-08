@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -18,8 +18,8 @@ func TestOpenAICompleteMapsRequestAndUsage(t *testing.T) {
 		if request.Method != http.MethodPost {
 			t.Errorf("method = %s, want POST", request.Method)
 		}
-		if request.URL.Path != "/v1/chat/completions" {
-			t.Errorf("path = %s, want /v1/chat/completions", request.URL.Path)
+		if request.URL.Path != "/proxy/v1/chat/completions" {
+			t.Errorf("path = %s, want /proxy/v1/chat/completions", request.URL.Path)
 		}
 		if got := request.Header.Get("Authorization"); got != "Bearer test-key" {
 			t.Errorf("Authorization = %q, want Bearer test-key", got)
@@ -59,7 +59,7 @@ func TestOpenAICompleteMapsRequestAndUsage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewOpenAICompatible(" "+server.URL+"/ ", "test-key", "test-model", time.Second)
+	provider := NewOpenAICompatible(" "+server.URL+"/proxy/ ", "test-key", "test-model", time.Second)
 	got, err := provider.Complete(context.Background(), Request{
 		Messages:    []Message{{Role: "system", Content: "rules"}},
 		MaxTokens:   6000,
@@ -84,11 +84,11 @@ func TestOpenAICompleteMapsHTTPError(t *testing.T) {
 		code      string
 		retryable bool
 	}{
-		{name: "unauthorized", status: http.StatusUnauthorized, code: "AI_PROVIDER_AUTH_FAILED"},
-		{name: "forbidden", status: http.StatusForbidden, code: "AI_PROVIDER_AUTH_FAILED"},
-		{name: "rate limited", status: http.StatusTooManyRequests, code: "AI_PROVIDER_RATE_LIMITED", retryable: true},
-		{name: "bad request", status: http.StatusUnprocessableEntity, code: "AI_PROVIDER_REQUEST_FAILED"},
-		{name: "server error", status: http.StatusInternalServerError, code: "AI_PROVIDER_UNAVAILABLE", retryable: true},
+		{name: "unauthorized", status: http.StatusUnauthorized, code: ErrorCodeAuthFailed},
+		{name: "forbidden", status: http.StatusForbidden, code: ErrorCodeAuthFailed},
+		{name: "rate limited", status: http.StatusTooManyRequests, code: ErrorCodeRateLimited, retryable: true},
+		{name: "bad request", status: http.StatusUnprocessableEntity, code: ErrorCodeRequestFailed},
+		{name: "server error", status: http.StatusInternalServerError, code: ErrorCodeUnavailable, retryable: true},
 	}
 
 	for _, tt := range tests {
@@ -114,22 +114,129 @@ func TestOpenAICompleteMapsTimeout(t *testing.T) {
 
 	provider := NewOpenAICompatible(server.URL, "test-key", "test-model", 20*time.Millisecond)
 	_, err := provider.Complete(context.Background(), Request{})
-	assertProviderError(t, err, "AI_PROVIDER_TIMEOUT", true)
+	assertProviderError(t, err, ErrorCodeTimeout, true)
+}
+
+func TestOpenAICompleteDoesNotFollowRedirects(t *testing.T) {
+	var redirectedRequests atomic.Int32
+	var receivedAuthorization atomic.Bool
+	var receivedBody atomic.Bool
+	redirected := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		redirectedRequests.Add(1)
+		receivedAuthorization.Store(request.Header.Get("Authorization") != "")
+		body, _ := io.ReadAll(request.Body)
+		receivedBody.Store(len(body) != 0)
+		_, _ = io.WriteString(writer, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer redirected.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Location", redirected.URL)
+		writer.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer origin.Close()
+
+	provider := NewOpenAICompatible(origin.URL, "test-key", "test-model", time.Second)
+	_, err := provider.Complete(context.Background(), Request{Messages: []Message{{Role: "user", Content: "secret body"}}})
+	assertProviderError(t, err, ErrorCodeRequestFailed, false)
+	if redirectedRequests.Load() != 0 || receivedAuthorization.Load() || receivedBody.Load() {
+		t.Fatalf("redirect target requests=%d authorization=%v body=%v", redirectedRequests.Load(), receivedAuthorization.Load(), receivedBody.Load())
+	}
+}
+
+func TestOpenAICompleteMapsCanceledContext(t *testing.T) {
+	provider := providerWithTransport(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return nil, request.Context().Err()
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := provider.Complete(ctx, Request{})
+	assertProviderError(t, err, ErrorCodeRequestFailed, false)
+}
+
+func TestOpenAICompleteMapsResponseBodyDeadline(t *testing.T) {
+	release := make(chan struct{})
+	flushed := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+		writer.(http.Flusher).Flush()
+		close(flushed)
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		provider := NewOpenAICompatible(server.URL, "test-key", "test-model", time.Second)
+		_, err := provider.Complete(ctx, Request{})
+		result <- err
+	}()
+	select {
+	case <-flushed:
+	case <-time.After(time.Second):
+		t.Fatal("response headers were not flushed")
+	}
+	assertProviderError(t, <-result, ErrorCodeTimeout, true)
 }
 
 func TestOpenAICompleteMapsNetworkError(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	baseURL := "http://" + listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
+	provider := providerWithTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("network unavailable")
+	}))
+	_, err := provider.Complete(context.Background(), Request{})
+	assertProviderError(t, err, ErrorCodeUnavailable, true)
+}
 
-	provider := NewOpenAICompatible(baseURL, "test-key", "test-model", time.Second)
-	_, err = provider.Complete(context.Background(), Request{})
-	assertProviderError(t, err, "AI_PROVIDER_UNAVAILABLE", true)
+func TestOpenAICompleteMapsResponseBodyReadError(t *testing.T) {
+	body := &errorReadCloser{err: errors.New("response body unavailable")}
+	provider := providerWithTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: body}, nil
+	}))
+
+	_, err := provider.Complete(context.Background(), Request{})
+	assertProviderError(t, err, ErrorCodeUnavailable, true)
+	if !body.closed {
+		t.Fatal("response body was not closed")
+	}
+}
+
+func TestOpenAICompleteLimitsAndClosesResponseBodies(t *testing.T) {
+	t.Run("success response", func(t *testing.T) {
+		const maxSuccessBytes = int64(16 << 20)
+		body := &countingReadCloser{reader: io.LimitReader(repeatedByteReader{}, maxSuccessBytes+2)}
+		provider := providerWithTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: body}, nil
+		}))
+
+		_, err := provider.Complete(context.Background(), Request{})
+		assertProviderError(t, err, ErrorCodeRequestFailed, false)
+		if body.read != maxSuccessBytes+1 {
+			t.Fatalf("success response bytes read = %d, want %d", body.read, maxSuccessBytes+1)
+		}
+		if !body.closed {
+			t.Fatal("success response body was not closed")
+		}
+	})
+
+	t.Run("error response", func(t *testing.T) {
+		body := &countingReadCloser{reader: io.LimitReader(repeatedByteReader{}, maxErrorResponseBytes+1)}
+		provider := providerWithTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusInternalServerError, Body: body}, nil
+		}))
+
+		_, err := provider.Complete(context.Background(), Request{})
+		assertProviderError(t, err, ErrorCodeUnavailable, true)
+		if body.read != maxErrorResponseBytes {
+			t.Fatalf("error response bytes read = %d, want %d", body.read, maxErrorResponseBytes)
+		}
+		if !body.closed {
+			t.Fatal("error response body was not closed")
+		}
+	})
 }
 
 func TestOpenAICompleteRejectsMalformedSuccessResponse(t *testing.T) {
@@ -154,7 +261,7 @@ func TestOpenAICompleteRejectsMalformedSuccessResponse(t *testing.T) {
 
 			provider := NewOpenAICompatible(server.URL, "test-key", "test-model", time.Second)
 			_, err := provider.Complete(context.Background(), Request{JSON: tt.json})
-			assertProviderError(t, err, "AI_PROVIDER_REQUEST_FAILED", false)
+			assertProviderError(t, err, ErrorCodeRequestFailed, false)
 		})
 	}
 }
@@ -168,4 +275,59 @@ func assertProviderError(t *testing.T, err error, code string, retryable bool) {
 	if providerErr.Code != code || providerErr.Retryable != retryable {
 		t.Fatalf("error = %#v, want code=%s retryable=%v", providerErr, code, retryable)
 	}
+}
+
+func providerWithTransport(transport http.RoundTripper) Provider {
+	return &openAICompatible{
+		endpoint: "http://llm.test/v1/chat/completions",
+		apiKey:   "test-key",
+		model:    "test-model",
+		client:   &http.Client{Transport: transport},
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+type countingReadCloser struct {
+	reader io.Reader
+	read   int64
+	closed bool
+}
+
+func (r *countingReadCloser) Read(buffer []byte) (int, error) {
+	count, err := r.reader.Read(buffer)
+	r.read += int64(count)
+	return count, err
+}
+
+func (r *countingReadCloser) Close() error {
+	r.closed = true
+	return nil
+}
+
+type errorReadCloser struct {
+	err    error
+	closed bool
+}
+
+func (r *errorReadCloser) Read([]byte) (int, error) {
+	return 0, r.err
+}
+
+func (r *errorReadCloser) Close() error {
+	r.closed = true
+	return nil
+}
+
+type repeatedByteReader struct{}
+
+func (repeatedByteReader) Read(buffer []byte) (int, error) {
+	for index := range buffer {
+		buffer[index] = 'x'
+	}
+	return len(buffer), nil
 }

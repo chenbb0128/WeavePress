@@ -2,6 +2,14 @@ package llm
 
 import "context"
 
+const (
+	ErrorCodeAuthFailed    = "AI_PROVIDER_AUTH_FAILED"
+	ErrorCodeRequestFailed = "AI_PROVIDER_REQUEST_FAILED"
+	ErrorCodeRateLimited   = "AI_PROVIDER_RATE_LIMITED"
+	ErrorCodeUnavailable   = "AI_PROVIDER_UNAVAILABLE"
+	ErrorCodeTimeout       = "AI_PROVIDER_TIMEOUT"
+)
+
 type Message struct {
 	Role    string
 	Content string

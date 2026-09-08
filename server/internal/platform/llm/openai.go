@@ -8,11 +8,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
-const maxErrorResponseBytes = 64 << 10
+const (
+	maxErrorResponseBytes   int64 = 64 << 10
+	maxSuccessResponseBytes int64 = 16 << 20
+)
 
 type openAICompatible struct {
 	endpoint string
@@ -52,11 +56,20 @@ type openAIResponse struct {
 }
 
 func NewOpenAICompatible(baseURL, apiKey, model string, timeout time.Duration) Provider {
+	return newOpenAICompatibleWithClient(baseURL, apiKey, model, &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	})
+}
+
+func newOpenAICompatibleWithClient(baseURL, apiKey, model string, client *http.Client) Provider {
 	return &openAICompatible{
-		endpoint: strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/v1/chat/completions",
+		endpoint: openAIChatCompletionsEndpoint(baseURL),
 		apiKey:   apiKey,
 		model:    model,
-		client:   &http.Client{Timeout: timeout},
+		client:   client,
 	}
 }
 
@@ -76,57 +89,57 @@ func (p *openAICompatible) Complete(ctx context.Context, request Request) (Respo
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return Response{}, providerError("AI_PROVIDER_REQUEST_FAILED", "无法生成 AI 模型请求", false, err)
+		return Response{}, providerError(ErrorCodeRequestFailed, "无法生成 AI 模型请求", false, err)
 	}
 
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint, bytes.NewReader(body))
 	if err != nil {
-		return Response{}, providerError("AI_PROVIDER_REQUEST_FAILED", "无法创建 AI 模型请求", false, err)
+		return Response{}, providerError(ErrorCodeRequestFailed, "无法创建 AI 模型请求", false, err)
 	}
 	httpRequest.Header.Set("Authorization", "Bearer "+p.apiKey)
 	httpRequest.Header.Set("Content-Type", "application/json")
 
 	httpResponse, err := p.client.Do(httpRequest)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return Response{}, providerError("AI_PROVIDER_TIMEOUT", "AI 模型请求超时", true, err)
-		}
-		return Response{}, providerError("AI_PROVIDER_UNAVAILABLE", "AI 模型服务暂时不可用", true, err)
+		return Response{}, transportError(ctx, "AI 模型服务暂时不可用", err)
 	}
 	defer httpResponse.Body.Close()
 
 	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
 		_, readErr := io.Copy(io.Discard, io.LimitReader(httpResponse.Body, maxErrorResponseBytes))
-		cause := fmt.Errorf("AI 模型服务返回 HTTP %d", httpResponse.StatusCode)
 		if readErr != nil {
-			cause = fmt.Errorf("读取 AI 模型错误响应失败: %w", readErr)
+			return Response{}, transportError(ctx, "读取 AI 模型错误响应失败", readErr)
 		}
+		cause := fmt.Errorf("AI 模型服务返回 HTTP %d", httpResponse.StatusCode)
 		switch {
 		case httpResponse.StatusCode == http.StatusUnauthorized || httpResponse.StatusCode == http.StatusForbidden:
-			return Response{}, providerError("AI_PROVIDER_AUTH_FAILED", "AI 模型认证失败", false, cause)
+			return Response{}, providerError(ErrorCodeAuthFailed, "AI 模型认证失败", false, cause)
 		case httpResponse.StatusCode == http.StatusTooManyRequests:
-			return Response{}, providerError("AI_PROVIDER_RATE_LIMITED", "AI 模型请求受到限流", true, cause)
+			return Response{}, providerError(ErrorCodeRateLimited, "AI 模型请求受到限流", true, cause)
 		case httpResponse.StatusCode >= http.StatusInternalServerError:
-			return Response{}, providerError("AI_PROVIDER_UNAVAILABLE", "AI 模型服务暂时不可用", true, cause)
+			return Response{}, providerError(ErrorCodeUnavailable, "AI 模型服务暂时不可用", true, cause)
 		default:
-			return Response{}, providerError("AI_PROVIDER_REQUEST_FAILED", "AI 模型拒绝了请求", false, cause)
+			return Response{}, providerError(ErrorCodeRequestFailed, "AI 模型拒绝了请求", false, cause)
 		}
 	}
 
-	var decoded openAIResponse
-	decoder := json.NewDecoder(httpResponse.Body)
-	if err := decoder.Decode(&decoded); err != nil {
-		return Response{}, providerError("AI_PROVIDER_REQUEST_FAILED", "AI 模型返回了无效响应", false, err)
+	responseBody, err := io.ReadAll(io.LimitReader(httpResponse.Body, maxSuccessResponseBytes+1))
+	if err != nil {
+		return Response{}, transportError(ctx, "读取 AI 模型响应失败", err)
 	}
-	if err := ensureJSONEOF(decoder); err != nil {
-		return Response{}, providerError("AI_PROVIDER_REQUEST_FAILED", "AI 模型返回了无效响应", false, err)
+	if int64(len(responseBody)) > maxSuccessResponseBytes {
+		return Response{}, providerError(ErrorCodeRequestFailed, "AI 模型响应超过大小限制", false, nil)
+	}
+	var decoded openAIResponse
+	if err := json.Unmarshal(responseBody, &decoded); err != nil {
+		return Response{}, providerError(ErrorCodeRequestFailed, "AI 模型返回了无效响应", false, err)
 	}
 	if len(decoded.Choices) == 0 || strings.TrimSpace(decoded.Choices[0].Message.Content) == "" {
-		return Response{}, providerError("AI_PROVIDER_REQUEST_FAILED", "AI 模型返回了空响应", false, nil)
+		return Response{}, providerError(ErrorCodeRequestFailed, "AI 模型返回了空响应", false, nil)
 	}
 	content := decoded.Choices[0].Message.Content
 	if request.JSON && !json.Valid([]byte(content)) {
-		return Response{}, providerError("AI_PROVIDER_REQUEST_FAILED", "AI 模型返回的内容不是有效 JSON", false, nil)
+		return Response{}, providerError(ErrorCodeRequestFailed, "AI 模型返回的内容不是有效 JSON", false, nil)
 	}
 
 	return Response{
@@ -139,15 +152,29 @@ func (p *openAICompatible) Complete(ctx context.Context, request Request) (Respo
 	}, nil
 }
 
-func ensureJSONEOF(decoder *json.Decoder) error {
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return fmt.Errorf("响应包含多个 JSON 值")
-		}
-		return err
+func openAIChatCompletionsEndpoint(baseURL string) string {
+	normalized := strings.TrimSpace(baseURL)
+	parsed, err := url.Parse(normalized)
+	if err != nil {
+		return strings.TrimRight(normalized, "/") + "/v1/chat/completions"
 	}
-	return nil
+	suffix := "/v1/chat/completions"
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + suffix
+	if parsed.RawPath != "" {
+		parsed.RawPath = strings.TrimRight(parsed.RawPath, "/") + suffix
+	}
+	return parsed.String()
+}
+
+func transportError(ctx context.Context, message string, cause error) error {
+	switch {
+	case errors.Is(cause, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return providerError(ErrorCodeTimeout, "AI 模型请求超时", true, cause)
+	case errors.Is(cause, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
+		return providerError(ErrorCodeRequestFailed, "AI 模型请求已取消", false, cause)
+	default:
+		return providerError(ErrorCodeUnavailable, message, true, cause)
+	}
 }
 
 func providerError(code, message string, retryable bool, cause error) error {
