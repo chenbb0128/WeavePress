@@ -313,6 +313,39 @@ def require_valid(model: object) -> int:
     return 1 if errors else 0
 
 
+def validate_dev_compose(model: object) -> list[str]:
+    if not isinstance(model, dict) or not isinstance(model.get("services"), dict):
+        return ["normalized Compose model must contain a services object"]
+
+    api = mapping(model["services"].get("api"))
+    default_network = mapping(mapping(api.get("networks")).get("default"))
+    if API_APP_ALIAS not in string_set(default_network.get("aliases")):
+        return [f"api default network must include alias {API_APP_ALIAS}"]
+    return []
+
+
+def require_dev_valid(model: object) -> int:
+    errors = validate_dev_compose(model)
+    for error in errors:
+        print(f"Development Compose contract violation: {error}", file=sys.stderr)
+    return 1 if errors else 0
+
+
+def run_dev_self_test(baseline: object) -> int:
+    baseline_errors = validate_dev_compose(baseline)
+    if baseline_errors:
+        print("Development Compose self-test baseline is invalid.", file=sys.stderr)
+        return require_dev_valid(baseline)
+
+    mutant = copy.deepcopy(baseline)
+    mutant["services"]["api"]["networks"]["default"]["aliases"] = []
+    if not validate_dev_compose(mutant):
+        print("Development Compose contract accepted missing api alias", file=sys.stderr)
+        return 1
+    print("Development Compose mutation rejected: unique api alias removed")
+    return 0
+
+
 def run_self_test(baseline: object) -> int:
     baseline_errors = validate_compose(baseline)
     if baseline_errors:
@@ -410,12 +443,17 @@ def main() -> int:
         return run_source_self_test()
     if len(sys.argv) == 3 and sys.argv[1] == "--source":
         return require_source_valid(sys.argv[2])
+    if len(sys.argv) == 3 and sys.argv[1] == "--dev":
+        return require_dev_valid(load_model(sys.argv[2]))
+    if len(sys.argv) == 3 and sys.argv[1] == "--dev-self-test":
+        return run_dev_self_test(load_model(sys.argv[2]))
     if len(sys.argv) == 2:
         return require_valid(load_model(sys.argv[1]))
     if len(sys.argv) == 3 and sys.argv[1] == "--self-test":
         return run_self_test(load_model(sys.argv[2]))
     print(
         f"Usage: {sys.argv[0]} (--source <compose.yaml> | --source-self-test | "
+        "--dev <compose.json> | --dev-self-test <compose.json> | "
         "[--self-test] <compose.json>)",
         file=sys.stderr,
     )

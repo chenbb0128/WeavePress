@@ -52,6 +52,9 @@ services:
 
   api:
     build: { context: ../server, dockerfile: deployments/Dockerfile, args: { TARGET: api } }
+    networks:
+      default:
+        aliases: [weavepress-api]
     environment:
       <<: *server-env
       WEAVEPRESS_HTTP_ADDR: :8080

@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 gateway="$repo_root/deploy/nginx.conf"
+dev_compose_file="$repo_root/deploy/compose.yaml"
 compose_file="$repo_root/deploy/production/compose.yaml"
 compose_contract="$repo_root/deploy/tests/production-compose-contract.py"
 contract_temp_dir="$(mktemp -d)"
@@ -203,6 +204,12 @@ render_compose_model() {
     -f "$compose_file" config --format json > "$output_file"
 }
 
+render_dev_compose_model() {
+  local output_file="$1"
+
+  docker compose -f "$dev_compose_file" config --format json > "$output_file"
+}
+
 case "${1:-}" in
   --gateway-only)
     if [[ $# -ne 2 ]]; then
@@ -224,18 +231,24 @@ case "${1:-}" in
       exit 2
     fi
     compose_model="$contract_temp_dir/compose.json"
+    dev_compose_model="$contract_temp_dir/dev-compose.json"
     run_gateway_self_test
     python3 -B "$compose_contract" --source-self-test
     python3 -B "$compose_contract" --source "$compose_file"
     render_compose_model "$compose_model"
     python3 -B "$compose_contract" --self-test "$compose_model"
+    render_dev_compose_model "$dev_compose_model"
+    python3 -B "$compose_contract" --dev-self-test "$dev_compose_model"
     ;;
   '')
     assert_gateway_contract "$gateway"
     compose_model="$contract_temp_dir/compose.json"
+    dev_compose_model="$contract_temp_dir/dev-compose.json"
     python3 -B "$compose_contract" --source "$compose_file"
     render_compose_model "$compose_model"
     python3 -B "$compose_contract" "$compose_model"
+    render_dev_compose_model "$dev_compose_model"
+    python3 -B "$compose_contract" --dev "$dev_compose_model"
 
     docker run --rm --add-host weavepress-api:127.0.0.1 \
       -v "$gateway:/etc/nginx/conf.d/default.conf:ro" \
