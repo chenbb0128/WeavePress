@@ -136,9 +136,15 @@ func (s *Service) ResetPassword(ctx context.Context, id uint64, password string)
 }
 
 func (s *Service) Permissions(role workspace.Role) []string {
-	base := []string{"dashboard:view", "collection:create", "collection:view", "collection:retry", "article:view"}
+	base := []string{
+		"dashboard:view", "collection:create", "collection:view", "collection:retry", "article:view",
+		"draft:view", "draft:create", "draft:update", "draft:submit-review", "wechat-publish:view",
+	}
 	if role == workspace.RoleAdmin {
-		return append(base, "user:view", "user:create", "user:update", "user:reset-password")
+		return append(base,
+			"draft:review", "draft:publish", "wechat-publish:retry",
+			"user:view", "user:create", "user:update", "user:reset-password",
+		)
 	}
 	return base
 }

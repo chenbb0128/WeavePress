@@ -14,6 +14,13 @@
     "title": "内容库",
     "detailTitle": "文章详情"
   },
+  "drafts": {
+    "title": "微信稿件",
+    "detailTitle": "稿件工作台"
+  },
+  "wechat": {
+    "publishJobsTitle": "微信发布任务"
+  },
   "dashboard": {
     "title": "工作台",
     "welcome": "欢迎回来",

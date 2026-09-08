@@ -65,6 +65,9 @@ services:
       WEAVEPRESS_OBSERVABILITY_METRICS_PATH: /metrics
       WEAVEPRESS_OBSERVABILITY_METRICS_NAMESPACE: weavepress
       WEAVEPRESS_OBSERVABILITY_TRACING_ENABLED: "false"
+      WEAVEPRESS_WECHAT_ENABLED: "false"
+      WEAVEPRESS_WECHAT_API_BASE: https://api.weixin.qq.com
+      WEAVEPRESS_WECHAT_REQUEST_TIMEOUT: 30s
     ports:
       - "8080:8080"
     depends_on:
@@ -89,6 +92,9 @@ services:
       WEAVEPRESS_WORKER_ENABLED: "true"
       WEAVEPRESS_WORKER_CONCURRENCY: "10"
       WEAVEPRESS_OBSERVABILITY_TRACING_ENABLED: "false"
+      WEAVEPRESS_WECHAT_ENABLED: "false"
+      WEAVEPRESS_WECHAT_API_BASE: https://api.weixin.qq.com
+      WEAVEPRESS_WECHAT_REQUEST_TIMEOUT: 30s
     depends_on:
       redis:
         condition: service_healthy

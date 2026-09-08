@@ -11,16 +11,18 @@ import {
   ElButton,
   ElCard,
   ElEmpty,
+  ElMessage,
   ElSkeleton,
   ElTag,
 } from 'element-plus';
 
-import { getArticleApi } from '#/api';
+import { createDraftApi, getArticleApi } from '#/api';
 
 defineOptions({ name: 'ArticleDetail' });
 const route = useRoute();
 const router = useRouter();
 const loading = ref(true);
+const creatingDraft = ref(false);
 const article = ref<Article>();
 const assetURLs = computed(
   () =>
@@ -39,6 +41,17 @@ onMounted(async () => {
     loading.value = false;
   }
 });
+async function createDraft() {
+  if (!article.value) return;
+  creatingDraft.value = true;
+  try {
+    const draft = await createDraftApi(article.value.id);
+    ElMessage.success('微信稿件已创建');
+    await router.push(`/drafts/${draft.id}`);
+  } finally {
+    creatingDraft.value = false;
+  }
+}
 </script>
 
 <template>
@@ -76,6 +89,13 @@ onMounted(async () => {
           </div>
           <div class="flex shrink-0 gap-2">
             <ElButton @click="router.back()">返回</ElButton
+            ><ElButton
+              v-if="article.status === 'ready'"
+              :loading="creatingDraft"
+              type="primary"
+              @click="createDraft"
+            >
+              生成微信稿件 </ElButton
             ><ElButton tag="a" :href="article.originalUrl" target="_blank">
               原文 </ElButton
             ><ElButton

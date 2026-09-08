@@ -16,6 +16,7 @@ import (
 	"github.com/chenbb0128/weavepress/server/internal/config"
 	"github.com/chenbb0128/weavepress/server/internal/modules/authn"
 	"github.com/chenbb0128/weavepress/server/internal/modules/content"
+	"github.com/chenbb0128/weavepress/server/internal/modules/editorial"
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace"
 	"github.com/chenbb0128/weavepress/server/internal/transport/httpapi/request"
 	"github.com/chenbb0128/weavepress/server/internal/transport/httpapi/response"
@@ -24,14 +25,15 @@ import (
 const claimsKey = "weavepress.claims"
 
 type API struct {
-	store   workspace.Store
-	auth    *authn.Service
-	content *content.Service
-	cfg     config.Config
+	store     workspace.Store
+	auth      *authn.Service
+	content   *content.Service
+	editorial *editorial.Service
+	cfg       config.Config
 }
 
-func New(store workspace.Store, auth *authn.Service, contentService *content.Service, cfg config.Config) *API {
-	return &API{store: store, auth: auth, content: contentService, cfg: cfg}
+func New(store workspace.Store, auth *authn.Service, contentService *content.Service, editorialService *editorial.Service, cfg config.Config) *API {
+	return &API{store: store, auth: auth, content: contentService, editorial: editorialService, cfg: cfg}
 }
 
 func (a *API) Register(router *gin.Engine) {
@@ -60,6 +62,21 @@ func (a *API) Register(router *gin.Engine) {
 	protected.GET("/articles", a.listArticles)
 	protected.GET("/articles/:id", a.getArticle)
 	protected.GET("/articles/:id/raw-url", a.rawURL)
+
+	protected.POST("/drafts", a.createDraft)
+	protected.GET("/drafts", a.listDrafts)
+	protected.GET("/drafts/:id", a.getDraft)
+	protected.PUT("/drafts/:id", a.updateDraft)
+	protected.GET("/drafts/:id/versions", a.listDraftVersions)
+	protected.POST("/drafts/:id/versions/:version/restore", a.restoreDraftVersion)
+	protected.GET("/drafts/:id/preflight", a.draftPreflight)
+	protected.POST("/drafts/:id/submit-review", a.submitDraftReview)
+	protected.POST("/drafts/:id/review", a.requireRole(workspace.RoleAdmin), a.reviewDraft)
+	protected.POST("/drafts/:id/publish", a.requireRole(workspace.RoleAdmin), a.publishDraft)
+	protected.GET("/wechat/status", a.wechatStatus)
+	protected.GET("/wechat-publish-jobs", a.listPublishJobs)
+	protected.GET("/wechat-publish-jobs/:id", a.getPublishJob)
+	protected.POST("/wechat-publish-jobs/:id/retry", a.requireRole(workspace.RoleAdmin), a.retryPublishJob)
 
 	router.GET("/media/assets/:id", a.media("assets"))
 	router.GET("/media/raw/:id", a.media("raw"))
@@ -364,6 +381,288 @@ func (a *API) rawURL(c *gin.Context) {
 	response.OK(c, gin.H{"url": data.RawSnapshotURL})
 }
 
+type createDraftInput struct {
+	ArticleID uint64 `json:"articleId"`
+}
+
+func (i createDraftInput) Validate() []response.ValidationDetail {
+	if i.ArticleID == 0 {
+		return []response.ValidationDetail{{Field: "articleId", Reason: "required"}}
+	}
+	return nil
+}
+
+func (a *API) createDraft(c *gin.Context) {
+	var input createDraftInput
+	if err := request.BindJSON(c, &input); err != nil {
+		response.Error(c, err)
+		return
+	}
+	user, _ := a.currentUser(c)
+	draft, err := a.editorial.CreateFromArticle(c.Request.Context(), input.ArticleID, user.ID)
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	a.decorateDraft(&draft)
+	response.Created(c, fmt.Sprintf("/api/drafts/%d", draft.ID), draft)
+}
+
+func (a *API) listDrafts(c *gin.Context) {
+	page, size := pagination(c)
+	data, err := a.editorial.List(c.Request.Context(), c.Query("keyword"), c.Query("status"), page, size)
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	response.OK(c, data)
+}
+
+func (a *API) getDraft(c *gin.Context) {
+	id, err := parseID(c)
+	if err != nil {
+		response.Error(c, response.BadRequest("稿件 ID 不正确", err))
+		return
+	}
+	draft, err := a.editorial.Get(c.Request.Context(), id)
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	a.decorateDraft(&draft)
+	response.OK(c, draft)
+}
+
+type updateDraftInput struct {
+	Title           string  `json:"title"`
+	Author          string  `json:"author"`
+	Digest          string  `json:"digest"`
+	ContentHTML     string  `json:"contentHtml"`
+	CoverAssetID    *uint64 `json:"coverAssetId"`
+	ExpectedVersion uint    `json:"expectedVersion"`
+	ChangeNote      string  `json:"changeNote"`
+}
+
+func (i updateDraftInput) Validate() []response.ValidationDetail {
+	var details []response.ValidationDetail
+	if strings.TrimSpace(i.Title) == "" {
+		details = append(details, response.ValidationDetail{Field: "title", Reason: "required"})
+	}
+	if strings.TrimSpace(i.ContentHTML) == "" {
+		details = append(details, response.ValidationDetail{Field: "contentHtml", Reason: "required"})
+	}
+	if i.ExpectedVersion == 0 {
+		details = append(details, response.ValidationDetail{Field: "expectedVersion", Reason: "required"})
+	}
+	return details
+}
+
+func (a *API) updateDraft(c *gin.Context) {
+	id, err := parseID(c)
+	if err != nil {
+		response.Error(c, response.BadRequest("稿件 ID 不正确", err))
+		return
+	}
+	var input updateDraftInput
+	if bindErr := request.BindJSON(c, &input); bindErr != nil {
+		response.Error(c, bindErr)
+		return
+	}
+	user, _ := a.currentUser(c)
+	draft, err := a.editorial.Update(c.Request.Context(), id, user.ID, editorial.UpdateInput{
+		Title: input.Title, Author: input.Author, Digest: input.Digest, ContentHTML: input.ContentHTML,
+		CoverAssetID: input.CoverAssetID, ExpectedVersion: input.ExpectedVersion, ChangeNote: input.ChangeNote,
+	})
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	a.decorateDraft(&draft)
+	response.OK(c, draft)
+}
+
+func (a *API) listDraftVersions(c *gin.Context) {
+	id, err := parseID(c)
+	if err != nil {
+		response.Error(c, response.BadRequest("稿件 ID 不正确", err))
+		return
+	}
+	versions, err := a.editorial.Versions(c.Request.Context(), id)
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	response.OK(c, versions)
+}
+
+type restoreDraftVersionInput struct {
+	ExpectedVersion uint `json:"expectedVersion"`
+}
+
+func (i restoreDraftVersionInput) Validate() []response.ValidationDetail {
+	if i.ExpectedVersion == 0 {
+		return []response.ValidationDetail{{Field: "expectedVersion", Reason: "required"}}
+	}
+	return nil
+}
+
+func (a *API) restoreDraftVersion(c *gin.Context) {
+	id, err := parseID(c)
+	if err != nil {
+		response.Error(c, response.BadRequest("稿件 ID 不正确", err))
+		return
+	}
+	version64, err := strconv.ParseUint(c.Param("version"), 10, 32)
+	if err != nil || version64 == 0 {
+		response.Error(c, response.BadRequest("稿件版本不正确", err))
+		return
+	}
+	var input restoreDraftVersionInput
+	if bindErr := request.BindJSON(c, &input); bindErr != nil {
+		response.Error(c, bindErr)
+		return
+	}
+	user, _ := a.currentUser(c)
+	draft, err := a.editorial.RestoreVersion(c.Request.Context(), id, user.ID, uint(version64), input.ExpectedVersion)
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	a.decorateDraft(&draft)
+	response.OK(c, draft)
+}
+
+func (a *API) draftPreflight(c *gin.Context) {
+	id, err := parseID(c)
+	if err != nil {
+		response.Error(c, response.BadRequest("稿件 ID 不正确", err))
+		return
+	}
+	result, err := a.editorial.Preflight(c.Request.Context(), id)
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	response.OK(c, result)
+}
+
+func (a *API) submitDraftReview(c *gin.Context) {
+	id, err := parseID(c)
+	if err != nil {
+		response.Error(c, response.BadRequest("稿件 ID 不正确", err))
+		return
+	}
+	user, _ := a.currentUser(c)
+	draft, err := a.editorial.SubmitReview(c.Request.Context(), id, user.ID)
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	a.decorateDraft(&draft)
+	response.OK(c, draft)
+}
+
+type reviewDraftInput struct {
+	Approved bool   `json:"approved"`
+	Note     string `json:"note"`
+}
+
+func (a *API) reviewDraft(c *gin.Context) {
+	id, err := parseID(c)
+	if err != nil {
+		response.Error(c, response.BadRequest("稿件 ID 不正确", err))
+		return
+	}
+	var input reviewDraftInput
+	if bindErr := request.BindJSON(c, &input); bindErr != nil {
+		response.Error(c, bindErr)
+		return
+	}
+	user, _ := a.currentUser(c)
+	draft, err := a.editorial.Review(c.Request.Context(), id, user.ID, input.Approved, input.Note)
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	a.decorateDraft(&draft)
+	response.OK(c, draft)
+}
+
+func (a *API) publishDraft(c *gin.Context) {
+	id, err := parseID(c)
+	if err != nil {
+		response.Error(c, response.BadRequest("稿件 ID 不正确", err))
+		return
+	}
+	user, _ := a.currentUser(c)
+	job, err := a.editorial.Publish(c.Request.Context(), id, user.ID)
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	response.JSON(c, http.StatusAccepted, job)
+}
+
+func (a *API) wechatStatus(c *gin.Context) {
+	response.OK(c, gin.H{
+		"enabled":       a.editorial.PublishingEnabled(),
+		"appConfigured": strings.TrimSpace(a.cfg.WeChat.AppID) != "" && strings.TrimSpace(a.cfg.WeChat.AppSecret) != "",
+	})
+}
+
+func (a *API) listPublishJobs(c *gin.Context) {
+	page, size := pagination(c)
+	data, err := a.editorial.PublishJobs(c.Request.Context(), c.Query("status"), page, size)
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	response.OK(c, data)
+}
+
+func (a *API) getPublishJob(c *gin.Context) {
+	id, err := parseID(c)
+	if err != nil {
+		response.Error(c, response.BadRequest("发布任务 ID 不正确", err))
+		return
+	}
+	job, err := a.editorial.PublishJob(c.Request.Context(), id)
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	response.OK(c, job)
+}
+
+func (a *API) retryPublishJob(c *gin.Context) {
+	id, err := parseID(c)
+	if err != nil {
+		response.Error(c, response.BadRequest("发布任务 ID 不正确", err))
+		return
+	}
+	user, _ := a.currentUser(c)
+	job, err := a.editorial.RetryPublish(c.Request.Context(), id, user.ID)
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	response.JSON(c, http.StatusAccepted, job)
+}
+
+func (a *API) decorateDraft(draft *editorial.Draft) {
+	if draft.SourceArticle != nil {
+		for index := range draft.SourceArticle.Assets {
+			asset := &draft.SourceArticle.Assets[index]
+			if asset.DownloadStatus == "completed" && asset.ObjectKey != "" {
+				asset.MediaURL = a.content.SignMedia("assets", asset.ID)
+			}
+		}
+	}
+	draft.PreviewHTML = editorial.PreviewHTML(draft.ContentHTML, func(id uint64) string {
+		return a.content.SignMedia("assets", id)
+	})
+}
+
 func (a *API) media(kind string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseID(c)
@@ -498,6 +797,7 @@ func pagination(c *gin.Context) (int, int) {
 func parseID(c *gin.Context) (uint64, error) { return strconv.ParseUint(c.Param("id"), 10, 64) }
 func (a *API) writeError(c *gin.Context, err error) {
 	var collectErr *collectors.Error
+	var preflightErr *editorial.PreflightError
 	switch {
 	case errors.Is(err, workspace.ErrNotFound):
 		response.Error(c, response.NotFound())
@@ -505,6 +805,24 @@ func (a *API) writeError(c *gin.Context, err error) {
 		response.Error(c, response.Conflict("用户名已存在", err))
 	case errors.Is(err, workspace.ErrJobNotRetryable):
 		response.Error(c, response.Conflict("任务当前不能重试", err))
+	case errors.Is(err, editorial.ErrDraftNotEditable):
+		response.Error(c, response.Conflict("稿件当前不能编辑", err))
+	case errors.Is(err, editorial.ErrDraftVersionConflict):
+		response.Error(c, response.Conflict("稿件已被其他人更新，请刷新后重试", err))
+	case errors.Is(err, editorial.ErrDraftStateConflict):
+		response.Error(c, response.Conflict("稿件状态不允许当前操作", err))
+	case errors.Is(err, editorial.ErrPublishNotRetryable):
+		response.Error(c, response.Conflict("发布任务当前不能重试", err))
+	case errors.Is(err, editorial.ErrPublisherDisabled):
+		response.Error(c, response.DependencyUnavailable(err))
+	case errors.Is(err, editorial.ErrCoverRequired):
+		response.Error(c, response.BadRequest("发布到微信公众号前必须选择封面", err))
+	case errors.As(err, &preflightErr):
+		message := "微信公众号发布前检查未通过"
+		if len(preflightErr.Result.Issues) > 0 {
+			message += "：" + preflightErr.Result.Issues[0].Message
+		}
+		response.Error(c, response.BadRequest(message, err))
 	case errors.As(err, &collectErr):
 		response.Error(c, response.BadRequest(collectErr.Message, err))
 	default:

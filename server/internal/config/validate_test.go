@@ -119,6 +119,31 @@ func TestProductionRequiresSecureRefreshCookie(t *testing.T) {
 	}
 }
 
+func TestWeChatEnabledRequiresCredentials(t *testing.T) {
+	cfg := validConfig()
+	cfg.WeChat.Enabled = true
+	cfg.WeChat.AppID = ""
+	cfg.WeChat.AppSecret = ""
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "wechat.app_id") {
+		t.Fatalf("Validate() error = %v, want WeChat credentials error", err)
+	}
+}
+
+func TestProductionWeChatAPIRequiresHTTPS(t *testing.T) {
+	cfg := validConfig()
+	cfg.App.Env = "production"
+	cfg.Auth.CookieSecure = true
+	cfg.Storage = StorageConfig{Driver: "qiniu", Qiniu: QiniuStorageConfig{AccessKey: "ak", SecretKey: "sk", Bucket: "bucket", Domain: "https://media.example.com"}}
+	cfg.WeChat.APIBase = "http://api.weixin.qq.com"
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "wechat.api_base") {
+		t.Fatalf("Validate() error = %v, want HTTPS error", err)
+	}
+}
+
 func validConfig() Config {
 	return Config{
 		App: AppConfig{Name: "weavepress", Env: "local"},
@@ -179,6 +204,7 @@ func validConfig() Config {
 			MaxImages: 100, RequestTimeout: 30 * time.Second, ImageTimeout: 30 * time.Second,
 			ImageConcurrency: 4, MaxRedirects: 5, UserAgent: "WeavePress-Test",
 		},
+		WeChat: WeChatConfig{APIBase: "https://api.weixin.qq.com", RequestTimeout: 30 * time.Second},
 		Observability: ObservabilityConfig{
 			Metrics: MetricsConfig{
 				Enabled:   true,

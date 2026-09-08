@@ -146,7 +146,26 @@ func (s *Qiniu) Put(ctx context.Context, key string, data []byte, mediaType stri
 	return nil
 }
 
-func (s *Qiniu) Open(context.Context, string) (io.ReadCloser, error) { return nil, ErrLocalOnly }
+func (s *Qiniu) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	signedURL, err := s.PrivateURL(key, 5*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, signedURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := s.client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		defer response.Body.Close()
+		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return nil, fmt.Errorf("qiniu download failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(message)))
+	}
+	return response.Body, nil
+}
 
 func (s *Qiniu) PrivateURL(key string, ttl time.Duration) (string, error) {
 	base, err := url.JoinPath(s.domain, key)

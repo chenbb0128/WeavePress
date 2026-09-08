@@ -88,6 +88,46 @@ type CollectionJobEvent struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type Draft struct {
+	ID              uint64        `json:"id"`
+	SourceArticleID uint64        `json:"source_article_id"`
+	Title           string        `json:"title"`
+	Author          string        `json:"author"`
+	Digest          string        `json:"digest"`
+	ContentHtml     string        `json:"content_html"`
+	CoverAssetID    sql.NullInt64 `json:"cover_asset_id"`
+	Status          string        `json:"status"`
+	CurrentVersion  uint32        `json:"current_version"`
+	CreatedBy       uint64        `json:"created_by"`
+	UpdatedBy       uint64        `json:"updated_by"`
+	CreatedAt       time.Time     `json:"created_at"`
+	UpdatedAt       time.Time     `json:"updated_at"`
+}
+
+type DraftEvent struct {
+	ID         uint64    `json:"id"`
+	DraftID    uint64    `json:"draft_id"`
+	ActorID    uint64    `json:"actor_id"`
+	FromStatus string    `json:"from_status"`
+	ToStatus   string    `json:"to_status"`
+	Note       string    `json:"note"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type DraftVersion struct {
+	ID           uint64        `json:"id"`
+	DraftID      uint64        `json:"draft_id"`
+	Version      uint32        `json:"version"`
+	Title        string        `json:"title"`
+	Author       string        `json:"author"`
+	Digest       string        `json:"digest"`
+	ContentHtml  string        `json:"content_html"`
+	CoverAssetID sql.NullInt64 `json:"cover_asset_id"`
+	ChangeNote   string        `json:"change_note"`
+	CreatedBy    uint64        `json:"created_by"`
+	CreatedAt    time.Time     `json:"created_at"`
+}
+
 type User struct {
 	ID           uint64    `json:"id"`
 	Username     string    `json:"username"`
@@ -98,4 +138,28 @@ type User struct {
 	Status       string    `json:"status"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type WechatPublishJob struct {
+	ID            uint64       `json:"id"`
+	DraftID       uint64       `json:"draft_id"`
+	RequestedBy   uint64       `json:"requested_by"`
+	Status        string       `json:"status"`
+	Attempts      uint32       `json:"attempts"`
+	ManualRetries uint32       `json:"manual_retries"`
+	RemoteMediaID string       `json:"remote_media_id"`
+	ErrorCode     string       `json:"error_code"`
+	ErrorMessage  string       `json:"error_message"`
+	StartedAt     sql.NullTime `json:"started_at"`
+	FinishedAt    sql.NullTime `json:"finished_at"`
+	CreatedAt     time.Time    `json:"created_at"`
+	UpdatedAt     time.Time    `json:"updated_at"`
+}
+
+type WechatPublishJobEvent struct {
+	ID        uint64    `json:"id"`
+	JobID     uint64    `json:"job_id"`
+	Status    string    `json:"status"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
 }

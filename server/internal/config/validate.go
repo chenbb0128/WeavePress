@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -76,6 +77,9 @@ func (c Config) Validate() error {
 	if err := c.Collector.Validate(); err != nil {
 		return err
 	}
+	if err := c.WeChat.Validate(env); err != nil {
+		return err
+	}
 	if err := c.Observability.Validate(); err != nil {
 		return err
 	}
@@ -86,6 +90,23 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config log.level must be one of debug, info, warn, error")
 	}
 
+	return nil
+}
+
+func (c WeChatConfig) Validate(env string) error {
+	if err := positiveDuration("wechat.request_timeout", c.RequestTimeout); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(strings.TrimSpace(c.APIBase))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("config wechat.api_base must be an absolute HTTP or HTTPS URL")
+	}
+	if (env == "prod" || env == "production") && parsed.Scheme != "https" {
+		return fmt.Errorf("config wechat.api_base must use HTTPS in production")
+	}
+	if c.Enabled && (strings.TrimSpace(c.AppID) == "" || strings.TrimSpace(c.AppSecret) == "") {
+		return fmt.Errorf("config wechat.app_id and wechat.app_secret are required when publishing is enabled")
+	}
 	return nil
 }
 

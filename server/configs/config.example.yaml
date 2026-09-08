@@ -61,6 +61,7 @@ worker:
   shutdown_timeout: 10s
   queues:
     collection: 2
+    publishing: 1
     default: 1
 
 auth:
@@ -91,6 +92,13 @@ collector:
   image_concurrency: 4
   max_redirects: 5
   user_agent: "Mozilla/5.0 (compatible; WeavePress/1.0)"
+
+wechat:
+  enabled: false
+  app_id: ""
+  app_secret: ""
+  api_base: "https://api.weixin.qq.com"
+  request_timeout: 30s
 
 observability:
   metrics:

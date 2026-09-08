@@ -81,6 +81,11 @@ func Load(path string) (Config, error) {
 		"collector.image_concurrency",
 		"collector.max_redirects",
 		"collector.user_agent",
+		"wechat.enabled",
+		"wechat.app_id",
+		"wechat.app_secret",
+		"wechat.api_base",
+		"wechat.request_timeout",
 		"observability.metrics.enabled",
 		"observability.metrics.path",
 		"observability.metrics.namespace",
@@ -161,7 +166,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("worker.enabled", false)
 	v.SetDefault("worker.concurrency", 4)
 	v.SetDefault("worker.shutdown_timeout", 10*time.Second)
-	v.SetDefault("worker.queues", map[string]int{"collection": 2, "default": 1})
+	v.SetDefault("worker.queues", map[string]int{"collection": 2, "publishing": 1, "default": 1})
 	v.SetDefault("auth.jwt_secret", "local-development-jwt-secret-change-me")
 	v.SetDefault("auth.access_ttl", 15*time.Minute)
 	v.SetDefault("auth.refresh_ttl", 30*24*time.Hour)
@@ -184,6 +189,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("collector.image_concurrency", 4)
 	v.SetDefault("collector.max_redirects", 5)
 	v.SetDefault("collector.user_agent", "Mozilla/5.0 (compatible; WeavePress/1.0; +https://github.com/chenbb0128/weavepress)")
+	v.SetDefault("wechat.enabled", false)
+	v.SetDefault("wechat.app_id", "")
+	v.SetDefault("wechat.app_secret", "")
+	v.SetDefault("wechat.api_base", "https://api.weixin.qq.com")
+	v.SetDefault("wechat.request_timeout", 30*time.Second)
 	v.SetDefault("observability.metrics.enabled", true)
 	v.SetDefault("observability.metrics.path", "/metrics")
 	v.SetDefault("observability.metrics.namespace", "weavepress")

@@ -8,11 +8,13 @@ import (
 
 	"github.com/chenbb0128/weavepress/server/internal/config"
 	"github.com/chenbb0128/weavepress/server/internal/modules/content"
+	"github.com/chenbb0128/weavepress/server/internal/modules/editorial"
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace/mysqlstore"
 	"github.com/chenbb0128/weavepress/server/internal/platform/database"
 	"github.com/chenbb0128/weavepress/server/internal/platform/objectstore"
 	"github.com/chenbb0128/weavepress/server/internal/platform/queue"
 	redisclient "github.com/chenbb0128/weavepress/server/internal/platform/redis"
+	"github.com/chenbb0128/weavepress/server/internal/platform/wechat"
 	"github.com/chenbb0128/weavepress/server/internal/workers"
 )
 
@@ -61,10 +63,13 @@ func (w *Worker) Run(ctx context.Context) (err error) {
 	}
 	queueClient := queue.NewClient(w.cfg.Redis)
 	defer queueClient.Close()
-	contentService := content.New(mysqlstore.New(db.SQL), queueClient, objects, w.cfg)
+	store := mysqlstore.New(db.SQL)
+	contentService := content.New(store, queueClient, objects, w.cfg)
+	wechatPublisher := wechat.New(w.cfg.WeChat, objects)
+	editorialService := editorial.New(store, store, queueClient, wechatPublisher, w.cfg.WeChat.Enabled)
 
 	server := queue.NewServer(w.cfg.Redis, w.cfg.Worker, w.logger)
-	mux := workers.NewMux(contentService)
+	mux := workers.NewMux(contentService, editorialService)
 
 	w.logger.Info(
 		"worker starting",

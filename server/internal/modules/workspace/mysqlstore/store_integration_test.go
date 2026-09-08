@@ -14,6 +14,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 
+	"github.com/chenbb0128/weavepress/server/internal/modules/editorial"
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace"
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace/mysqlstore"
 	"github.com/chenbb0128/weavepress/server/internal/platform/database"
@@ -174,5 +175,128 @@ func TestMySQLIntegrationCollectionStateAndIdempotency(t *testing.T) {
 			duplicateOf = *duplicate.DuplicateOfID
 		}
 		t.Fatalf("content duplicate link = %d, want %d, err=%v", duplicateOf, articleID, err)
+	}
+}
+
+func TestMySQLIntegrationEditorialWorkflow(t *testing.T) {
+	rawDSN := os.Getenv("WEAVEPRESS_TEST_MYSQL_DSN")
+	if rawDSN == "" {
+		t.Skip("WEAVEPRESS_TEST_MYSQL_DSN is not set")
+	}
+	dsn, err := database.NormalizeMySQLDSN(rawDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	store := mysqlstore.New(db)
+	suffix := time.Now().UnixNano()
+	user, err := store.CreateUser(ctx, fmt.Sprintf("editorial_%d", suffix), "unused", "稿件集成测试", workspace.RoleAdmin, "active")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM drafts WHERE created_by = ?`, user.ID)
+		_, _ = db.Exec(`UPDATE articles SET duplicate_of_id = NULL WHERE created_by = ?`, user.ID)
+		_, _ = db.Exec(`DELETE FROM articles WHERE created_by = ?`, user.ID)
+		_, _ = db.Exec(`DELETE FROM users WHERE id = ?`, user.ID)
+	})
+
+	canonical := fmt.Sprintf("https://example.com/editorial/%d", suffix)
+	article, job, _, err := store.CreateArticleJob(ctx, canonical, canonical, sha256.Sum256([]byte(canonical)), "web", user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stage := range []string{"fetching", "parsing", "storing_assets"} {
+		if err := store.SetJobStage(ctx, job.ID, stage, stage); err != nil {
+			t.Fatal(err)
+		}
+	}
+	imageURL := canonical + "/cover.jpg"
+	imageHash := sha256.Sum256([]byte("cover"))
+	collected := workspace.CollectedArticle{
+		Title: "稿件集成测试", Author: "作者", PlainText: "正文", CleanHTML: "<p>正文</p>",
+		Blocks:   []workspace.Block{{Type: "paragraph", Text: "正文"}, {Type: "image", SourceURL: imageURL, Alt: "封面"}},
+		Metadata: map[string]any{"test": true},
+	}
+	assets := []workspace.StoredAsset{{SourceURL: imageURL, ObjectKey: "articles/test-cover.jpg", MediaType: "image/jpeg", ByteSize: 5, Position: 1, IsCover: true, DownloadStatus: "completed", SHA256: imageHash}}
+	if err := store.CompleteArticle(ctx, article.ID, job.ID, collected, "raw/editorial.html.gz", sha256.Sum256([]byte(collected.PlainText+fmt.Sprint(suffix))), assets, nil); err != nil {
+		t.Fatal(err)
+	}
+	article, err = store.GetArticle(ctx, article.ID)
+	if err != nil || len(article.Assets) != 1 {
+		t.Fatalf("article assets = %d, err=%v", len(article.Assets), err)
+	}
+	coverID := article.Assets[0].ID
+	contentHTML := fmt.Sprintf(`<p>正文</p><img data-weavepress-asset-id="%d" alt="封面">`, coverID)
+	draft, err := store.CreateDraft(ctx, article.ID, user.ID, article.Title, article.Author, "摘要", contentHTML, &coverID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.UpdateDraft(ctx, draft.ID, user.ID, editorial.UpdateInput{Title: draft.Title + "（改）", Author: draft.Author, Digest: draft.Digest, ContentHTML: contentHTML, CoverAssetID: &coverID, ExpectedVersion: 1, ChangeNote: "调整标题"})
+	if err != nil || updated.CurrentVersion != 2 {
+		t.Fatalf("updated version = %d, err=%v", updated.CurrentVersion, err)
+	}
+	restored, err := store.RestoreDraftVersion(ctx, draft.ID, user.ID, 1, updated.CurrentVersion)
+	if err != nil || restored.CurrentVersion != 3 || restored.Title != draft.Title {
+		t.Fatalf("restored draft = %#v, err=%v", restored, err)
+	}
+	restoredVersion, err := store.GetDraftVersion(ctx, draft.ID, restored.CurrentVersion)
+	if err != nil || restoredVersion.ChangeNote != "恢复自 v1" {
+		t.Fatalf("restored version = %#v, err=%v", restoredVersion, err)
+	}
+	if _, err := store.RestoreDraftVersion(ctx, draft.ID, user.ID, 2, updated.CurrentVersion); !errors.Is(err, editorial.ErrDraftVersionConflict) {
+		t.Fatalf("stale restore error = %v", err)
+	}
+	if _, err := store.UpdateDraft(ctx, draft.ID, user.ID, editorial.UpdateInput{Title: "过期保存", ContentHTML: contentHTML, ExpectedVersion: 1}); !errors.Is(err, editorial.ErrDraftVersionConflict) {
+		t.Fatalf("stale update error = %v", err)
+	}
+	if _, err = store.SetDraftStatus(ctx, draft.ID, user.ID, editorial.StatusEditing, editorial.StatusInReview, "提交审核"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.SetDraftStatus(ctx, draft.ID, user.ID, editorial.StatusInReview, editorial.StatusApproved, "审核通过"); err != nil {
+		t.Fatal(err)
+	}
+	publishJob, err := store.CreatePublishJob(ctx, draft.ID, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreatePublishJob(ctx, draft.ID, user.ID); !errors.Is(err, editorial.ErrDraftStateConflict) {
+		t.Fatalf("parallel publish error = %v", err)
+	}
+	if err := store.SetPublishJobPublishing(ctx, publishJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPublishJobFailure(ctx, publishJob.ID, "WECHAT_-1", "系统繁忙", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RetryPublishJob(ctx, publishJob.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RetryPublishJob(ctx, publishJob.ID, user.ID); !errors.Is(err, editorial.ErrPublishNotRetryable) {
+		t.Fatalf("parallel retry error = %v", err)
+	}
+	if err := store.SetPublishJobPublishing(ctx, publishJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompletePublishJob(ctx, publishJob.ID, "remote-media-id"); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := store.GetPublishJob(ctx, publishJob.ID, true)
+	if err != nil || completed.Status != editorial.PublishCompleted || completed.RemoteMediaID != "remote-media-id" || len(completed.Events) < 5 {
+		t.Fatalf("completed publish job = %#v, err=%v", completed, err)
+	}
+	finalDraft, err := store.GetDraft(ctx, draft.ID, true)
+	if err != nil || finalDraft.Status != editorial.StatusPublished || len(finalDraft.Events) < 6 {
+		t.Fatalf("final draft = %#v, err=%v", finalDraft, err)
 	}
 }

@@ -1,6 +1,9 @@
 package config
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type Config struct {
 	App           AppConfig           `mapstructure:"app"`
@@ -11,6 +14,7 @@ type Config struct {
 	Auth          AuthConfig          `mapstructure:"auth"`
 	Storage       StorageConfig       `mapstructure:"storage"`
 	Collector     CollectorConfig     `mapstructure:"collector"`
+	WeChat        WeChatConfig        `mapstructure:"wechat"`
 	Observability ObservabilityConfig `mapstructure:"observability"`
 	Log           LogConfig           `mapstructure:"log"`
 }
@@ -108,6 +112,14 @@ type CollectorConfig struct {
 	UserAgent        string        `mapstructure:"user_agent"`
 }
 
+type WeChatConfig struct {
+	Enabled        bool          `mapstructure:"enabled"`
+	AppID          string        `mapstructure:"app_id"`
+	AppSecret      string        `mapstructure:"app_secret"`
+	APIBase        string        `mapstructure:"api_base"`
+	RequestTimeout time.Duration `mapstructure:"request_timeout"`
+}
+
 type ObservabilityConfig struct {
 	Metrics MetricsConfig `mapstructure:"metrics"`
 	Tracing TracingConfig `mapstructure:"tracing"`
@@ -165,6 +177,9 @@ func (c Config) SanitizedSummary() map[string]any {
 		"storage_qiniu_bucket":        c.Storage.Qiniu.Bucket,
 		"storage_qiniu_access_key":    redactSecret(c.Storage.Qiniu.AccessKey),
 		"storage_qiniu_secret_key":    redactSecret(c.Storage.Qiniu.SecretKey),
+		"wechat_enabled":              c.WeChat.Enabled,
+		"wechat_app_id_configured":    strings.TrimSpace(c.WeChat.AppID) != "",
+		"wechat_app_secret":           redactSecret(c.WeChat.AppSecret),
 		"auth_jwt_secret":             redactSecret(c.Auth.JWTSecret),
 		"auth_media_signing_key":      redactSecret(c.Auth.MediaSigningKey),
 		"metrics_enabled":             c.Observability.Metrics.Enabled,

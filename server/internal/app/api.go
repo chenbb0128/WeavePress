@@ -11,6 +11,7 @@ import (
 	"github.com/chenbb0128/weavepress/server/internal/config"
 	"github.com/chenbb0128/weavepress/server/internal/modules/authn"
 	"github.com/chenbb0128/weavepress/server/internal/modules/content"
+	"github.com/chenbb0128/weavepress/server/internal/modules/editorial"
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace/mysqlstore"
 	"github.com/chenbb0128/weavepress/server/internal/platform/database"
 	platformmetrics "github.com/chenbb0128/weavepress/server/internal/platform/metrics"
@@ -101,7 +102,8 @@ func NewAPI(cfg config.Config, logger *slog.Logger) (*API, error) {
 	queueClient := queue.NewClient(cfg.Redis)
 	authService := authn.New(store, redis, cfg.Auth)
 	contentService := content.New(store, queueClient, objects, cfg)
-	businessAPI := weaveapi.New(store, authService, contentService, cfg)
+	editorialService := editorial.New(store, store, queueClient, nil, cfg.WeChat.Enabled)
+	businessAPI := weaveapi.New(store, authService, contentService, editorialService, cfg)
 
 	router, err := httpapi.NewRouter(httpapi.RouterOptions{
 		App:             cfg.App,

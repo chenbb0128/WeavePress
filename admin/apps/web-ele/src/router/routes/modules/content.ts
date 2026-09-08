@@ -47,6 +47,39 @@ const routes: RouteRecordRaw[] = [
       title: $t('page.articles.detailTitle'),
     },
   },
+  {
+    name: 'Drafts',
+    path: '/drafts',
+    component: () => import('#/views/drafts/index.vue'),
+    meta: {
+      authority: ['admin', 'editor'],
+      icon: 'lucide:file-pen-line',
+      order: 4,
+      title: $t('page.drafts.title'),
+    },
+  },
+  {
+    name: 'DraftDetail',
+    path: '/drafts/:id',
+    component: () => import('#/views/drafts/detail.vue'),
+    meta: {
+      activePath: '/drafts',
+      authority: ['admin', 'editor'],
+      hideInMenu: true,
+      title: $t('page.drafts.detailTitle'),
+    },
+  },
+  {
+    name: 'WeChatPublishJobs',
+    path: '/wechat/publish-jobs',
+    component: () => import('#/views/wechat/publish-jobs.vue'),
+    meta: {
+      authority: ['admin', 'editor'],
+      icon: 'lucide:send',
+      order: 5,
+      title: $t('page.wechat.publishJobsTitle'),
+    },
+  },
 ];
 
 export default routes;

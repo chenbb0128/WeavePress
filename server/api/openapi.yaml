@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: WeavePress API
-  version: 0.1.0
-  description: 内部内容采集、阅读和用户管理 API。
+  version: 0.2.0
+  description: 内部内容采集、微信稿件审核、公众号草稿箱发布和用户管理 API。
 servers:
   - url: http://localhost:8080
 paths:
@@ -121,6 +121,105 @@ paths:
       security: [ { bearerAuth: [] } ]
       parameters: [ { $ref: "#/components/parameters/ID" } ]
       responses: { "200": { description: OK } }
+  /api/drafts:
+    get:
+      summary: 微信稿件列表
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/Page" }, { $ref: "#/components/parameters/PageSize" }, { name: keyword, in: query, schema: { type: string } }, { name: status, in: query, schema: { $ref: "#/components/schemas/DraftStatus" } } ]
+      responses: { "200": { description: OK } }
+    post:
+      summary: 从采集文章创建微信稿件
+      security: [ { bearerAuth: [] } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [articleId], properties: { articleId: { type: integer, format: int64, minimum: 1 } } } } }
+      responses: { "201": { description: Created }, "409": { $ref: "#/components/responses/Error" } }
+  /api/drafts/{id}:
+    parameters: [ { $ref: "#/components/parameters/ID" } ]
+    get:
+      summary: 稿件详情、来源素材、预览和流程审计
+      security: [ { bearerAuth: [] } ]
+      responses: { "200": { description: OK }, "404": { $ref: "#/components/responses/Error" } }
+    put:
+      summary: 使用乐观锁保存稿件并创建新版本
+      security: [ { bearerAuth: [] } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/UpdateDraftInput" } } }
+      responses: { "200": { description: OK }, "409": { $ref: "#/components/responses/Error" } }
+  /api/drafts/{id}/versions:
+    get:
+      summary: 稿件版本列表
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses: { "200": { description: OK } }
+  /api/drafts/{id}/versions/{version}/restore:
+    post:
+      summary: 将历史版本复制为新的当前版本
+      description: 仅编辑中的稿件可恢复；旧版本保持不可变，并使用 expectedVersion 乐观锁防止覆盖他人修改。
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/ID" }
+        - { name: version, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/RestoreDraftVersionInput" } } }
+      responses: { "200": { description: 已生成新的当前版本 }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" } }
+  /api/drafts/{id}/preflight:
+    get:
+      summary: 检查稿件是否符合微信公众号草稿规则
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "200":
+          description: 检查结果
+          content: { application/json: { schema: { type: object, required: [code, message, data], properties: { code: { type: integer }, message: { type: string }, data: { $ref: "#/components/schemas/PreflightResult" } } } } }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/drafts/{id}/submit-review:
+    post:
+      summary: 提交稿件审核
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses: { "200": { description: OK }, "409": { $ref: "#/components/responses/Error" } }
+  /api/drafts/{id}/review:
+    post:
+      summary: 管理员审核通过或退回稿件
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [approved], properties: { approved: { type: boolean }, note: { type: string, maxLength: 200 } } } } }
+      responses: { "200": { description: OK }, "403": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" } }
+  /api/drafts/{id}/publish:
+    post:
+      summary: 管理员创建微信公众号草稿箱发布任务
+      description: 只写入微信公众号草稿箱，不自动群发。
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses: { "202": { description: 已进入队列 }, "403": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
+  /api/wechat/status:
+    get:
+      summary: 微信公众号发布配置状态
+      security: [ { bearerAuth: [] } ]
+      responses: { "200": { description: OK } }
+  /api/wechat-publish-jobs:
+    get:
+      summary: 微信草稿箱发布任务列表
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/Page" }, { $ref: "#/components/parameters/PageSize" }, { name: status, in: query, schema: { $ref: "#/components/schemas/PublishJobStatus" } } ]
+      responses: { "200": { description: OK } }
+  /api/wechat-publish-jobs/{id}:
+    get:
+      summary: 微信发布任务详情和事件
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses: { "200": { description: OK }, "404": { $ref: "#/components/responses/Error" } }
+  /api/wechat-publish-jobs/{id}/retry:
+    post:
+      summary: 管理员重试失败的微信发布任务
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses: { "202": { description: 已重新排队 }, "403": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" } }
   /media/assets/{id}:
     get:
       summary: 签名素材访问
@@ -153,6 +252,42 @@ components:
       type: object
       required: [username, password, realName, role]
       properties: { username: { type: string }, password: { type: string, minLength: 8 }, realName: { type: string }, role: { type: string, enum: [admin, editor] } }
+    DraftStatus:
+      type: string
+      enum: [editing, in_review, approved, publishing, published, publish_failed]
+    PublishJobStatus:
+      type: string
+      enum: [queued, publishing, completed, failed]
+    UpdateDraftInput:
+      type: object
+      required: [title, contentHtml, expectedVersion]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 255 }
+        author: { type: string, maxLength: 64 }
+        digest: { type: string, maxLength: 255 }
+        contentHtml: { type: string, minLength: 1 }
+        coverAssetId: { type: integer, format: int64, minimum: 1, nullable: true }
+        expectedVersion: { type: integer, minimum: 1 }
+        changeNote: { type: string, maxLength: 255 }
+    RestoreDraftVersionInput:
+      type: object
+      required: [expectedVersion]
+      properties:
+        expectedVersion: { type: integer, minimum: 1 }
+    PreflightResult:
+      type: object
+      required: [valid, issues]
+      properties:
+        valid: { type: boolean }
+        issues:
+          type: array
+          items:
+            type: object
+            required: [code, message]
+            properties:
+              code: { type: string, example: WECHAT_TITLE_TOO_LONG }
+              message: { type: string }
+              field: { type: string }
     TokenEnvelope:
       type: object
       required: [code, message, data]

@@ -22,6 +22,10 @@ export default defineConfig(async () => {
             target: 'http://localhost:8080',
             ws: true,
           },
+          '/media': {
+            changeOrigin: true,
+            target: 'http://localhost:8080',
+          },
         },
       },
     },
