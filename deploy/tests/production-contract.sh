@@ -387,6 +387,7 @@ assert_production_script_contract() {
   require_script_literal "$initialize" 'set -Eeuo pipefail'
   require_script_literal "$initialize" 'umask 077'
   require_script_literal "$initialize" 'set +x'
+  require_script_literal "$initialize" '[[ "${EUID:-$(id -u)}" -eq 0 ]] || die '\''must run as root'\'''
   require_script_literal "$initialize" 'DB_NAME="weavepress"'
   require_script_literal "$initialize" 'APP_DIR="${WEAVEPRESS_APP_DIR:-/opt/apps/weavepress}"'
   require_script_literal "$initialize" 'docker exec redis sh -c'
@@ -415,6 +416,7 @@ assert_production_script_contract() {
   assert_before "$initialize" 'config --quiet' 'CREATE DATABASE'
 
   require_script_literal "$deploy" 'set +x'
+  require_script_literal "$deploy" '[[ "${EUID:-$(id -u)}" -eq 0 ]] || die '\''must run as root'\'''
   require_script_literal "$deploy" 'flock -w 1800'
   require_script_literal "$deploy" 'WEAVEPRESS_LOCK_FILE:-/var/lock/weavepress-deploy.lock'
   require_script_literal "$deploy" '^[0-9a-f]{40}$'
@@ -440,6 +442,7 @@ assert_production_script_contract() {
 
   require_script_literal "$installer" '[[ -t 0 && -t 1 ]]'
   require_script_literal "$installer" 'set +x'
+  require_script_literal "$installer" '[[ "${EUID:-$(id -u)}" -eq 0 ]] || die '\''must run as root'\'''
   require_script_literal "$installer" 'read -rsp'
   require_script_literal "$installer" "LC_ALL=C grep -q '[[:cntrl:]]' < <(printf '%s'"
   require_script_literal "$installer" 'mktemp'
@@ -451,6 +454,10 @@ assert_production_script_contract() {
   require_script_literal "$installer" 'if [[ "${BASH_SOURCE[0]}" == "$0" ]]'
   if grep -Eq '^[[:space:]]*(APP_SHA=.*[[:space:]])?docker compose .*(up|run|restart|start)' "$installer"; then
     printf 'External secrets installer must not start or restart services.\n' >&2
+    return 1
+  fi
+  if grep -ERiq -- 'WEAVEPRESS_.*(ALLOW_UNPRIVILEGED|BYPASS_ROOT|TEST_ROOT)|SKIP_ROOT_CHECK' "$production_script_dir"; then
+    printf 'Production scripts must not contain a test-only root bypass.\n' >&2
     return 1
   fi
 }
@@ -465,6 +472,24 @@ expect_entrypoint_rejection() {
   fi
 }
 
+run_production_scripts_behavior() {
+  local docker_repo_root="$repo_root"
+
+  if [[ "$(id -u)" -eq 0 ]]; then
+    bash "$production_scripts_behavior"
+    return
+  fi
+
+  case "$(uname -s)" in
+    CYGWIN*|MINGW*|MSYS*) docker_repo_root="$(cygpath -w "$repo_root")" ;;
+  esac
+  MSYS_NO_PATHCONV=1 docker run --rm --user 0:0 \
+    -v "$docker_repo_root:/repo:ro" \
+    -w /repo \
+    ubuntu:22.04 \
+    bash deploy/tests/production-scripts-contract.sh
+}
+
 run_production_script_self_test() {
   assert_control_character_matcher_semantics
   assert_production_script_contract
@@ -473,7 +498,7 @@ run_production_script_self_test() {
   expect_entrypoint_rejection '0000000000000000000000000000000000000000 --component=server extra'
   expect_entrypoint_rejection '0000000000000000000000000000000000000000 --component=server;id'
   expect_entrypoint_rejection $'0000000000000000000000000000000000000000 --component=server\nextra'
-  bash "$production_scripts_behavior"
+  run_production_scripts_behavior
   printf 'Production script safety self-tests passed.\n'
 }
 
