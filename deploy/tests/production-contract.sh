@@ -322,6 +322,29 @@ assert_before() {
   fi
 }
 
+assert_control_character_matcher_semantics() {
+  local i name value
+  local samples=(
+    "TAB" $'credential\tvalue'
+    "ESC" $'credential\033value'
+    "DEL" $'credential\177value'
+  )
+
+  for ((i = 0; i < ${#samples[@]}; i += 2)); do
+    name="${samples[i]}"
+    value="${samples[i + 1]}"
+    if [[ "$value" == *$'\r'* || "$value" == *$'\n'* ]]; then
+      printf 'Control-character fixture unexpectedly contains CR/LF: %s\n' "$name" >&2
+      return 1
+    fi
+    printf 'Legacy CR/LF-only guard accepts control-character fixture: %s\n' "$name"
+    if ! printf '%s' "$value" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+      printf 'POSIX control-character matcher missed fixture: %s\n' "$name" >&2
+      return 1
+    fi
+  done
+}
+
 assert_production_script_contract() {
   local script script_file
   local initialize="$production_script_dir/initialize-weavepress"
@@ -371,6 +394,7 @@ assert_production_script_contract() {
   require_script_literal "$deploy" '^[0-9a-f]{40}$'
   require_script_literal "$deploy" 'DOCKER_CONFIG'
   require_script_literal "$deploy" '--password-stdin'
+  require_script_literal "$deploy" "LC_ALL=C grep -q '[[:cntrl:]]' < <(printf '%s'"
   require_script_literal "$deploy" '--profile migrate run --rm migrate'
   require_script_literal "$deploy" '--no-deps api worker'
   require_script_literal "$deploy" '--no-deps gateway'
@@ -387,6 +411,7 @@ assert_production_script_contract() {
 
   require_script_literal "$installer" '[[ -t 0 && -t 1 ]]'
   require_script_literal "$installer" 'read -rsp'
+  require_script_literal "$installer" "LC_ALL=C grep -q '[[:cntrl:]]' < <(printf '%s'"
   require_script_literal "$installer" 'mktemp'
   require_script_literal "$installer" 'backup/env'
   require_script_literal "$installer" 'docker compose'
@@ -408,6 +433,7 @@ expect_entrypoint_rejection() {
 }
 
 run_production_script_self_test() {
+  assert_control_character_matcher_semantics
   assert_production_script_contract
   expect_entrypoint_rejection 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --component=server'
   expect_entrypoint_rejection 'deploy-weavepress 0000000000000000000000000000000000000000 --component=server'

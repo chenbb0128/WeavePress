@@ -36,7 +36,11 @@ if IFS= read -r extra_line || [[ -n "$extra_line" ]]; then
   die 'expected exactly two stdin lines'
 fi
 [[ -n "$acr_username" && -n "$acr_password" ]] || die 'ACR credentials must not be empty'
-[[ "$acr_username" != *$'\r'* && "$acr_password" != *$'\r'* ]] || die 'ACR credentials contain control characters'
+for credential in "$acr_username" "$acr_password"; do
+  if LC_ALL=C grep -q '[[:cntrl:]]' < <(printf '%s' "$credential"); then
+    die 'ACR credentials contain control characters'
+  fi
+done
 
 api_image="$REPOSITORY/weavepress-api:$app_sha"
 worker_image="$REPOSITORY/weavepress-worker:$app_sha"
