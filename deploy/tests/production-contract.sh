@@ -6,6 +6,8 @@ gateway="$repo_root/deploy/nginx.conf"
 dev_compose_file="$repo_root/deploy/compose.yaml"
 compose_file="$repo_root/deploy/production/compose.yaml"
 compose_contract="$repo_root/deploy/tests/production-compose-contract.py"
+production_script_dir="$repo_root/deploy/production/scripts"
+python_bin="${PYTHON_BIN:-python3}"
 contract_temp_dir="$(mktemp -d)"
 trap 'rm -rf "$contract_temp_dir"' EXIT
 
@@ -296,6 +298,125 @@ run_gateway_self_test() {
   expect_gateway_rejection 'upstream variable changed to generic service alias' "$wrong_alias_mutant"
 }
 
+require_script_literal() {
+  local script_file="$1"
+  local literal="$2"
+
+  if ! grep -Fq -- "$literal" "$script_file"; then
+    printf '%s must contain: %s\n' "$script_file" "$literal" >&2
+    return 1
+  fi
+}
+
+assert_before() {
+  local script_file="$1"
+  local first="$2"
+  local second="$3"
+  local first_line second_line
+
+  first_line="$(grep -nF -- "$first" "$script_file" | head -n 1 | cut -d: -f1)"
+  second_line="$(grep -nF -- "$second" "$script_file" | head -n 1 | cut -d: -f1)"
+  if [[ -z "$first_line" || -z "$second_line" || "$first_line" -ge "$second_line" ]]; then
+    printf '%s must place %s before %s\n' "$script_file" "$first" "$second" >&2
+    return 1
+  fi
+}
+
+assert_production_script_contract() {
+  local script script_file
+  local initialize="$production_script_dir/initialize-weavepress"
+  local deploy="$production_script_dir/deploy-weavepress"
+  local entrypoint="$production_script_dir/weavepress-deploy-entrypoint"
+  local installer="$production_script_dir/weavepress-external-secrets-install"
+
+  for script in initialize-weavepress deploy-weavepress weavepress-deploy-entrypoint weavepress-external-secrets-install; do
+    script_file="$production_script_dir/$script"
+    [[ -f "$script_file" ]] || {
+      printf 'Missing production script: %s\n' "$script" >&2
+      return 1
+    }
+    [[ -x "$script_file" ]] || {
+      printf 'Production script is not executable: %s\n' "$script" >&2
+      return 1
+    }
+    if LC_ALL=C grep -q $'\r' "$script_file"; then
+      printf 'Production script must use LF endings: %s\n' "$script" >&2
+      return 1
+    fi
+    bash -n "$script_file"
+    if grep -Eq '^[[:space:]]*set[[:space:]]+-x' "$script_file"; then
+      printf 'Production script must never enable shell tracing: %s\n' "$script" >&2
+      return 1
+    fi
+  done
+
+  require_script_literal "$initialize" 'set -Eeuo pipefail'
+  require_script_literal "$initialize" 'umask 077'
+  require_script_literal "$initialize" 'DB_NAME="weavepress"'
+  require_script_literal "$initialize" 'APP_DIR="${WEAVEPRESS_APP_DIR:-/opt/apps/weavepress}"'
+  require_script_literal "$initialize" 'docker exec redis sh -c'
+  require_script_literal "$initialize" '-n 7 DBSIZE'
+  require_script_literal "$initialize" 'INFORMATION_SCHEMA.SCHEMATA'
+  require_script_literal "$initialize" 'openssl rand -hex'
+  require_script_literal "$initialize" 'APP_DB_USER="weavepress_app"'
+  require_script_literal "$initialize" 'MIGRATOR_DB_USER="weavepress_migrator"'
+  require_script_literal "$initialize" 'GRANT SELECT, INSERT, UPDATE, DELETE ON'
+  require_script_literal "$initialize" 'CREATE, ALTER, INDEX, DROP, REFERENCES'
+  require_script_literal "$initialize" 'chown 65532:65532'
+  require_script_literal "$initialize" 'chmod 0600'
+  assert_before "$initialize" 'Redis DB 7 is not empty' 'CREATE DATABASE'
+  assert_before "$initialize" 'already exists in MySQL' 'CREATE DATABASE'
+
+  require_script_literal "$deploy" 'flock -w 1800'
+  require_script_literal "$deploy" '^[0-9a-f]{40}$'
+  require_script_literal "$deploy" 'DOCKER_CONFIG'
+  require_script_literal "$deploy" '--password-stdin'
+  require_script_literal "$deploy" '--profile migrate run --rm migrate'
+  require_script_literal "$deploy" '--no-deps api worker'
+  require_script_literal "$deploy" '--no-deps gateway'
+  require_script_literal "$deploy" '{{.State.Health.Status}}'
+  require_script_literal "$deploy" '{{.State.Status}}'
+  require_script_literal "$deploy" '{{.Config.Image}}'
+  require_script_literal "$deploy" '/var/lib/zdzq-deploy/weavepress'
+  require_script_literal "$deploy" 'rollback_tag='
+  assert_before "$deploy" 'Gateway deployment requires a healthy weavepress-api' 'docker pull "$gateway_image"'
+
+  require_script_literal "$entrypoint" 'SSH_ORIGINAL_COMMAND'
+  require_script_literal "$entrypoint" '^[0-9a-f]{40}$'
+  require_script_literal "$entrypoint" 'exec /usr/bin/sudo -n /usr/local/sbin/deploy-weavepress "$app_sha" "--component=$component"'
+
+  require_script_literal "$installer" '[[ -t 0 && -t 1 ]]'
+  require_script_literal "$installer" 'read -rsp'
+  require_script_literal "$installer" 'mktemp'
+  require_script_literal "$installer" 'backup/env'
+  require_script_literal "$installer" 'docker compose'
+  require_script_literal "$installer" 'config --quiet'
+  if grep -Eq '^[[:space:]]*(APP_SHA=.*[[:space:]])?docker compose .*(up|run|restart|start)' "$installer"; then
+    printf 'External secrets installer must not start or restart services.\n' >&2
+    return 1
+  fi
+}
+
+expect_entrypoint_rejection() {
+  local original_command="$1"
+  local entrypoint="$production_script_dir/weavepress-deploy-entrypoint"
+
+  if SSH_ORIGINAL_COMMAND="$original_command" "$entrypoint" </dev/null >/dev/null 2>&1; then
+    printf 'Forced-command entrypoint accepted unsafe command: %q\n' "$original_command" >&2
+    return 1
+  fi
+}
+
+run_production_script_self_test() {
+  assert_production_script_contract
+  expect_entrypoint_rejection 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --component=server'
+  expect_entrypoint_rejection 'deploy-weavepress 0000000000000000000000000000000000000000 --component=server'
+  expect_entrypoint_rejection '0000000000000000000000000000000000000000 --component=server extra'
+  expect_entrypoint_rejection '0000000000000000000000000000000000000000 --component=server;id'
+  expect_entrypoint_rejection $'0000000000000000000000000000000000000000 --component=server\nextra'
+  printf 'Production script safety self-tests passed.\n'
+}
+
 render_compose_model() {
   local output_file="$1"
 
@@ -326,6 +447,13 @@ case "${1:-}" in
     fi
     run_gateway_self_test
     ;;
+  --scripts-self-test)
+    if [[ $# -ne 1 ]]; then
+      printf 'Usage: %s --scripts-self-test\n' "$0" >&2
+      exit 2
+    fi
+    run_production_script_self_test
+    ;;
   --self-test)
     if [[ $# -ne 1 ]]; then
       printf 'Usage: %s --self-test\n' "$0" >&2
@@ -334,22 +462,24 @@ case "${1:-}" in
     compose_model="$contract_temp_dir/compose.json"
     dev_compose_model="$contract_temp_dir/dev-compose.json"
     run_gateway_self_test
-    python3 -B "$compose_contract" --source-self-test
-    python3 -B "$compose_contract" --source "$compose_file"
+    run_production_script_self_test
+    "$python_bin" -B "$compose_contract" --source-self-test
+    "$python_bin" -B "$compose_contract" --source "$compose_file"
     render_compose_model "$compose_model"
-    python3 -B "$compose_contract" --self-test "$compose_model"
+    "$python_bin" -B "$compose_contract" --self-test "$compose_model"
     render_dev_compose_model "$dev_compose_model"
-    python3 -B "$compose_contract" --dev-self-test "$dev_compose_model"
+    "$python_bin" -B "$compose_contract" --dev-self-test "$dev_compose_model"
     ;;
   '')
     assert_gateway_contract "$gateway"
+    assert_production_script_contract
     compose_model="$contract_temp_dir/compose.json"
     dev_compose_model="$contract_temp_dir/dev-compose.json"
-    python3 -B "$compose_contract" --source "$compose_file"
+    "$python_bin" -B "$compose_contract" --source "$compose_file"
     render_compose_model "$compose_model"
-    python3 -B "$compose_contract" "$compose_model"
+    "$python_bin" -B "$compose_contract" "$compose_model"
     render_dev_compose_model "$dev_compose_model"
-    python3 -B "$compose_contract" --dev "$dev_compose_model"
+    "$python_bin" -B "$compose_contract" --dev "$dev_compose_model"
 
     docker run --rm --add-host weavepress-api:127.0.0.1 \
       -v "$gateway:/etc/nginx/conf.d/default.conf:ro" \

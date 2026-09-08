@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+readonly APP_DIR="${WEAVEPRESS_APP_DIR:-/opt/apps/weavepress}"
+readonly COMPOSE_FILE="$APP_DIR/compose.yaml"
+readonly ENV_FILE="$APP_DIR/.env"
+readonly MYSQL_BACKUP_DIR="$APP_DIR/backup/mysql"
+readonly METADATA_DIR="${WEAVEPRESS_METADATA_DIR:-/var/lib/zdzq-deploy/weavepress}"
+readonly LOCK_FILE="${WEAVEPRESS_LOCK_FILE:-/var/lock/weavepress-deploy.lock}"
+readonly REGISTRY="registry.cn-hangzhou.aliyuncs.com"
+readonly REPOSITORY="$REGISTRY/zdzq"
+
+die() { printf 'deploy-weavepress: %s\n' "$1" >&2; exit 1; }
+usage() { printf 'Usage: %s <lowercase-40-sha> --component=server|gateway\n' "$0" >&2; exit 64; }
+
+[[ $# -eq 2 ]] || usage
+app_sha="$1"
+[[ "$app_sha" =~ ^[0-9a-f]{40}$ ]] || usage
+case "$2" in
+  --component=server) component="server" ;;
+  --component=gateway) component="gateway" ;;
+  *) usage ;;
+esac
+[[ "${EUID:-$(id -u)}" -eq 0 ]] || die 'must run as root'
+[[ -f "$COMPOSE_FILE" ]] || die "$COMPOSE_FILE is missing"
+[[ -f "$ENV_FILE" ]] || die "$ENV_FILE is missing"
+
+exec 9>"$LOCK_FILE"
+flock -w 1800 9 || die 'another WeavePress deployment still holds the lock'
+
+IFS= read -r acr_username || die 'expected ACR username on stdin line 1'
+IFS= read -r acr_password || die 'expected ACR password on stdin line 2'
+extra_line=""
+if IFS= read -r extra_line || [[ -n "$extra_line" ]]; then
+  die 'expected exactly two stdin lines'
+fi
+[[ -n "$acr_username" && -n "$acr_password" ]] || die 'ACR credentials must not be empty'
+[[ "$acr_username" != *$'\r'* && "$acr_password" != *$'\r'* ]] || die 'ACR credentials contain control characters'
+
+api_image="$REPOSITORY/weavepress-api:$app_sha"
+worker_image="$REPOSITORY/weavepress-worker:$app_sha"
+migrate_image="$REPOSITORY/weavepress-migrate:$app_sha"
+gateway_image="$REPOSITORY/weavepress-gateway:$app_sha"
+old_api_id=""
+old_worker_id=""
+old_gateway_id=""
+switched=0
+docker_config="$(mktemp -d)"
+export DOCKER_CONFIG="$docker_config"
+rollback_tag="rollback-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+
+compose() {
+  APP_SHA="$app_sha" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
+}
+
+container_image_id() {
+  docker inspect --format '{{.Image}}' "$1" 2>/dev/null || true
+}
+
+rollback_application() {
+  case "$component" in
+    server)
+      if [[ -z "$old_api_id" || -z "$old_worker_id" ]]; then
+        printf 'Server deployment failed after switching; no complete previous image set exists. Data and shared infrastructure were preserved.\n' >&2
+        return 0
+      fi
+      docker image tag "$old_api_id" "$REPOSITORY/weavepress-api:$rollback_tag" || return 1
+      docker image tag "$old_worker_id" "$REPOSITORY/weavepress-worker:$rollback_tag" || return 1
+      APP_SHA="$rollback_tag" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+        up -d --no-build --force-recreate --no-deps api worker || return 1
+      ;;
+    gateway)
+      if [[ -z "$old_gateway_id" ]]; then
+        printf 'Gateway deployment failed after switching; no previous image exists. Data and shared infrastructure were preserved.\n' >&2
+        return 0
+      fi
+      docker image tag "$old_gateway_id" "$REPOSITORY/weavepress-gateway:$rollback_tag" || return 1
+      APP_SHA="$rollback_tag" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+        up -d --no-build --force-recreate --no-deps gateway || return 1
+      ;;
+  esac
+  printf 'Application containers restored with bounded rollback tag %s. Database migrations were not reversed.\n' "$rollback_tag" >&2
+}
+
+cleanup() {
+  local status=$?
+  trap - EXIT
+  acr_password=""
+  if [[ "$status" -ne 0 && "$switched" -eq 1 ]]; then
+    rollback_application || printf 'Automatic application rollback failed; manual recovery is required.\n' >&2
+  fi
+  rm -rf -- "$docker_config"
+  exit "$status"
+}
+trap cleanup EXIT
+
+printf '%s\n' "$acr_password" | docker login "$REGISTRY" --username "$acr_username" --password-stdin >/dev/null
+acr_password=""
+
+require_api_healthy() {
+  local health
+  health="$(docker inspect --format '{{.State.Health.Status}}' weavepress-api 2>/dev/null || true)"
+  [[ "$health" == "healthy" ]] || die 'Gateway deployment requires a healthy weavepress-api before switching'
+}
+
+wait_for_server() {
+  local attempts="${WEAVEPRESS_HEALTH_ATTEMPTS:-60}"
+  local delay="${WEAVEPRESS_HEALTH_DELAY:-5}"
+  local api_health worker_status
+  for ((i = 1; i <= attempts; i++)); do
+    api_health="$(docker inspect --format '{{.State.Health.Status}}' weavepress-api 2>/dev/null || true)"
+    worker_status="$(docker inspect --format '{{.State.Status}}' weavepress-worker 2>/dev/null || true)"
+    if [[ "$api_health" == "healthy" && "$worker_status" == "running" ]]; then
+      return 0
+    fi
+    sleep "$delay"
+  done
+  die 'API did not become healthy with a running Worker before the deadline'
+}
+
+require_container_image() {
+  local container="$1"
+  local expected="$2"
+  local actual
+  actual="$(docker inspect --format '{{.Config.Image}}' "$container" 2>/dev/null || true)"
+  [[ "$actual" == "$expected" ]] || die "$container is not running the requested immutable image"
+}
+
+backup_database_if_populated() {
+  local table_count timestamp backup_tmp backup_name backup_file
+  table_count="$(docker exec mysql sh -c \
+    'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql --batch --skip-column-names --user=root --execute="$1"' \
+    sh "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='weavepress';" \
+    2>/dev/null)" || die 'could not inspect the WeavePress table count'
+  [[ "$table_count" =~ ^[0-9]+$ ]] || die 'MySQL returned an invalid table count'
+  [[ "$table_count" -gt 0 ]] || return 0
+
+  mkdir -p "$MYSQL_BACKUP_DIR"
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  backup_tmp="$(mktemp "$MYSQL_BACKUP_DIR/.weavepress-$timestamp.XXXXXX.sql.gz")"
+  backup_name="$(basename "$backup_tmp")"
+  backup_file="$MYSQL_BACKUP_DIR/${backup_name#.}"
+  if ! docker exec mysql sh -c \
+    'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump --single-transaction --routines --triggers --databases weavepress' \
+    | gzip -c > "$backup_tmp"; then
+    rm -f -- "$backup_tmp"
+    die 'MySQL backup failed'
+  fi
+  [[ -s "$backup_tmp" ]] || { rm -f -- "$backup_tmp"; die 'MySQL backup is empty'; }
+  gzip -t "$backup_tmp" || { rm -f -- "$backup_tmp"; die 'MySQL backup gzip validation failed'; }
+  mv -T -- "$backup_tmp" "$backup_file"
+  printf 'Created validated MySQL backup: %s\n' "$backup_file"
+}
+
+write_metadata() {
+  local target="$METADATA_DIR/$component.env"
+  local temp deployed_at
+  mkdir -p "$METADATA_DIR"
+  temp="$(mktemp "$METADATA_DIR/.$component.env.XXXXXX")"
+  deployed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  {
+    printf 'APP_SHA=%s\n' "$app_sha"
+    if [[ "$component" == "server" ]]; then
+      printf 'API_IMAGE=%s\nWORKER_IMAGE=%s\nMIGRATE_IMAGE=%s\n' "$api_image" "$worker_image" "$migrate_image"
+    else
+      printf 'GATEWAY_IMAGE=%s\n' "$gateway_image"
+    fi
+    printf 'DEPLOYED_AT=%s\n' "$deployed_at"
+  } > "$temp"
+  chown root:root "$temp"
+  chmod 0600 "$temp"
+  mv -T -- "$temp" "$target"
+}
+
+case "$component" in
+  server)
+    old_api_id="$(container_image_id weavepress-api)"
+    old_worker_id="$(container_image_id weavepress-worker)"
+    docker pull "$api_image"
+    docker pull "$worker_image"
+    docker pull "$migrate_image"
+    backup_database_if_populated
+    compose --profile migrate run --rm migrate
+    switched=1
+    compose up -d --no-build --force-recreate --no-deps api worker
+    wait_for_server
+    require_container_image weavepress-api "$api_image"
+    require_container_image weavepress-worker "$worker_image"
+    ;;
+  gateway)
+    require_api_healthy
+    old_gateway_id="$(container_image_id weavepress-gateway)"
+    docker pull "$gateway_image"
+    switched=1
+    compose up -d --no-build --force-recreate --no-deps gateway
+    curl --fail --silent --show-error --max-time 15 -H 'Host: wp.pdurl.cn' http://127.0.0.1/ >/dev/null
+    require_container_image weavepress-gateway "$gateway_image"
+    ;;
+esac
+
+write_metadata
+switched=0
+printf 'WeavePress %s deployed at %s.\n' "$component" "$app_sha"
