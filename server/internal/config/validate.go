@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"net/url"
@@ -80,6 +81,9 @@ func (c Config) Validate() error {
 	if err := c.WeChat.Validate(env); err != nil {
 		return err
 	}
+	if err := c.AI.Validate(env); err != nil {
+		return err
+	}
 	if err := c.Observability.Validate(); err != nil {
 		return err
 	}
@@ -90,6 +94,55 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config log.level must be one of debug, info, warn, error")
 	}
 
+	return nil
+}
+
+func (c AIConfig) Validate(env string) error {
+	if err := positiveDuration("ai.request_timeout", c.RequestTimeout); err != nil {
+		return err
+	}
+	if c.MaxInputChars <= 0 {
+		return fmt.Errorf("config ai.max_input_chars must be positive")
+	}
+	if c.MaxOutputTokens <= 0 {
+		return fmt.Errorf("config ai.max_output_tokens must be positive")
+	}
+	if math.IsNaN(c.Temperature) || c.Temperature < 0 || c.Temperature > 2 {
+		return fmt.Errorf("config ai.temperature must be between 0 and 2")
+	}
+	provider := strings.ToLower(strings.TrimSpace(c.Provider))
+	if provider != "openai-compatible" && (c.Enabled || provider != "") {
+		return fmt.Errorf("config ai.provider only supports openai-compatible")
+	}
+
+	baseURL := strings.TrimSpace(c.BaseURL)
+	if c.Enabled {
+		if baseURL == "" {
+			return fmt.Errorf("config ai.base_url is required when ai.enabled is true")
+		}
+		if strings.TrimSpace(c.APIKey) == "" {
+			return fmt.Errorf("config ai.api_key is required when ai.enabled is true")
+		}
+		if strings.TrimSpace(c.Model) == "" {
+			return fmt.Errorf("config ai.model is required when ai.enabled is true")
+		}
+	}
+	if baseURL == "" {
+		return nil
+	}
+
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("config ai.base_url must be an absolute HTTP or HTTPS URL")
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if parsed.Host == "" || (scheme != "http" && scheme != "https") {
+		return fmt.Errorf("config ai.base_url must be an absolute HTTP or HTTPS URL")
+	}
+	normalizedEnv := strings.ToLower(strings.TrimSpace(env))
+	if c.Enabled && (normalizedEnv == "prod" || normalizedEnv == "production") && scheme != "https" {
+		return fmt.Errorf("config ai.base_url must use HTTPS in production")
+	}
 	return nil
 }
 

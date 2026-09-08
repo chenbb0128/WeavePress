@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -94,10 +95,71 @@ func TestTracingSampleRatioValidation(t *testing.T) {
 	}
 }
 
+func TestAIConfigValidate(t *testing.T) {
+	valid := AIConfig{
+		Enabled:         true,
+		Provider:        "openai-compatible",
+		BaseURL:         "https://llm.example.com",
+		APIKey:          "secret",
+		Model:           "test-model",
+		RequestTimeout:  time.Second,
+		MaxInputChars:   60000,
+		MaxOutputTokens: 6000,
+		Temperature:     0.4,
+	}
+	tests := []struct {
+		name   string
+		mutate func(*AIConfig)
+		env    string
+		want   string
+	}{
+		{
+			name: "disabled",
+			mutate: func(cfg *AIConfig) {
+				cfg.Enabled = false
+				cfg.Provider = ""
+				cfg.BaseURL = ""
+				cfg.APIKey = ""
+				cfg.Model = ""
+			},
+			env: "local",
+		},
+		{name: "missing base url", mutate: func(cfg *AIConfig) { cfg.BaseURL = "" }, env: "local", want: "base_url"},
+		{name: "missing api key", mutate: func(cfg *AIConfig) { cfg.APIKey = "" }, env: "local", want: "api_key"},
+		{name: "missing model", mutate: func(cfg *AIConfig) { cfg.Model = "" }, env: "local", want: "model"},
+		{name: "production http", mutate: func(cfg *AIConfig) { cfg.BaseURL = "http://llm.example.com" }, env: "production", want: "HTTPS"},
+		{name: "enabled", mutate: func(*AIConfig) {}, env: "local"},
+		{name: "invalid provider", mutate: func(cfg *AIConfig) { cfg.Provider = "other" }, env: "local", want: "provider"},
+		{name: "invalid base url", mutate: func(cfg *AIConfig) { cfg.BaseURL = "llm.example.com" }, env: "local", want: "base_url"},
+		{name: "malformed base url", mutate: func(cfg *AIConfig) { cfg.BaseURL = "https://llm.example.com/%zz" }, env: "local", want: "base_url"},
+		{name: "zero timeout", mutate: func(cfg *AIConfig) { cfg.RequestTimeout = 0 }, env: "local", want: "request_timeout"},
+		{name: "zero input limit", mutate: func(cfg *AIConfig) { cfg.MaxInputChars = 0 }, env: "local", want: "max_input_chars"},
+		{name: "zero output limit", mutate: func(cfg *AIConfig) { cfg.MaxOutputTokens = 0 }, env: "local", want: "max_output_tokens"},
+		{name: "temperature below range", mutate: func(cfg *AIConfig) { cfg.Temperature = -0.1 }, env: "local", want: "temperature"},
+		{name: "temperature above range", mutate: func(cfg *AIConfig) { cfg.Temperature = 2.1 }, env: "local", want: "temperature"},
+		{name: "temperature NaN", mutate: func(cfg *AIConfig) { cfg.Temperature = math.NaN() }, env: "local", want: "temperature"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := valid
+			tt.mutate(&cfg)
+			err := cfg.Validate(tt.env)
+			if tt.want == "" && err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)) {
+				t.Fatalf("Validate() error = %v, want error containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestSanitizedSummaryRedactsSecrets(t *testing.T) {
 	cfg := validConfig()
 	cfg.Database.DSN = "user:secret@tcp(127.0.0.1:3306)/weavepress"
 	cfg.Redis.Password = "redis-secret"
+	cfg.AI.APIKey = "ai-secret"
 
 	summary := cfg.SanitizedSummary()
 	if summary["database_dsn"] == cfg.Database.DSN {
@@ -105,6 +167,50 @@ func TestSanitizedSummaryRedactsSecrets(t *testing.T) {
 	}
 	if summary["redis_password"] == cfg.Redis.Password {
 		t.Fatal("SanitizedSummary leaked redis password")
+	}
+	if summary["ai_api_key"] != "<redacted>" {
+		t.Fatalf("SanitizedSummary ai_api_key = %v, want <redacted>", summary["ai_api_key"])
+	}
+	for _, key := range []string{"ai_enabled", "ai_provider", "ai_model", "ai_api_key"} {
+		if _, ok := summary[key]; !ok {
+			t.Fatalf("SanitizedSummary missing %q", key)
+		}
+	}
+	if _, ok := summary["ai_base_url"]; ok {
+		t.Fatal("SanitizedSummary exposed ai_base_url")
+	}
+}
+
+func TestLoadAIDefaults(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AI.Enabled || cfg.AI.Provider != "openai-compatible" || cfg.AI.RequestTimeout != 120*time.Second || cfg.AI.MaxInputChars != 60000 || cfg.AI.MaxOutputTokens != 6000 || cfg.AI.Temperature != 0.4 {
+		t.Fatalf("AI defaults = %#v", cfg.AI)
+	}
+	if cfg.SanitizedSummary()["ai_api_key"] != "" {
+		t.Fatalf("empty ai_api_key should remain empty, got %v", cfg.SanitizedSummary()["ai_api_key"])
+	}
+}
+
+func TestLoadAIEnvironment(t *testing.T) {
+	t.Setenv("WEAVEPRESS_AI_ENABLED", "true")
+	t.Setenv("WEAVEPRESS_AI_PROVIDER", "openai-compatible")
+	t.Setenv("WEAVEPRESS_AI_BASE_URL", "https://llm.example.com")
+	t.Setenv("WEAVEPRESS_AI_API_KEY", "secret")
+	t.Setenv("WEAVEPRESS_AI_MODEL", "test-model")
+	t.Setenv("WEAVEPRESS_AI_REQUEST_TIMEOUT", "45s")
+	t.Setenv("WEAVEPRESS_AI_MAX_INPUT_CHARS", "12345")
+	t.Setenv("WEAVEPRESS_AI_MAX_OUTPUT_TOKENS", "2345")
+	t.Setenv("WEAVEPRESS_AI_TEMPERATURE", "0.7")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AI.Enabled || cfg.AI.BaseURL != "https://llm.example.com" || cfg.AI.APIKey != "secret" || cfg.AI.Model != "test-model" || cfg.AI.RequestTimeout != 45*time.Second || cfg.AI.MaxInputChars != 12345 || cfg.AI.MaxOutputTokens != 2345 || cfg.AI.Temperature != 0.7 {
+		t.Fatalf("AI environment config = %#v", cfg.AI)
 	}
 }
 
@@ -205,6 +311,14 @@ func validConfig() Config {
 			ImageConcurrency: 4, MaxRedirects: 5, UserAgent: "WeavePress-Test",
 		},
 		WeChat: WeChatConfig{APIBase: "https://api.weixin.qq.com", RequestTimeout: 30 * time.Second},
+		AI: AIConfig{
+			Enabled:         false,
+			Provider:        "openai-compatible",
+			RequestTimeout:  120 * time.Second,
+			MaxInputChars:   60000,
+			MaxOutputTokens: 6000,
+			Temperature:     0.4,
+		},
 		Observability: ObservabilityConfig{
 			Metrics: MetricsConfig{
 				Enabled:   true,

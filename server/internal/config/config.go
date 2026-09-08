@@ -15,6 +15,7 @@ type Config struct {
 	Storage       StorageConfig       `mapstructure:"storage"`
 	Collector     CollectorConfig     `mapstructure:"collector"`
 	WeChat        WeChatConfig        `mapstructure:"wechat"`
+	AI            AIConfig            `mapstructure:"ai"`
 	Observability ObservabilityConfig `mapstructure:"observability"`
 	Log           LogConfig           `mapstructure:"log"`
 }
@@ -120,6 +121,18 @@ type WeChatConfig struct {
 	RequestTimeout time.Duration `mapstructure:"request_timeout"`
 }
 
+type AIConfig struct {
+	Enabled         bool          `mapstructure:"enabled"`
+	Provider        string        `mapstructure:"provider"`
+	BaseURL         string        `mapstructure:"base_url"`
+	APIKey          string        `mapstructure:"api_key"`
+	Model           string        `mapstructure:"model"`
+	RequestTimeout  time.Duration `mapstructure:"request_timeout"`
+	MaxInputChars   int           `mapstructure:"max_input_chars"`
+	MaxOutputTokens int           `mapstructure:"max_output_tokens"`
+	Temperature     float64       `mapstructure:"temperature"`
+}
+
 type ObservabilityConfig struct {
 	Metrics MetricsConfig `mapstructure:"metrics"`
 	Tracing TracingConfig `mapstructure:"tracing"`
@@ -180,6 +193,10 @@ func (c Config) SanitizedSummary() map[string]any {
 		"wechat_enabled":              c.WeChat.Enabled,
 		"wechat_app_id_configured":    strings.TrimSpace(c.WeChat.AppID) != "",
 		"wechat_app_secret":           redactSecret(c.WeChat.AppSecret),
+		"ai_enabled":                  c.AI.Enabled,
+		"ai_provider":                 c.AI.Provider,
+		"ai_model":                    c.AI.Model,
+		"ai_api_key":                  redactSecret(c.AI.APIKey),
 		"auth_jwt_secret":             redactSecret(c.Auth.JWTSecret),
 		"auth_media_signing_key":      redactSecret(c.Auth.MediaSigningKey),
 		"metrics_enabled":             c.Observability.Metrics.Enabled,

@@ -86,6 +86,15 @@ func Load(path string) (Config, error) {
 		"wechat.app_secret",
 		"wechat.api_base",
 		"wechat.request_timeout",
+		"ai.enabled",
+		"ai.provider",
+		"ai.base_url",
+		"ai.api_key",
+		"ai.model",
+		"ai.request_timeout",
+		"ai.max_input_chars",
+		"ai.max_output_tokens",
+		"ai.temperature",
 		"observability.metrics.enabled",
 		"observability.metrics.path",
 		"observability.metrics.namespace",
@@ -194,6 +203,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("wechat.app_secret", "")
 	v.SetDefault("wechat.api_base", "https://api.weixin.qq.com")
 	v.SetDefault("wechat.request_timeout", 30*time.Second)
+	v.SetDefault("ai.enabled", false)
+	v.SetDefault("ai.provider", "openai-compatible")
+	v.SetDefault("ai.base_url", "")
+	v.SetDefault("ai.api_key", "")
+	v.SetDefault("ai.model", "")
+	v.SetDefault("ai.request_timeout", 120*time.Second)
+	v.SetDefault("ai.max_input_chars", 60000)
+	v.SetDefault("ai.max_output_tokens", 6000)
+	v.SetDefault("ai.temperature", 0.4)
 	v.SetDefault("observability.metrics.enabled", true)
 	v.SetDefault("observability.metrics.path", "/metrics")
 	v.SetDefault("observability.metrics.namespace", "weavepress")
