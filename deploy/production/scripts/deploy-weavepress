@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 umask 077
+set +x
 
 readonly APP_DIR="${WEAVEPRESS_APP_DIR:-/opt/apps/weavepress}"
 readonly COMPOSE_FILE="$APP_DIR/compose.yaml"
@@ -8,6 +9,7 @@ readonly ENV_FILE="$APP_DIR/.env"
 readonly MYSQL_BACKUP_DIR="$APP_DIR/backup/mysql"
 readonly METADATA_DIR="${WEAVEPRESS_METADATA_DIR:-/var/lib/zdzq-deploy/weavepress}"
 readonly LOCK_FILE="${WEAVEPRESS_LOCK_FILE:-/var/lock/weavepress-deploy.lock}"
+readonly INPUT_TIMEOUT="${WEAVEPRESS_INPUT_TIMEOUT:-30}"
 readonly REGISTRY="registry.cn-hangzhou.aliyuncs.com"
 readonly REPOSITORY="$REGISTRY/zdzq"
 
@@ -26,21 +28,53 @@ esac
 [[ -f "$COMPOSE_FILE" ]] || die "$COMPOSE_FILE is missing"
 [[ -f "$ENV_FILE" ]] || die "$ENV_FILE is missing"
 
-exec 9>"$LOCK_FILE"
-flock -w 1800 9 || die 'another WeavePress deployment still holds the lock'
+[[ "$INPUT_TIMEOUT" =~ ^[0-9]+$ && "$INPUT_TIMEOUT" -ge 1 && "$INPUT_TIMEOUT" -le 60 ]] || \
+  die 'WEAVEPRESS_INPUT_TIMEOUT must be an integer from 1 to 60'
+health_attempts="${WEAVEPRESS_HEALTH_ATTEMPTS:-60}"
+health_delay="${WEAVEPRESS_HEALTH_DELAY:-5}"
+[[ "$health_attempts" =~ ^[0-9]+$ && "$health_attempts" -ge 1 && "$health_attempts" -le 120 ]] || \
+  die 'WEAVEPRESS_HEALTH_ATTEMPTS must be an integer from 1 to 120'
+[[ "$health_delay" =~ ^[0-9]+$ && "$health_delay" -ge 1 && "$health_delay" -le 30 ]] || \
+  die 'WEAVEPRESS_HEALTH_DELAY must be an integer from 1 to 30'
 
-IFS= read -r acr_username || die 'expected ACR username on stdin line 1'
-IFS= read -r acr_password || die 'expected ACR password on stdin line 2'
+read_bounded_line() {
+  local variable_name="$1"
+  local maximum="$2"
+  local label="$3"
+  local value=""
+  local status
+  if IFS= read -r -t "$INPUT_TIMEOUT" -n "$((maximum + 1))" value; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "$status" -gt 128 ]]; then
+    die "$label timed out"
+  fi
+  [[ "$status" -eq 0 ]] || die "$label must end with a newline"
+  [[ "${#value}" -le "$maximum" ]] || die "$label exceeds its length limit"
+  printf -v "$variable_name" '%s' "$value"
+}
+
+read_bounded_line acr_username 256 'ACR username on stdin line 1'
+read_bounded_line acr_password 4096 'ACR password on stdin line 2'
 extra_line=""
-if IFS= read -r extra_line || [[ -n "$extra_line" ]]; then
+if IFS= read -r -t "$INPUT_TIMEOUT" -n 1 extra_line; then
   die 'expected exactly two stdin lines'
+else
+  extra_status=$?
 fi
+[[ "$extra_status" -le 128 ]] || die 'timed out waiting for stdin to close after line 2'
+[[ -z "$extra_line" ]] || die 'expected exactly two stdin lines'
 [[ -n "$acr_username" && -n "$acr_password" ]] || die 'ACR credentials must not be empty'
 for credential in "$acr_username" "$acr_password"; do
   if LC_ALL=C grep -q '[[:cntrl:]]' < <(printf '%s' "$credential"); then
     die 'ACR credentials contain control characters'
   fi
 done
+
+exec 9>"$LOCK_FILE"
+flock -w 1800 9 || die 'another WeavePress deployment still holds the lock'
 
 api_image="$REPOSITORY/weavepress-api:$app_sha"
 worker_image="$REPOSITORY/weavepress-worker:$app_sha"
@@ -49,7 +83,11 @@ gateway_image="$REPOSITORY/weavepress-gateway:$app_sha"
 old_api_id=""
 old_worker_id=""
 old_gateway_id=""
+api_existed=0
+worker_existed=0
+gateway_existed=0
 switched=0
+metadata_temp=""
 docker_config="$(mktemp -d)"
 export DOCKER_CONFIG="$docker_config"
 rollback_tag="rollback-$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -58,30 +96,66 @@ compose() {
   APP_SHA="$app_sha" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
 }
 
-container_image_id() {
-  docker inspect --format '{{.Image}}' "$1" 2>/dev/null || true
+capture_previous_container() {
+  local container="$1"
+  local id_variable="$2"
+  local existed_variable="$3"
+  local image_id
+  if image_id="$(docker inspect --format '{{.Image}}' "$container" 2>/dev/null)"; then
+    printf -v "$id_variable" '%s' "$image_id"
+    printf -v "$existed_variable" '%s' 1
+  fi
+}
+
+container_image_matches() {
+  local container="$1"
+  local expected="$2"
+  local actual
+  actual="$(docker inspect --format '{{.Config.Image}}' "$container" 2>/dev/null || true)"
+  [[ "$actual" == "$expected" ]]
+}
+
+smoke_gateway() {
+  curl --fail --silent --show-error --max-time 15 -H 'Host: wp.pdurl.cn' http://127.0.0.1/ >/dev/null
+}
+
+stop_requested_components() {
+  case "$component" in
+    server)
+      APP_SHA="$app_sha" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" stop api worker || return 1
+      ;;
+    gateway)
+      APP_SHA="$app_sha" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" stop gateway || return 1
+      ;;
+  esac
+  printf '%s deployment had no complete previous version; the requested component was stopped. Data and shared infrastructure were preserved.\n' "$component" >&2
 }
 
 rollback_application() {
   case "$component" in
     server)
-      if [[ -z "$old_api_id" || -z "$old_worker_id" ]]; then
-        printf 'Server deployment failed after switching; no complete previous image set exists. Data and shared infrastructure were preserved.\n' >&2
-        return 0
+      if [[ "$api_existed" -ne 1 || "$worker_existed" -ne 1 || -z "$old_api_id" || -z "$old_worker_id" ]]; then
+        stop_requested_components
+        return
       fi
       docker image tag "$old_api_id" "$REPOSITORY/weavepress-api:$rollback_tag" || return 1
       docker image tag "$old_worker_id" "$REPOSITORY/weavepress-worker:$rollback_tag" || return 1
       APP_SHA="$rollback_tag" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
         up -d --no-build --force-recreate --no-deps api worker || return 1
+      wait_for_server || return 1
+      container_image_matches weavepress-api "$REPOSITORY/weavepress-api:$rollback_tag" || return 1
+      container_image_matches weavepress-worker "$REPOSITORY/weavepress-worker:$rollback_tag" || return 1
       ;;
     gateway)
-      if [[ -z "$old_gateway_id" ]]; then
-        printf 'Gateway deployment failed after switching; no previous image exists. Data and shared infrastructure were preserved.\n' >&2
-        return 0
+      if [[ "$gateway_existed" -ne 1 || -z "$old_gateway_id" ]]; then
+        stop_requested_components
+        return
       fi
       docker image tag "$old_gateway_id" "$REPOSITORY/weavepress-gateway:$rollback_tag" || return 1
       APP_SHA="$rollback_tag" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
         up -d --no-build --force-recreate --no-deps gateway || return 1
+      container_image_matches weavepress-gateway "$REPOSITORY/weavepress-gateway:$rollback_tag" || return 1
+      smoke_gateway || return 1
       ;;
   esac
   printf 'Application containers restored with bounded rollback tag %s. Database migrations were not reversed.\n' "$rollback_tag" >&2
@@ -94,6 +168,7 @@ cleanup() {
   if [[ "$status" -ne 0 && "$switched" -eq 1 ]]; then
     rollback_application || printf 'Automatic application rollback failed; manual recovery is required.\n' >&2
   fi
+  [[ -z "$metadata_temp" ]] || rm -f -- "$metadata_temp"
   rm -rf -- "$docker_config"
   exit "$status"
 }
@@ -109,26 +184,16 @@ require_api_healthy() {
 }
 
 wait_for_server() {
-  local attempts="${WEAVEPRESS_HEALTH_ATTEMPTS:-60}"
-  local delay="${WEAVEPRESS_HEALTH_DELAY:-5}"
-  local api_health worker_status
-  for ((i = 1; i <= attempts; i++)); do
+  local i api_health worker_status
+  for ((i = 1; i <= health_attempts; i++)); do
     api_health="$(docker inspect --format '{{.State.Health.Status}}' weavepress-api 2>/dev/null || true)"
     worker_status="$(docker inspect --format '{{.State.Status}}' weavepress-worker 2>/dev/null || true)"
     if [[ "$api_health" == "healthy" && "$worker_status" == "running" ]]; then
       return 0
     fi
-    sleep "$delay"
+    sleep "$health_delay"
   done
-  die 'API did not become healthy with a running Worker before the deadline'
-}
-
-require_container_image() {
-  local container="$1"
-  local expected="$2"
-  local actual
-  actual="$(docker inspect --format '{{.Config.Image}}' "$container" 2>/dev/null || true)"
-  [[ "$actual" == "$expected" ]] || die "$container is not running the requested immutable image"
+  return 1
 }
 
 backup_database_if_populated() {
@@ -159,9 +224,9 @@ backup_database_if_populated() {
 
 write_metadata() {
   local target="$METADATA_DIR/$component.env"
-  local temp deployed_at
+  local deployed_at
   mkdir -p "$METADATA_DIR"
-  temp="$(mktemp "$METADATA_DIR/.$component.env.XXXXXX")"
+  metadata_temp="$(mktemp "$METADATA_DIR/.$component.env.XXXXXX")"
   deployed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   {
     printf 'APP_SHA=%s\n' "$app_sha"
@@ -171,16 +236,17 @@ write_metadata() {
       printf 'GATEWAY_IMAGE=%s\n' "$gateway_image"
     fi
     printf 'DEPLOYED_AT=%s\n' "$deployed_at"
-  } > "$temp"
-  chown root:root "$temp"
-  chmod 0600 "$temp"
-  mv -T -- "$temp" "$target"
+  } > "$metadata_temp"
+  chown root:root "$metadata_temp"
+  chmod 0600 "$metadata_temp"
+  mv -T -- "$metadata_temp" "$target"
+  metadata_temp=""
 }
 
 case "$component" in
   server)
-    old_api_id="$(container_image_id weavepress-api)"
-    old_worker_id="$(container_image_id weavepress-worker)"
+    capture_previous_container weavepress-api old_api_id api_existed
+    capture_previous_container weavepress-worker old_worker_id worker_existed
     docker pull "$api_image"
     docker pull "$worker_image"
     docker pull "$migrate_image"
@@ -188,18 +254,18 @@ case "$component" in
     compose --profile migrate run --rm migrate
     switched=1
     compose up -d --no-build --force-recreate --no-deps api worker
-    wait_for_server
-    require_container_image weavepress-api "$api_image"
-    require_container_image weavepress-worker "$worker_image"
+    wait_for_server || die 'API did not become healthy with a running Worker before the deadline'
+    container_image_matches weavepress-api "$api_image" || die 'weavepress-api is not running the requested immutable image'
+    container_image_matches weavepress-worker "$worker_image" || die 'weavepress-worker is not running the requested immutable image'
     ;;
   gateway)
     require_api_healthy
-    old_gateway_id="$(container_image_id weavepress-gateway)"
+    capture_previous_container weavepress-gateway old_gateway_id gateway_existed
     docker pull "$gateway_image"
     switched=1
     compose up -d --no-build --force-recreate --no-deps gateway
-    curl --fail --silent --show-error --max-time 15 -H 'Host: wp.pdurl.cn' http://127.0.0.1/ >/dev/null
-    require_container_image weavepress-gateway "$gateway_image"
+    smoke_gateway
+    container_image_matches weavepress-gateway "$gateway_image" || die 'weavepress-gateway is not running the requested immutable image'
     ;;
 esac
 

@@ -22,17 +22,17 @@ Jenkins 使用专用 forced-command SSH key，远端命令只能是：
 <lowercase-40-char-commit-sha> --component=gateway
 ```
 
-标准输入必须恰好两行：ACR username、ACR password。不得把凭据放入命令参数或日志。发布脚本用临时 `DOCKER_CONFIG` 登录 ACR，完成后立即删除登录态。
+标准输入必须恰好两行：ACR username、ACR password。两者都不得写入日志；受 Docker CLI 登录接口限制，username 会作为 `docker login --username` 参数短暂出现在本机进程参数中，password/token 则只能通过 `--password-stdin` 传入，绝不能进入 argv。发布脚本用临时 `DOCKER_CONFIG` 登录 ACR，完成后立即删除登录态。
 
 Server 发布拉取同一 SHA 的 API、Worker、Migrate 镜像；数据库已有表时先在 `/opt/apps/weavepress/backup/mysql` 生成并验证 UTC gzip dump，再执行向前 migration，最后只重建 API/Worker。禁止在自动回滚中运行数据库 down migration。
 
 Gateway 发布前要求现有 `weavepress-api` 为 healthy；切换 Gateway 时强制 `--no-deps`，避免 Gateway 的单一 `APP_SHA` 意外重建 API。切换后通过公共 Nginx 使用 `Host: wp.pdurl.cn` 验证首页。
 
-成功发布的非敏感元数据原子写入 `/var/lib/zdzq-deploy/weavepress/server.env` 或 `gateway.env`。失败且存在旧镜像时只回滚本次请求组件；首发没有旧镜像时会明确报错，保留数据库、素材目录和公共设施供排查。
+成功发布的非敏感元数据原子写入 `/var/lib/zdzq-deploy/weavepress/server.env` 或 `gateway.env`。失败且存在完整旧版时只回滚本次请求组件，并复核恢复后的镜像与健康状态；首发没有完整旧版时会停止本次请求组件，明确报错，并保留数据库、素材目录和公共设施供排查。
 
 ## 备份与恢复
 
-数据库备份位于 `backup/mysql/weavepress-<UTC>.sql.gz`。恢复前先停止应用写入，执行 `gzip -t`，在独立环境验证 dump，并经过变更审批后再导入。环境文件备份位于 `backup/env/.env.<UTC>`；恢复时先验证 14 个键、权限与 Compose config，再原子替换 `.env`，随后显式发布 Server。任何备份都不得复制到聊天、构建日志或仓库。
+数据库备份位于 `backup/mysql/weavepress-<UTC>.<mktemp-unique>.sql.gz`。恢复前先停止应用写入，执行 `gzip -t`，在独立环境验证 dump，并经过变更审批后再导入。环境文件备份位于 `backup/env/.env.<UTC>.<mktemp-unique>`；唯一后缀避免同一秒内的并发备份互相覆盖。恢复时先验证 14 个键、权限与 Compose config，再原子替换 `.env`，随后显式发布 Server。任何备份都不得复制到聊天、构建日志或仓库。
 
 ## 切换七牛与微信
 

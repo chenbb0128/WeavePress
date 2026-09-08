@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 umask 077
+set +x
 
 readonly DB_NAME="weavepress"
 readonly APP_DB_USER="weavepress_app"
@@ -8,6 +9,8 @@ readonly MIGRATOR_DB_USER="weavepress_migrator"
 readonly APP_DIR="${WEAVEPRESS_APP_DIR:-/opt/apps/weavepress}"
 readonly ENV_FILE="$APP_DIR/.env"
 readonly ENV_EXAMPLE="$APP_DIR/.env.example"
+readonly COMPOSE_FILE="$APP_DIR/compose.yaml"
+readonly LOCK_FILE="${WEAVEPRESS_LOCK_FILE:-/var/lock/weavepress-initialize.lock}"
 
 die() {
   printf 'initialize-weavepress: %s\n' "$1" >&2
@@ -15,10 +18,16 @@ die() {
 }
 
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || die 'must run as root'
+[[ -d "$APP_DIR" ]] || die "$APP_DIR is missing"
 [[ ! -e "$ENV_FILE" ]] || die "$ENV_FILE already exists; initialization is one-time only"
 [[ -f "$ENV_EXAMPLE" ]] || die "$ENV_EXAMPLE is missing"
+[[ -f "$COMPOSE_FILE" ]] || die "$COMPOSE_FILE is missing"
 
-redis_size="$(docker exec redis sh -c 'redis-cli --no-auth-warning -a "$REDIS_PASSWORD" -n 7 DBSIZE' 2>/dev/null)" || \
+exec 9>"$LOCK_FILE"
+flock -w 1800 9 || die 'another WeavePress initialization still holds the lock'
+[[ ! -e "$ENV_FILE" ]] || die "$ENV_FILE appeared while waiting for the initialization lock"
+
+redis_size="$(docker exec redis sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli -n 7 DBSIZE' 2>/dev/null)" || \
   die 'could not inspect Redis DB 7'
 [[ "$redis_size" == "0" ]] || die 'Redis DB 7 is not empty'
 
@@ -31,6 +40,12 @@ mysql_scalar() {
 schema_count="$(mysql_scalar "SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='weavepress';")" || \
   die 'could not inspect MySQL schemas'
 [[ "$schema_count" == "0" ]] || die 'weavepress already exists in MySQL'
+app_user_count="$(mysql_scalar "SELECT COUNT(*) FROM mysql.user WHERE User='weavepress_app' AND Host='%';")" || \
+  die 'could not inspect the WeavePress application user'
+[[ "$app_user_count" == "0" ]] || die 'weavepress_app@% already exists in MySQL'
+migrator_user_count="$(mysql_scalar "SELECT COUNT(*) FROM mysql.user WHERE User='weavepress_migrator' AND Host='%';")" || \
+  die 'could not inspect the WeavePress migrator user'
+[[ "$migrator_user_count" == "0" ]] || die 'weavepress_migrator@% already exists in MySQL'
 
 expected_keys=(
   WEAVEPRESS_DB_APP_DSN
@@ -51,41 +66,70 @@ expected_keys=(
 mapfile -t example_keys < <(awk -F= '/^[A-Z0-9_]+=/ { print $1 }' "$ENV_EXAMPLE")
 [[ "${example_keys[*]}" == "${expected_keys[*]}" ]] || die '.env.example keys do not match the production contract'
 
+env_stage=""
+compose_error=""
+created_schema=0
+created_app_user=0
+created_migrator_user=0
+initialization_complete=0
+
+mysql_execute() {
+  printf '%s\n' "$1" | docker exec -i mysql sh -c \
+    'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql --user=root' >/dev/null 2>&1
+}
+
+compensate_database_objects() {
+  local failed=0
+  if [[ "$created_migrator_user" -eq 1 ]]; then
+    mysql_execute "DROP USER IF EXISTS '$MIGRATOR_DB_USER'@'%';" || {
+      printf 'initialize-weavepress: WARNING: failed to compensate migrator user; manual cleanup is required\n' >&2
+      failed=1
+    }
+  fi
+  if [[ "$created_app_user" -eq 1 ]]; then
+    mysql_execute "DROP USER IF EXISTS '$APP_DB_USER'@'%';" || {
+      printf 'initialize-weavepress: WARNING: failed to compensate application user; manual cleanup is required\n' >&2
+      failed=1
+    }
+  fi
+  if [[ "$created_schema" -eq 1 ]]; then
+    mysql_execute "DROP DATABASE IF EXISTS \`$DB_NAME\`;" || {
+      printf 'initialize-weavepress: WARNING: failed to compensate database schema; manual cleanup is required\n' >&2
+      failed=1
+    }
+  fi
+  [[ "$failed" -eq 0 ]] || printf 'initialize-weavepress: WARNING: initialization compensation is incomplete\n' >&2
+}
+
+cleanup() {
+  local status=$?
+  trap - EXIT
+  [[ -z "$compose_error" ]] || rm -f -- "$compose_error"
+  [[ -z "$env_stage" ]] || rm -f -- "$env_stage"
+  if [[ "$status" -ne 0 && "$initialization_complete" -eq 0 ]]; then
+    compensate_database_objects
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+
 app_password="$(openssl rand -hex 32)"
 migrator_password="$(openssl rand -hex 32)"
 jwt_secret="$(openssl rand -hex 32)"
 media_signing_key="$(openssl rand -hex 32)"
+for generated_secret in "$app_password" "$migrator_password" "$jwt_secret" "$media_signing_key"; do
+  [[ "$generated_secret" =~ ^[0-9a-f]{64}$ ]] || die 'openssl returned an invalid generated secret'
+done
 redis_password="$(docker exec redis sh -c 'printf %s "$REDIS_PASSWORD"')" || \
   die 'could not read the shared Redis credential'
-[[ -n "$redis_password" && "$redis_password" != *$'\n'* && "$redis_password" != *$'\r'* ]] || \
-  die 'shared Redis credential is empty or cannot be encoded safely'
+[[ "$redis_password" =~ ^[A-Za-z0-9._~!@%+,/:=-]{1,512}$ ]] || \
+  die 'shared Redis credential is empty or outside the production allowlist'
 
-sql="$(printf '%s\n' \
-  "CREATE DATABASE \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;" \
-  "CREATE USER '$APP_DB_USER'@'%' IDENTIFIED BY '$app_password';" \
-  "CREATE USER '$MIGRATOR_DB_USER'@'%' IDENTIFIED BY '$migrator_password';" \
-  "GRANT SELECT, INSERT, UPDATE, DELETE ON \`$DB_NAME\`.* TO '$APP_DB_USER'@'%';" \
-  "GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP, REFERENCES, CREATE TEMPORARY TABLES, LOCK TABLES ON \`$DB_NAME\`.* TO '$MIGRATOR_DB_USER'@'%';")"
-printf '%s\n' "$sql" | docker exec -i mysql sh -c \
-  'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql --user=root' >/dev/null || \
-  die 'database initialization failed; inspect MySQL without exposing credentials'
-
-mkdir -p "$APP_DIR/data/media" "$APP_DIR/backup/mysql" "$APP_DIR/backup/env"
-chown 65532:65532 "$APP_DIR/data/media"
-
-env_source="$(mktemp)"
-env_install=""
-cleanup() {
-  rm -f -- "$env_source"
-  [[ -z "$env_install" ]] || rm -f -- "$env_install"
-}
-trap cleanup EXIT
-
-redis_env_value="${redis_password//\'/\\\'}"
+env_stage="$(mktemp "$APP_DIR/.env.initialize.XXXXXX")"
 {
   printf 'WEAVEPRESS_DB_APP_DSN=%s:%s@tcp(mysql:3306)/%s\n' "$APP_DB_USER" "$app_password" "$DB_NAME"
   printf 'WEAVEPRESS_DB_MIGRATION_DSN=%s:%s@tcp(mysql:3306)/%s\n' "$MIGRATOR_DB_USER" "$migrator_password" "$DB_NAME"
-  printf "WEAVEPRESS_REDIS_PASSWORD='%s'\n" "$redis_env_value"
+  printf "WEAVEPRESS_REDIS_PASSWORD='%s'\n" "$redis_password"
   printf 'WEAVEPRESS_AUTH_JWT_SECRET=%s\n' "$jwt_secret"
   printf 'WEAVEPRESS_AUTH_MEDIA_SIGNING_KEY=%s\n' "$media_signing_key"
   printf 'WEAVEPRESS_APP_ENV=staging\n'
@@ -97,16 +141,43 @@ redis_env_value="${redis_password//\'/\\\'}"
   printf 'WEAVEPRESS_WECHAT_ENABLED=false\n'
   printf 'WEAVEPRESS_WECHAT_APP_ID=\n'
   printf 'WEAVEPRESS_WECHAT_APP_SECRET=\n'
-} > "$env_source"
+} > "$env_stage"
+chown root:root "$env_stage"
+chmod 0600 "$env_stage"
 
-mapfile -t generated_keys < <(awk -F= '/^[A-Z0-9_]+=/ { print $1 }' "$env_source")
+mapfile -t generated_keys < <(awk -F= '/^[A-Z0-9_]+=/ { print $1 }' "$env_stage")
 [[ "${generated_keys[*]}" == "${expected_keys[*]}" ]] || die 'generated .env keys are incomplete'
 
-env_install="$(mktemp "$APP_DIR/.env.tmp.XXXXXX")"
-install -o root -g root -m 0600 "$env_source" "$env_install"
-chmod 0600 "$env_install"
-[[ ! -e "$ENV_FILE" ]] || die "$ENV_FILE appeared during initialization; refusing to overwrite it"
-mv -T -- "$env_install" "$ENV_FILE"
-env_install=""
+compose_error="$(mktemp "$APP_DIR/.compose-initialize-error.XXXXXX")"
+if ! APP_SHA=0000000000000000000000000000000000000000 \
+  docker compose --env-file "$env_stage" -f "$COMPOSE_FILE" config --quiet \
+  >/dev/null 2>"$compose_error"; then
+  die 'staged production environment failed Compose validation; diagnostic output was suppressed'
+fi
+rm -f -- "$compose_error"
+compose_error=""
+[[ ! -e "$ENV_FILE" ]] || die "$ENV_FILE appeared before database initialization; refusing to continue"
+
+mysql_execute "CREATE DATABASE \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;" || \
+  die 'failed to create the WeavePress database schema'
+created_schema=1
+mysql_execute "CREATE USER '$APP_DB_USER'@'%' IDENTIFIED BY '$app_password';" || \
+  die 'failed to create the application database user'
+created_app_user=1
+mysql_execute "GRANT SELECT, INSERT, UPDATE, DELETE ON \`$DB_NAME\`.* TO '$APP_DB_USER'@'%';" || \
+  die 'failed to grant the application database user'
+mysql_execute "CREATE USER '$MIGRATOR_DB_USER'@'%' IDENTIFIED BY '$migrator_password';" || \
+  die 'failed to create the migrator database user'
+created_migrator_user=1
+mysql_execute "GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP, REFERENCES, CREATE TEMPORARY TABLES, LOCK TABLES ON \`$DB_NAME\`.* TO '$MIGRATOR_DB_USER'@'%';" || \
+  die 'failed to grant the migrator database user'
+
+mkdir -p "$APP_DIR/data/media" "$APP_DIR/backup/mysql" "$APP_DIR/backup/env"
+chown 65532:65532 "$APP_DIR/data/media"
+
+ln "$env_stage" "$ENV_FILE" || die "$ENV_FILE appeared during initialization; refusing to overwrite it"
+rm -f -- "$env_stage"
+env_stage=""
+initialization_complete=1
 
 printf 'WeavePress initialization completed. Secrets were written to %s and were not displayed.\n' "$ENV_FILE"

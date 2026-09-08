@@ -7,6 +7,7 @@ dev_compose_file="$repo_root/deploy/compose.yaml"
 compose_file="$repo_root/deploy/production/compose.yaml"
 compose_contract="$repo_root/deploy/tests/production-compose-contract.py"
 production_script_dir="$repo_root/deploy/production/scripts"
+production_scripts_behavior="$repo_root/deploy/tests/production-scripts-contract.sh"
 python_bin="${PYTHON_BIN:-python3}"
 contract_temp_dir="$(mktemp -d)"
 trap 'rm -rf "$contract_temp_dir"' EXIT
@@ -373,28 +374,56 @@ assert_production_script_contract() {
     fi
   done
 
+  [[ -x "$production_scripts_behavior" ]] || {
+    printf 'Production script behavior test is not executable.\n' >&2
+    return 1
+  }
+  if LC_ALL=C grep -q $'\r' "$production_scripts_behavior"; then
+    printf 'Production script behavior test must use LF endings.\n' >&2
+    return 1
+  fi
+  bash -n "$production_scripts_behavior"
+
   require_script_literal "$initialize" 'set -Eeuo pipefail'
   require_script_literal "$initialize" 'umask 077'
+  require_script_literal "$initialize" 'set +x'
   require_script_literal "$initialize" 'DB_NAME="weavepress"'
   require_script_literal "$initialize" 'APP_DIR="${WEAVEPRESS_APP_DIR:-/opt/apps/weavepress}"'
   require_script_literal "$initialize" 'docker exec redis sh -c'
+  require_script_literal "$initialize" 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli'
   require_script_literal "$initialize" '-n 7 DBSIZE'
   require_script_literal "$initialize" 'INFORMATION_SCHEMA.SCHEMATA'
   require_script_literal "$initialize" 'openssl rand -hex'
   require_script_literal "$initialize" 'APP_DB_USER="weavepress_app"'
   require_script_literal "$initialize" 'MIGRATOR_DB_USER="weavepress_migrator"'
+  require_script_literal "$initialize" "FROM mysql.user WHERE User='weavepress_app' AND Host='%';"
+  require_script_literal "$initialize" "FROM mysql.user WHERE User='weavepress_migrator' AND Host='%';"
   require_script_literal "$initialize" 'GRANT SELECT, INSERT, UPDATE, DELETE ON'
   require_script_literal "$initialize" 'CREATE, ALTER, INDEX, DROP, REFERENCES'
   require_script_literal "$initialize" 'chown 65532:65532'
   require_script_literal "$initialize" 'chmod 0600'
+  require_script_literal "$initialize" 'created_schema=0'
+  require_script_literal "$initialize" 'compensate_database_objects'
+  require_script_literal "$initialize" 'ln "$env_stage" "$ENV_FILE"'
+  require_script_literal "$initialize" 'config --quiet'
+  if grep -Eq 'redis-cli([^[:alnum:]_-]|$).*((^|[[:space:]])-a|--pass)' "$initialize"; then
+    printf '%s must use REDISCLI_AUTH instead of a Redis password argument.\n' "$initialize" >&2
+    return 1
+  fi
   assert_before "$initialize" 'Redis DB 7 is not empty' 'CREATE DATABASE'
   assert_before "$initialize" 'already exists in MySQL' 'CREATE DATABASE'
+  assert_before "$initialize" 'config --quiet' 'CREATE DATABASE'
 
+  require_script_literal "$deploy" 'set +x'
   require_script_literal "$deploy" 'flock -w 1800'
+  require_script_literal "$deploy" 'WEAVEPRESS_LOCK_FILE:-/var/lock/weavepress-deploy.lock'
   require_script_literal "$deploy" '^[0-9a-f]{40}$'
   require_script_literal "$deploy" 'DOCKER_CONFIG'
   require_script_literal "$deploy" '--password-stdin'
   require_script_literal "$deploy" "LC_ALL=C grep -q '[[:cntrl:]]' < <(printf '%s'"
+  require_script_literal "$deploy" 'read -r -t "$INPUT_TIMEOUT" -n'
+  require_script_literal "$deploy" 'WEAVEPRESS_HEALTH_ATTEMPTS must be an integer from 1 to 120'
+  require_script_literal "$deploy" 'WEAVEPRESS_HEALTH_DELAY must be an integer from 1 to 30'
   require_script_literal "$deploy" '--profile migrate run --rm migrate'
   require_script_literal "$deploy" '--no-deps api worker'
   require_script_literal "$deploy" '--no-deps gateway'
@@ -410,12 +439,16 @@ assert_production_script_contract() {
   require_script_literal "$entrypoint" 'exec /usr/bin/sudo -n /usr/local/sbin/deploy-weavepress "$app_sha" "--component=$component"'
 
   require_script_literal "$installer" '[[ -t 0 && -t 1 ]]'
+  require_script_literal "$installer" 'set +x'
   require_script_literal "$installer" 'read -rsp'
   require_script_literal "$installer" "LC_ALL=C grep -q '[[:cntrl:]]' < <(printf '%s'"
   require_script_literal "$installer" 'mktemp'
   require_script_literal "$installer" 'backup/env'
   require_script_literal "$installer" 'docker compose'
   require_script_literal "$installer" 'config --quiet'
+  require_script_literal "$installer" 'WEAVEPRESS_LOCK_FILE:-/var/lock/weavepress-deploy.lock'
+  require_script_literal "$installer" 'flock -w 1800'
+  require_script_literal "$installer" 'if [[ "${BASH_SOURCE[0]}" == "$0" ]]'
   if grep -Eq '^[[:space:]]*(APP_SHA=.*[[:space:]])?docker compose .*(up|run|restart|start)' "$installer"; then
     printf 'External secrets installer must not start or restart services.\n' >&2
     return 1
@@ -440,6 +473,7 @@ run_production_script_self_test() {
   expect_entrypoint_rejection '0000000000000000000000000000000000000000 --component=server extra'
   expect_entrypoint_rejection '0000000000000000000000000000000000000000 --component=server;id'
   expect_entrypoint_rejection $'0000000000000000000000000000000000000000 --component=server\nextra'
+  bash "$production_scripts_behavior"
   printf 'Production script safety self-tests passed.\n'
 }
 
@@ -498,7 +532,7 @@ case "${1:-}" in
     ;;
   '')
     assert_gateway_contract "$gateway"
-    assert_production_script_contract
+    run_production_script_self_test
     compose_model="$contract_temp_dir/compose.json"
     dev_compose_model="$contract_temp_dir/dev-compose.json"
     "$python_bin" -B "$compose_contract" --source "$compose_file"
