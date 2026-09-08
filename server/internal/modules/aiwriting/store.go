@@ -32,6 +32,14 @@ type CreateGenerationJobInput struct {
 	InputFingerprint [32]byte
 }
 
+type JobFailureInput struct {
+	Code      string
+	Message   string
+	Retryable bool
+	Requeue   bool
+	Usage     TokenUsage
+}
+
 type Store interface {
 	CreateAnalysisJob(context.Context, CreateAnalysisJobInput) (Job, bool, error)
 	CreateGenerationJob(context.Context, CreateGenerationJobInput) (Generation, Job, bool, error)
@@ -44,7 +52,7 @@ type Store interface {
 	SetJobRunning(context.Context, uint64) error
 	CompleteAnalysis(context.Context, uint64, AnalysisOutput, TokenUsage) (Analysis, error)
 	CompleteGeneration(context.Context, uint64, GenerationOutput, editorial.GeneratedDraftInput, TokenUsage) (Generation, error)
-	SetJobFailure(context.Context, uint64, string, string, bool, TokenUsage) error
+	SetJobFailure(context.Context, uint64, JobFailureInput) error
 	AddJobEvent(context.Context, uint64, string, string) error
 	RetryJob(context.Context, uint64, uint64) (Job, error)
 }

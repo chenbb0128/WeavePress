@@ -490,13 +490,16 @@ func (s *AIStore) CompleteGeneration(ctx context.Context, jobID uint64, output a
 	return s.GetGeneration(ctx, generation.ID)
 }
 
-func (s *AIStore) SetJobFailure(ctx context.Context, id uint64, code, message string, retrying bool, usage aiwriting.TokenUsage) error {
-	status, retryable, eventMessage := aiwriting.JobFailed, false, message
-	if retrying {
-		status, retryable, eventMessage = aiwriting.JobQueued, true, "临时错误，等待自动重试："+message
+func (s *AIStore) SetJobFailure(ctx context.Context, id uint64, input aiwriting.JobFailureInput) error {
+	if input.Requeue && !input.Retryable {
+		return aiwriting.ErrInvalidParameters
 	}
-	code = truncateRunes(code, 64)
-	message = truncateRunes(message, 1024)
+	status, eventMessage := aiwriting.JobFailed, input.Message
+	if input.Requeue {
+		status, eventMessage = aiwriting.JobQueued, "临时错误，等待自动重试："+input.Message
+	}
+	code := truncateRunes(input.Code, 64)
+	message := truncateRunes(input.Message, 1024)
 	eventMessage = truncateRunes(eventMessage, 1024)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -506,8 +509,8 @@ func (s *AIStore) SetJobFailure(ctx context.Context, id uint64, code, message st
 	result, err := tx.ExecContext(ctx, `UPDATE ai_jobs SET status = ?, error_code = ?, error_message = ?, retryable = ?,
 		input_tokens = input_tokens + ?, output_tokens = output_tokens + ?, total_tokens = total_tokens + ?,
 		finished_at = IF(? = 'failed', UTC_TIMESTAMP(3), NULL)
-		WHERE id = ? AND status IN ('queued', 'running')`, status, code, message, retryable,
-		usage.InputTokens, usage.OutputTokens, usage.TotalTokens, status, id)
+		WHERE id = ? AND status IN ('queued', 'running')`, status, code, message, input.Retryable,
+		input.Usage.InputTokens, input.Usage.OutputTokens, input.Usage.TotalTokens, status, id)
 	if err != nil {
 		return err
 	}

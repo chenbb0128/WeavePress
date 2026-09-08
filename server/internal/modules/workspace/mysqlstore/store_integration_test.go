@@ -659,18 +659,21 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 	if rollbackStatus != aiwriting.JobRunning || rollbackTitle != "" || rollbackDraftID.Valid {
 		t.Fatalf("rollback state status=%q title=%q draft=%#v", rollbackStatus, rollbackTitle, rollbackDraftID)
 	}
-	if err := aiStore.SetJobFailure(ctx, rollbackJob.ID, "FINAL", "等待人工重试", false, aiwriting.TokenUsage{}); err != nil {
+	if err := aiStore.SetJobFailure(ctx, rollbackJob.ID, aiwriting.JobFailureInput{
+		Code: "FINAL", Message: "等待人工重试", Retryable: true,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `UPDATE ai_jobs SET retryable = TRUE WHERE id = ?`, rollbackJob.ID); err != nil {
-		t.Fatal(err)
+	exhaustedGenerationJob, err := aiStore.GetJob(ctx, rollbackJob.ID, false)
+	if err != nil || exhaustedGenerationJob.Status != aiwriting.JobFailed || !exhaustedGenerationJob.Retryable || exhaustedGenerationJob.FinishedAt == nil {
+		t.Fatalf("exhausted generation job=%#v err=%v", exhaustedGenerationJob, err)
 	}
 	retriedGenerationJob, err := aiStore.RetryJob(ctx, rollbackJob.ID, secondUser.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if retriedGenerationJob.RequestedBy != firstUser.ID {
-		t.Errorf("retried generation requested_by = %d, want original requester %d", retriedGenerationJob.RequestedBy, firstUser.ID)
+	if retriedGenerationJob.Status != aiwriting.JobQueued || retriedGenerationJob.RequestedBy != firstUser.ID || retriedGenerationJob.ManualRetries != 1 || retriedGenerationJob.ErrorCode != "" || retriedGenerationJob.FinishedAt != nil {
+		t.Errorf("retried generation job=%#v", retriedGenerationJob)
 	}
 	retriedGenerationWithEvents, err := aiStore.GetJob(ctx, rollbackJob.ID, true)
 	if err != nil {
@@ -706,7 +709,10 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 	if err := aiStore.SetJobRunning(ctx, failureJob.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := aiStore.SetJobFailure(ctx, failureJob.ID, "TEMP", "稍后重试", true, aiwriting.TokenUsage{InputTokens: 5, TotalTokens: 5}); err != nil {
+	if err := aiStore.SetJobFailure(ctx, failureJob.ID, aiwriting.JobFailureInput{
+		Code: "TEMP", Message: "稍后重试", Retryable: true, Requeue: true,
+		Usage: aiwriting.TokenUsage{InputTokens: 5, TotalTokens: 5},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	requeued, err := aiStore.GetJob(ctx, failureJob.ID, true)
@@ -716,7 +722,10 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 	if err := aiStore.SetJobRunning(ctx, failureJob.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := aiStore.SetJobFailure(ctx, failureJob.ID, "FINAL", "最终失败", false, aiwriting.TokenUsage{OutputTokens: 3, TotalTokens: 3}); err != nil {
+	if err := aiStore.SetJobFailure(ctx, failureJob.ID, aiwriting.JobFailureInput{
+		Code: "FINAL", Message: "最终失败",
+		Usage: aiwriting.TokenUsage{OutputTokens: 3, TotalTokens: 3},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	failed, err := aiStore.GetJob(ctx, failureJob.ID, false)
@@ -726,15 +735,14 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 	if _, err := aiStore.RetryJob(ctx, failureJob.ID, secondUser.ID); !errors.Is(err, aiwriting.ErrJobNotRetryable) {
 		t.Fatalf("non-retryable job retry error=%v", err)
 	}
-	if _, err := db.ExecContext(ctx, `UPDATE ai_jobs SET retryable = TRUE WHERE id = ?`, failureJob.ID); err != nil {
-		t.Fatal(err)
+	if err := aiStore.SetJobFailure(ctx, forcedJob.ID, aiwriting.JobFailureInput{
+		Code: "INVALID", Message: "非法重排", Requeue: true,
+	}); !errors.Is(err, aiwriting.ErrInvalidParameters) {
+		t.Fatalf("invalid requeue error=%v", err)
 	}
-	retried, err := aiStore.RetryJob(ctx, failureJob.ID, secondUser.ID)
-	if err != nil || retried.Status != aiwriting.JobQueued || retried.RequestedBy != firstUser.ID || retried.ManualRetries != 1 || retried.ErrorCode != "" || retried.FinishedAt != nil {
-		t.Fatalf("retried job=%#v err=%v", retried, err)
-	}
-	if _, err := aiStore.RetryJob(ctx, failureJob.ID, firstUser.ID); !errors.Is(err, aiwriting.ErrJobNotRetryable) {
-		t.Fatalf("queued job retry error=%v", err)
+	invalidFailureJob, err := aiStore.GetJob(ctx, forcedJob.ID, false)
+	if err != nil || invalidFailureJob.Status != aiwriting.JobQueued || invalidFailureJob.ErrorCode != "" || invalidFailureJob.FinishedAt != nil {
+		t.Fatalf("invalid failure mutated job=%#v err=%v", invalidFailureJob, err)
 	}
 	longMessage := strings.Repeat("测", 1030)
 	if err := aiStore.AddJobEvent(ctx, failureJob.ID, aiwriting.JobQueued, longMessage); err != nil {
