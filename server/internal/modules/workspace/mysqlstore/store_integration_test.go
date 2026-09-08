@@ -323,6 +323,26 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 	if err := db.PingContext(ctx); err != nil {
 		t.Fatal(err)
 	}
+	for _, column := range []struct {
+		table string
+		name  string
+		want  int64
+	}{
+		{table: "ai_generations", name: "angle_id", want: 64},
+		{table: "ai_generations", name: "tone", want: 32},
+		{table: "ai_job_events", name: "status", want: 64},
+	} {
+		var got int64
+		err := db.QueryRowContext(ctx, `SELECT CHARACTER_MAXIMUM_LENGTH
+			FROM information_schema.columns
+			WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`, column.table, column.name).Scan(&got)
+		if err != nil {
+			t.Fatalf("query %s.%s length: %v", column.table, column.name, err)
+		}
+		if got != column.want {
+			t.Fatalf("%s.%s length = %d, want %d", column.table, column.name, got, column.want)
+		}
+	}
 
 	workspaceStore := mysqlstore.New(db)
 	aiStore := mysqlstore.NewAIStore(db)
