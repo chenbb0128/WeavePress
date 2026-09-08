@@ -45,6 +45,45 @@ extract_location_block() {
   ' "$source_file" > "$output_file"
 }
 
+extract_server_level_directives() {
+  local source_file="$1"
+  local output_file="$2"
+
+  awk '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+
+    !capturing && trim($0) == "server {" {
+      capturing = 1
+      depth = 1
+      next
+    }
+
+    capturing {
+      if (depth == 1) {
+        print
+      }
+      opening_line = $0
+      closing_line = $0
+      depth += gsub(/\{/, "", opening_line)
+      depth -= gsub(/\}/, "", closing_line)
+      if (depth == 0) {
+        found = 1
+        exit
+      }
+    }
+
+    END {
+      if (!found) {
+        exit 1
+      }
+    }
+  ' "$source_file" > "$output_file"
+}
+
 require_directive_in_block() {
   local block_file="$1"
   local directive_pattern="$2"
@@ -53,6 +92,24 @@ require_directive_in_block() {
 
   if ! grep -Eq "^[[:space:]]*${directive_pattern}[[:space:]]*(#.*)?$" "$block_file"; then
     printf '%s must contain: %s\n' "$location_header" "$expected" >&2
+    return 1
+  fi
+}
+
+require_only_directive_in_block() {
+  local block_file="$1"
+  local selector_pattern="$2"
+  local directive_pattern="$3"
+  local expected="$4"
+  local context="$5"
+  local active_count
+
+  require_directive_in_block \
+    "$block_file" "$directive_pattern" "$expected" "$context" || return 1
+  active_count="$(grep -Ec "^[[:space:]]*${selector_pattern}" "$block_file" || true)"
+  if [[ "$active_count" -ne 1 ]]; then
+    printf '%s must contain exactly one active directive: %s\n' \
+      "$context" "$expected" >&2
     return 1
   fi
 }
@@ -68,6 +125,18 @@ reject_directive_in_block() {
   fi
 }
 
+reject_pattern_in_block() {
+  local block_file="$1"
+  local directive_pattern="$2"
+  local rejected="$3"
+  local context="$4"
+
+  if grep -Eq "^[[:space:]]*${directive_pattern}[[:space:]]*(#.*)?$" "$block_file"; then
+    printf '%s must not contain: %s\n' "$context" "$rejected" >&2
+    return 1
+  fi
+}
+
 assert_proxy_location() {
   local gateway_file="$1"
   local location_header="$2"
@@ -79,6 +148,9 @@ assert_proxy_location() {
     return 1
   fi
   require_directive_in_block "$block_file" \
+    'proxy_pass[[:space:]]+\$weavepress_api;' \
+    'proxy_pass $weavepress_api;' "$location_header" || return 1
+  reject_pattern_in_block "$block_file" \
     'proxy_pass[[:space:]]+http://weavepress-api:8080;' \
     'proxy_pass http://weavepress-api:8080;' "$location_header" || return 1
   require_directive_in_block "$block_file" \
@@ -104,6 +176,20 @@ assert_metrics_location() {
 
 assert_gateway_contract() {
   local gateway_file="$1"
+  local server_directives="$contract_temp_dir/server.directives"
+
+  if ! extract_server_level_directives "$gateway_file" "$server_directives"; then
+    printf 'Missing Nginx server block.\n' >&2
+    return 1
+  fi
+  require_only_directive_in_block "$server_directives" \
+    'resolver[[:space:]]+' \
+    'resolver[[:space:]]+127\.0\.0\.11[[:space:]]+valid=10s[[:space:]]+ipv6=off;' \
+    'resolver 127.0.0.11 valid=10s ipv6=off;' 'server' || return 1
+  require_only_directive_in_block "$server_directives" \
+    'set[[:space:]]+\$weavepress_api[[:space:]]+' \
+    'set[[:space:]]+\$weavepress_api[[:space:]]+http://weavepress-api:8080;' \
+    'set $weavepress_api http://weavepress-api:8080;' 'server' || return 1
 
   assert_proxy_location "$gateway_file" 'location /api/' api || return 1
   assert_proxy_location "$gateway_file" 'location /media/' media || return 1
@@ -174,25 +260,40 @@ run_gateway_self_test() {
   local metrics_mutant="$contract_temp_dir/metrics-proxy.conf"
   local proto_mutant="$contract_temp_dir/forwarded-proto.conf"
   local generic_upstream_mutant="$contract_temp_dir/generic-upstream.conf"
+  local missing_resolver_mutant="$contract_temp_dir/missing-resolver.conf"
+  local static_upstream_mutant="$contract_temp_dir/static-upstream.conf"
+  local wrong_alias_mutant="$contract_temp_dir/wrong-alias.conf"
 
   assert_gateway_contract "$gateway"
 
   mutate_location_literal "$gateway" 'location = /health' \
-    'proxy_pass http://weavepress-api:8080;' \
-    $'# proxy_pass http://weavepress-api:8080;\n        proxy_pass http://wrong-api:8080;' "$health_mutant"
+    'proxy_pass $weavepress_api;' \
+    $'# proxy_pass $weavepress_api;\n        proxy_pass http://wrong-api:8080;' "$health_mutant"
   mutate_location_literal "$gateway" 'location = /metrics' \
     'return 404;' $'# return 404;\n        proxy_pass http://weavepress-api:8080;' "$metrics_mutant"
   mutate_location_literal "$gateway" 'location /api/' \
     'proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;' \
     $'# proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;\n        proxy_set_header X-Forwarded-Proto $scheme;' "$proto_mutant"
   mutate_location_literal "$gateway" 'location /api/' \
-    'proxy_pass http://weavepress-api:8080;' \
+    'proxy_pass $weavepress_api;' \
     'proxy_pass http://api:8080;' "$generic_upstream_mutant"
+  mutate_location_literal "$gateway" 'server' \
+    'resolver 127.0.0.11 valid=10s ipv6=off;' \
+    '# resolver 127.0.0.11 valid=10s ipv6=off;' "$missing_resolver_mutant"
+  mutate_location_literal "$gateway" 'location /api/' \
+    'proxy_pass $weavepress_api;' \
+    $'proxy_pass $weavepress_api;\n        proxy_pass http://weavepress-api:8080;' "$static_upstream_mutant"
+  mutate_location_literal "$gateway" 'server' \
+    'set $weavepress_api http://weavepress-api:8080;' \
+    $'set $weavepress_api http://weavepress-api:8080;\n    set $weavepress_api http://api:8080;' "$wrong_alias_mutant"
 
   expect_gateway_rejection 'health proxy commented and upstream changed' "$health_mutant"
   expect_gateway_rejection 'metrics return commented and endpoint proxied' "$metrics_mutant"
   expect_gateway_rejection 'Proto header commented and changed to $scheme' "$proto_mutant"
   expect_gateway_rejection 'unique upstream changed to generic service alias' "$generic_upstream_mutant"
+  expect_gateway_rejection 'Docker DNS resolver removed' "$missing_resolver_mutant"
+  expect_gateway_rejection 'variable upstream changed to static upstream' "$static_upstream_mutant"
+  expect_gateway_rejection 'upstream variable changed to generic service alias' "$wrong_alias_mutant"
 }
 
 render_compose_model() {
