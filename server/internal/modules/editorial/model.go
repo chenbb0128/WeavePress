@@ -125,6 +125,16 @@ type UpdateInput struct {
 	ChangeNote      string
 }
 
+type GeneratedDraftInput struct {
+	SourceArticleID uint64
+	CreatedBy       uint64
+	Title           string
+	Digest          string
+	ContentHTML     string
+	CoverAssetID    *uint64
+	ChangeNote      string
+}
+
 type PreflightIssue struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
