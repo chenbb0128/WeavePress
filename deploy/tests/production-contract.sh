@@ -4,6 +4,7 @@ set -Eeuo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 gateway="$repo_root/deploy/nginx.conf"
 compose_file="$repo_root/deploy/production/compose.yaml"
+compose_contract="$repo_root/deploy/tests/production-compose-contract.py"
 contract_temp_dir="$(mktemp -d)"
 trap 'rm -rf "$contract_temp_dir"' EXIT
 
@@ -43,24 +44,25 @@ extract_location_block() {
   ' "$source_file" > "$output_file"
 }
 
-require_in_block() {
+require_directive_in_block() {
   local block_file="$1"
-  local expected="$2"
-  local location_header="$3"
+  local directive_pattern="$2"
+  local expected="$3"
+  local location_header="$4"
 
-  if ! grep -Fq "$expected" "$block_file"; then
+  if ! grep -Eq "^[[:space:]]*${directive_pattern}[[:space:]]*(#.*)?$" "$block_file"; then
     printf '%s must contain: %s\n' "$location_header" "$expected" >&2
     return 1
   fi
 }
 
-reject_in_block() {
+reject_directive_in_block() {
   local block_file="$1"
-  local rejected="$2"
+  local directive_name="$2"
   local location_header="$3"
 
-  if grep -Fq "$rejected" "$block_file"; then
-    printf '%s must not contain: %s\n' "$location_header" "$rejected" >&2
+  if grep -Eq "^[[:space:]]*${directive_name}[[:space:]]+" "$block_file"; then
+    printf '%s must not contain an active %s directive.\n' "$location_header" "$directive_name" >&2
     return 1
   fi
 }
@@ -75,8 +77,12 @@ assert_proxy_location() {
     printf 'Missing Nginx location block: %s\n' "$location_header" >&2
     return 1
   fi
-  require_in_block "$block_file" 'proxy_pass http://api:8080;' "$location_header" || return 1
-  require_in_block "$block_file" 'proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;' "$location_header" || return 1
+  require_directive_in_block "$block_file" \
+    'proxy_pass[[:space:]]+http://api:8080;' \
+    'proxy_pass http://api:8080;' "$location_header" || return 1
+  require_directive_in_block "$block_file" \
+    'proxy_set_header[[:space:]]+X-Forwarded-Proto[[:space:]]+\$http_x_forwarded_proto;' \
+    'proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;' "$location_header" || return 1
 }
 
 assert_metrics_location() {
@@ -88,9 +94,11 @@ assert_metrics_location() {
     printf 'Missing Nginx location block: %s\n' "$location_header" >&2
     return 1
   fi
-  require_in_block "$block_file" 'access_log off;' "$location_header" || return 1
-  require_in_block "$block_file" 'return 404;' "$location_header" || return 1
-  reject_in_block "$block_file" 'proxy_pass ' "$location_header" || return 1
+  require_directive_in_block "$block_file" \
+    'access_log[[:space:]]+off;' 'access_log off;' "$location_header" || return 1
+  require_directive_in_block "$block_file" \
+    'return[[:space:]]+404;' 'return 404;' "$location_header" || return 1
+  reject_directive_in_block "$block_file" proxy_pass "$location_header" || return 1
 }
 
 assert_gateway_contract() {
@@ -168,27 +176,26 @@ run_gateway_self_test() {
   assert_gateway_contract "$gateway"
 
   mutate_location_literal "$gateway" 'location = /health' \
-    'proxy_pass http://api:8080;' 'proxy_pass http://wrong-api:8080;' "$health_mutant"
+    'proxy_pass http://api:8080;' \
+    $'# proxy_pass http://api:8080;\n        proxy_pass http://wrong-api:8080;' "$health_mutant"
   mutate_location_literal "$gateway" 'location = /metrics' \
-    'return 404;' $'proxy_pass http://api:8080;\n        return 404;' "$metrics_mutant"
+    'return 404;' $'# return 404;\n        proxy_pass http://api:8080;' "$metrics_mutant"
   mutate_location_literal "$gateway" 'location /api/' \
     'proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;' \
-    'proxy_set_header X-Forwarded-Proto $scheme;' "$proto_mutant"
+    $'# proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;\n        proxy_set_header X-Forwarded-Proto $scheme;' "$proto_mutant"
 
-  expect_gateway_rejection 'health upstream changed' "$health_mutant"
-  expect_gateway_rejection 'metrics proxied' "$metrics_mutant"
-  expect_gateway_rejection 'X-Forwarded-Proto changed to $scheme' "$proto_mutant"
+  expect_gateway_rejection 'health proxy commented and upstream changed' "$health_mutant"
+  expect_gateway_rejection 'metrics return commented and endpoint proxied' "$metrics_mutant"
+  expect_gateway_rejection 'Proto header commented and changed to $scheme' "$proto_mutant"
 }
 
-assert_compose_contract() {
-  if grep -Eq '^[[:space:]]+(mysql|redis|nginx):' "$compose_file"; then
-    printf 'Production compose must reuse shared MySQL, Redis and Nginx.\n' >&2
-    return 1
-  fi
-  if grep -Eq '^[[:space:]]+ports:' "$compose_file"; then
-    printf 'Application services must not publish host ports.\n' >&2
-    return 1
-  fi
+render_compose_model() {
+  local output_file="$1"
+
+  APP_SHA=0000000000000000000000000000000000000000 \
+    docker compose --profile migrate \
+    --env-file "$repo_root/deploy/production/.env.example" \
+    -f "$compose_file" config --format json > "$output_file"
 }
 
 case "${1:-}" in
@@ -199,24 +206,32 @@ case "${1:-}" in
     fi
     assert_gateway_contract "$2"
     ;;
+  --gateway-self-test)
+    if [[ $# -ne 1 ]]; then
+      printf 'Usage: %s --gateway-self-test\n' "$0" >&2
+      exit 2
+    fi
+    run_gateway_self_test
+    ;;
   --self-test)
     if [[ $# -ne 1 ]]; then
       printf 'Usage: %s --self-test\n' "$0" >&2
       exit 2
     fi
+    compose_model="$contract_temp_dir/compose.json"
     run_gateway_self_test
+    render_compose_model "$compose_model"
+    python3 -B "$compose_contract" --self-test "$compose_model"
     ;;
   '')
     assert_gateway_contract "$gateway"
-    assert_compose_contract
+    compose_model="$contract_temp_dir/compose.json"
+    render_compose_model "$compose_model"
+    python3 -B "$compose_contract" "$compose_model"
 
     docker run --rm --add-host api:127.0.0.1 \
       -v "$gateway:/etc/nginx/conf.d/default.conf:ro" \
       nginx:1.27-alpine nginx -t
-
-    APP_SHA=0000000000000000000000000000000000000000 \
-      docker compose --env-file "$repo_root/deploy/production/.env.example" \
-      -f "$compose_file" config --quiet
     ;;
   *)
     printf 'Unknown option: %s\n' "$1" >&2
