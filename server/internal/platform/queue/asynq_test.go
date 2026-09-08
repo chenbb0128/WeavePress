@@ -40,13 +40,13 @@ func TestRedisClientOptFromConfig(t *testing.T) {
 	}
 }
 
-func TestCollectionRetryDelay(t *testing.T) {
+func TestRetryDelaySchedule(t *testing.T) {
 	for _, test := range []struct {
 		retried int
 		want    time.Duration
 	}{{0, 30 * time.Second}, {1, 2 * time.Minute}, {2, 10 * time.Minute}, {3, 10 * time.Minute}} {
-		if got := collectionRetryDelay(test.retried, nil, nil); got != test.want {
-			t.Fatalf("collectionRetryDelay(%d) = %s, want %s", test.retried, got, test.want)
+		if got := retryDelay(test.retried, errors.New("temporary"), nil); got != test.want {
+			t.Fatalf("retryDelay(%d) = %s, want %s", test.retried, got, test.want)
 		}
 	}
 }

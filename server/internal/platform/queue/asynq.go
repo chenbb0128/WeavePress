@@ -40,6 +40,13 @@ func (c *Client) Close() error {
 	return c.Asynq.Close()
 }
 
+func (c *Client) EnqueueContext(ctx context.Context, task *asynq.Task, options ...asynq.Option) (*asynq.TaskInfo, error) {
+	if c == nil || c.Asynq == nil {
+		return nil, fmt.Errorf("queue client is unavailable")
+	}
+	return c.Asynq.EnqueueContext(ctx, task, options...)
+}
+
 func NewServer(redisCfg config.RedisConfig, workerCfg config.WorkerConfig, logger *slog.Logger) *asynq.Server {
 	if logger == nil {
 		logger = slog.Default()
@@ -58,7 +65,7 @@ func NewServer(redisCfg config.RedisConfig, workerCfg config.WorkerConfig, logge
 		Queues:          queues,
 		ShutdownTimeout: workerCfg.ShutdownTimeout,
 		Logger:          slogAdapter{logger: logger.With("component", "asynq")},
-		RetryDelayFunc:  collectionRetryDelay,
+		RetryDelayFunc:  retryDelay,
 		ErrorHandler: asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
 			attrs := []any{"error", err}
 			if task != nil {
@@ -69,7 +76,7 @@ func NewServer(redisCfg config.RedisConfig, workerCfg config.WorkerConfig, logge
 	})
 }
 
-func collectionRetryDelay(n int, _ error, _ *asynq.Task) time.Duration {
+func retryDelay(n int, _ error, _ *asynq.Task) time.Duration {
 	switch n {
 	case 0:
 		return 30 * time.Second

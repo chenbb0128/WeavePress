@@ -1,15 +1,24 @@
 package workers
 
-import "github.com/hibiken/asynq"
-
 import (
+	"github.com/hibiken/asynq"
+
+	"github.com/chenbb0128/weavepress/server/internal/modules/aiwriting"
 	"github.com/chenbb0128/weavepress/server/internal/modules/content"
 	"github.com/chenbb0128/weavepress/server/internal/modules/editorial"
 )
 
-func NewMux(contentService *content.Service, editorialService *editorial.Service) *asynq.ServeMux {
+func NewMux(contentService *content.Service, editorialService *editorial.Service, aiServices ...*aiwriting.Service) *asynq.ServeMux {
 	mux := asynq.NewServeMux()
-	mux.HandleFunc(content.TaskCollectArticle, contentService.HandleTask)
-	mux.HandleFunc(editorial.TaskPublishWeChat, editorialService.HandleTask)
+	if contentService != nil {
+		mux.HandleFunc(content.TaskCollectArticle, contentService.HandleTask)
+	}
+	if editorialService != nil {
+		mux.HandleFunc(editorial.TaskPublishWeChat, editorialService.HandleTask)
+	}
+	if len(aiServices) > 0 && aiServices[0] != nil {
+		mux.HandleFunc(aiwriting.TaskAnalyze, aiServices[0].HandleAnalyzeTask)
+		mux.HandleFunc(aiwriting.TaskGenerate, aiServices[0].HandleGenerateTask)
+	}
 	return mux
 }
