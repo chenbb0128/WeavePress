@@ -2,12 +2,133 @@
 import copy
 import json
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
 
 EXPECTED_SERVICES = {"migrate", "api", "worker", "gateway"}
 INFRASTRUCTURE_IMAGES = {"mysql", "redis", "nginx"}
+
+
+def key_boundary_before(line: str, start: int) -> bool:
+    position = start - 1
+    while position >= 0 and line[position].isspace():
+        position -= 1
+    return position < 0 or line[position] in "{,"
+
+
+def colon_after(line: str, end: int) -> bool:
+    while end < len(line) and line[end].isspace():
+        end += 1
+    return end < len(line) and line[end] == ":"
+
+
+def quoted_scalar(line: str, start: int) -> tuple[str, int]:
+    quote = line[start]
+    value: list[str] = []
+    position = start + 1
+    while position < len(line):
+        character = line[position]
+        if quote == '"' and character == "\\" and position + 1 < len(line):
+            value.append(line[position + 1])
+            position += 2
+            continue
+        if character == quote:
+            if quote == "'" and position + 1 < len(line) and line[position + 1] == "'":
+                value.append("'")
+                position += 2
+                continue
+            return "".join(value), position + 1
+        value.append(character)
+        position += 1
+    return "".join(value), position
+
+
+def line_has_extends_key(line: str) -> bool:
+    position = 0
+    while position < len(line):
+        character = line[position]
+        if character == "#" and (position == 0 or line[position - 1].isspace()):
+            return False
+        if character in "\"'":
+            value, end = quoted_scalar(line, position)
+            if value == "extends" and key_boundary_before(line, position) and colon_after(line, end):
+                return True
+            position = end
+            continue
+        if line.startswith("extends", position):
+            end = position + len("extends")
+            if key_boundary_before(line, position) and colon_after(line, end):
+                return True
+        position += 1
+    return False
+
+
+def validate_source(path: str) -> list[str]:
+    errors: list[str] = []
+    source = Path(path).read_text(encoding="utf-8")
+    for line_number, line in enumerate(source.splitlines(), start=1):
+        if line_has_extends_key(line):
+            errors.append(f"active extends key at line {line_number}")
+    return errors
+
+
+def require_source_valid(path: str) -> int:
+    errors = validate_source(path)
+    for error in errors:
+        print(f"Production Compose source contract violation: {error}", file=sys.stderr)
+    return 1 if errors else 0
+
+
+def run_source_self_test() -> int:
+    rejected_fixtures = {
+        "block-style": """services:
+  api:
+    extends:
+      file: ./base.yaml
+      service: base-api
+""",
+        "inline mapping": """services:
+  api: { image: example/api:latest, extends: { file: ./base.yaml, service: base-api } }
+""",
+        "double-quoted key": """services:
+  api:
+    \"extends\": { file: ./base.yaml, service: base-api }
+""",
+        "single-quoted key": """services:
+  api:
+    'extends': { file: ./base.yaml, service: base-api }
+""",
+    }
+    allowed_fixture = """services:
+  api:
+    # extends:
+    image: example/api:latest
+    environment:
+      LABEL: \"extends:\"
+      DETAIL: \"literal # extends:\"
+      FLOW_TEXT: \"{ extends: ignored }\"
+"""
+
+    with tempfile.TemporaryDirectory() as directory:
+        fixture_dir = Path(directory)
+        for name, content in rejected_fixtures.items():
+            fixture = fixture_dir / f"{name.replace(' ', '-')}.yaml"
+            fixture.write_text(content, encoding="utf-8")
+            if not validate_source(str(fixture)):
+                print(f"Source Compose contract accepted fixture: {name}", file=sys.stderr)
+                return 1
+            print(f"Source Compose fixture rejected: {name}")
+
+        allowed = fixture_dir / "comments-and-strings.yaml"
+        allowed.write_text(allowed_fixture, encoding="utf-8")
+        errors = validate_source(str(allowed))
+        if errors:
+            print("Source Compose contract rejected comments or string values.", file=sys.stderr)
+            return 1
+        print("Source Compose fixture accepted: comments and string values")
+    return 0
 
 
 def image_repository(image: object) -> str:
@@ -102,11 +223,19 @@ def run_self_test(baseline: object) -> int:
 
 
 def main() -> int:
+    if len(sys.argv) == 2 and sys.argv[1] == "--source-self-test":
+        return run_source_self_test()
+    if len(sys.argv) == 3 and sys.argv[1] == "--source":
+        return require_source_valid(sys.argv[2])
     if len(sys.argv) == 2:
         return require_valid(load_model(sys.argv[1]))
     if len(sys.argv) == 3 and sys.argv[1] == "--self-test":
         return run_self_test(load_model(sys.argv[2]))
-    print(f"Usage: {sys.argv[0]} [--self-test] <compose.json>", file=sys.stderr)
+    print(
+        f"Usage: {sys.argv[0]} (--source <compose.yaml> | --source-self-test | "
+        "[--self-test] <compose.json>)",
+        file=sys.stderr,
+    )
     return 2
 
 
