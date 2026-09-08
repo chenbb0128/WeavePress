@@ -106,6 +106,34 @@ func TestOpenAICompleteMapsHTTPError(t *testing.T) {
 	}
 }
 
+func TestOpenAICompleteKeepsHTTPStatusClassificationWhenErrorBodyReadFails(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		code      string
+		retryable bool
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized, code: ErrorCodeAuthFailed},
+		{name: "rate limited", status: http.StatusTooManyRequests, code: ErrorCodeRateLimited, retryable: true},
+		{name: "server error", status: http.StatusInternalServerError, code: ErrorCodeUnavailable, retryable: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := &errorReadCloser{err: errors.New("error body read failed")}
+			provider := providerWithTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: tt.status, Body: body}, nil
+			}))
+
+			_, err := provider.Complete(context.Background(), Request{})
+			assertProviderError(t, err, tt.code, tt.retryable)
+			if !body.closed {
+				t.Fatal("error response body was not closed")
+			}
+		})
+	}
+}
+
 func TestOpenAICompleteMapsTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		time.Sleep(100 * time.Millisecond)

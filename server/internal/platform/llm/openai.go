@@ -106,10 +106,7 @@ func (p *openAICompatible) Complete(ctx context.Context, request Request) (Respo
 	defer httpResponse.Body.Close()
 
 	if httpResponse.StatusCode < http.StatusOK || httpResponse.StatusCode >= http.StatusMultipleChoices {
-		_, readErr := io.Copy(io.Discard, io.LimitReader(httpResponse.Body, maxErrorResponseBytes))
-		if readErr != nil {
-			return Response{}, transportError(ctx, "读取 AI 模型错误响应失败", readErr)
-		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(httpResponse.Body, maxErrorResponseBytes))
 		cause := fmt.Errorf("AI 模型服务返回 HTTP %d", httpResponse.StatusCode)
 		switch {
 		case httpResponse.StatusCode == http.StatusUnauthorized || httpResponse.StatusCode == http.StatusForbidden:
