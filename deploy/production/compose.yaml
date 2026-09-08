@@ -1,0 +1,83 @@
+name: weavepress
+
+x-server-environment: &server-environment
+  WEAVEPRESS_DATABASE_DSN: ${WEAVEPRESS_DB_APP_DSN:?application DSN is required}
+  WEAVEPRESS_REDIS_PASSWORD: ${WEAVEPRESS_REDIS_PASSWORD:?Redis password is required}
+  WEAVEPRESS_AUTH_JWT_SECRET: ${WEAVEPRESS_AUTH_JWT_SECRET:?JWT secret is required}
+  WEAVEPRESS_AUTH_MEDIA_SIGNING_KEY: ${WEAVEPRESS_AUTH_MEDIA_SIGNING_KEY:?media signing key is required}
+  WEAVEPRESS_APP_ENV: ${WEAVEPRESS_APP_ENV:-staging}
+  WEAVEPRESS_STORAGE_DRIVER: ${WEAVEPRESS_STORAGE_DRIVER:-local}
+  WEAVEPRESS_STORAGE_QINIU_ACCESS_KEY: ${WEAVEPRESS_STORAGE_QINIU_ACCESS_KEY:-}
+  WEAVEPRESS_STORAGE_QINIU_SECRET_KEY: ${WEAVEPRESS_STORAGE_QINIU_SECRET_KEY:-}
+  WEAVEPRESS_STORAGE_QINIU_BUCKET: ${WEAVEPRESS_STORAGE_QINIU_BUCKET:-}
+  WEAVEPRESS_STORAGE_QINIU_DOMAIN: ${WEAVEPRESS_STORAGE_QINIU_DOMAIN:-}
+  WEAVEPRESS_WECHAT_ENABLED: ${WEAVEPRESS_WECHAT_ENABLED:-false}
+  WEAVEPRESS_WECHAT_APP_ID: ${WEAVEPRESS_WECHAT_APP_ID:-}
+  WEAVEPRESS_WECHAT_APP_SECRET: ${WEAVEPRESS_WECHAT_APP_SECRET:-}
+
+x-server: &server
+  environment: *server-environment
+  volumes:
+    - ./config.yaml:/app/configs/config.yaml:ro
+    - ./data/media:/app/data
+  networks: [app, infra]
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: [no-new-privileges:true]
+
+services:
+  migrate:
+    <<: *server
+    image: registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-migrate:${APP_SHA:?APP_SHA is required}
+    command: ["-command", "up"]
+    environment:
+      <<: *server-environment
+      WEAVEPRESS_DATABASE_DSN: ${WEAVEPRESS_DB_MIGRATION_DSN:?migration DSN is required}
+    networks: [infra]
+    profiles: [migrate]
+    restart: "no"
+    mem_limit: 256m
+    cpus: 0.50
+    pids_limit: 128
+  api:
+    <<: *server
+    image: registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-api:${APP_SHA:?APP_SHA is required}
+    container_name: weavepress-api
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.75
+    pids_limit: 128
+    healthcheck:
+      test: [CMD, /app/healthcheck, -url, http://127.0.0.1:8080/ready]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+  worker:
+    <<: *server
+    image: registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-worker:${APP_SHA:?APP_SHA is required}
+    container_name: weavepress-worker
+    environment:
+      <<: *server-environment
+      WEAVEPRESS_WORKER_ENABLED: "true"
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.50
+    pids_limit: 128
+  gateway:
+    image: registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-gateway:${APP_SHA:?APP_SHA is required}
+    container_name: weavepress-gateway
+    networks: [app]
+    read_only: true
+    tmpfs: [/var/cache/nginx, /var/run, /tmp]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+    depends_on:
+      api: { condition: service_healthy }
+
+networks:
+  app: { external: true, name: app }
+  infra: { external: true, name: infra }
