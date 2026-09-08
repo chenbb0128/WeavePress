@@ -31,6 +31,11 @@ func BuildSourceDocument(article workspace.Article) SourceDocument {
 			plainParts = append(plainParts, block.Text)
 		}
 	}
+	if len(blocks) == 0 && article.PlainText != "" {
+		fallback := SourceBlock{ID: "B1", Type: "paragraph", Text: article.PlainText}
+		blocks = append(blocks, fallback)
+		blockByID[fallback.ID] = fallback
+	}
 	plainText := article.PlainText
 	if plainText == "" {
 		plainText = strings.Join(plainParts, "\n")

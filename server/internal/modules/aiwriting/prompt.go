@@ -87,14 +87,10 @@ func repairShape(kind string) string {
 }
 
 func sourcePayload(source SourceDocument) sourcePromptPayload {
-	blocks := source.Blocks
-	if len(blocks) == 0 && source.PlainText != "" {
-		blocks = []SourceBlock{{ID: "B1", Type: "paragraph", Text: source.PlainText}}
-	}
 	return sourcePromptPayload{
 		Title:      source.Article.Title,
 		SourceName: source.Article.SourceName,
-		Blocks:     blocks,
+		Blocks:     source.Blocks,
 	}
 }
 

@@ -82,7 +82,8 @@ func TestSourcePromptOmitsArticleAndAssetURLs(t *testing.T) {
 func TestSourcePromptWrapsPlainTextAsFallbackBlock(t *testing.T) {
 	const body = "没有结构化 Blocks 的正文"
 
-	messages := BuildAnalysisMessages(SourceDocument{PlainText: body})
+	source := BuildSourceDocument(workspace.Article{PlainText: body})
+	messages := BuildAnalysisMessages(source)
 
 	for _, want := range []string{`"blocks":[`, `"id":"B1"`, `"type":"paragraph"`, body} {
 		if !strings.Contains(messages[1].Content, want) {

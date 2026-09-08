@@ -33,6 +33,40 @@ func TestBuildSourceDocumentAssignsStableBlockIDsWithoutTruncating(t *testing.T)
 	}
 }
 
+func TestPlainTextSourceUsesOneFallbackBlockAcrossPromptAndValidation(t *testing.T) {
+	article := workspace.Article{ID: 12, PlainText: "纯文本来源事实"}
+
+	source := BuildSourceDocument(article)
+
+	if len(source.Blocks) != 1 || source.Blocks[0].ID != "B1" || source.Blocks[0].Type != "paragraph" || source.Blocks[0].Text != article.PlainText {
+		t.Fatalf("blocks = %#v", source.Blocks)
+	}
+	if block, ok := source.BlockByID["B1"]; !ok || block != source.Blocks[0] {
+		t.Fatalf("blockByID = %#v", source.BlockByID)
+	}
+	messages := BuildAnalysisMessages(source)
+	if !strings.Contains(messages[1].Content, `"id":"B1"`) || strings.Count(messages[1].Content, article.PlainText) != 1 {
+		t.Fatalf("prompt = %s", messages[1].Content)
+	}
+	output := AnalysisOutput{
+		Summary: "摘要",
+		Facts: []Fact{{
+			ID:             "F1",
+			Text:           "来源事实",
+			SourceBlockIDs: []string{"B1"},
+			Confidence:     "high",
+		}},
+		Angles: []Angle{
+			{ID: "A1", Title: "角度一", Thesis: "论点一", Outline: []string{"提纲一"}},
+			{ID: "A2", Title: "角度二", Thesis: "论点二", Outline: []string{"提纲二"}},
+			{ID: "A3", Title: "角度三", Thesis: "论点三", Outline: []string{"提纲三"}},
+		},
+	}
+	if err := ValidateAnalysis(source, output); err != nil {
+		t.Fatalf("validate analysis: %v", err)
+	}
+}
+
 func TestValidateGenerationParams(t *testing.T) {
 	valid := GenerationParams{
 		AngleID:                "A1",
