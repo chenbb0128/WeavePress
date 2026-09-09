@@ -217,14 +217,23 @@ function stopGenerationPolling() {
   generationTimer = undefined;
 }
 
-function cancelGenerationState() {
+function suspendGenerationActivity() {
   stopGenerationPolling();
   generationActionEpoch += 1;
   generationSubmitting.value = false;
+}
+
+function resetGenerationContext() {
   generation.value = undefined;
   generationRequestError.value = '';
   pendingGenerationKey = '';
   pendingGenerationFingerprint = '';
+}
+
+function resumeGenerationPolling() {
+  if (generation.value?.job && shouldPoll(generation.value.job.status)) {
+    scheduleGenerationPoll();
+  }
 }
 
 function applyAnalysis(value: AIAnalysis) {
@@ -235,19 +244,26 @@ function applyAnalysis(value: AIAnalysis) {
 
 async function loadAnalysis(id: number) {
   const epoch = ++selectionEpoch;
-  cancelGenerationState();
+  suspendGenerationActivity();
   analysisSelecting.value = true;
+  analysisRequestError.value = '';
+  let committed = false;
   try {
     const data = await getAIAnalysisApi(id);
     if (destroyed || epoch !== selectionEpoch) return;
     applyAnalysis(data);
+    resetGenerationContext();
+    committed = true;
   } catch {
     if (!destroyed && epoch === selectionEpoch) {
       selectedAnalysisId.value = selectedAnalysis.value?.id;
       analysisRequestError.value = '分析资料加载失败，请稍后重试';
     }
   } finally {
-    if (!destroyed && epoch === selectionEpoch) analysisSelecting.value = false;
+    if (!destroyed && epoch === selectionEpoch) {
+      analysisSelecting.value = false;
+      if (!committed) resumeGenerationPolling();
+    }
   }
 }
 

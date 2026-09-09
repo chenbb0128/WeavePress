@@ -241,6 +241,17 @@ function buttonByText(host: HTMLElement, text: string) {
   );
 }
 
+async function selectAnalysis(host: HTMLElement, label: string) {
+  host.querySelector<HTMLElement>('.w-72 .el-select__wrapper')?.click();
+  await settle();
+  const option = [
+    ...document.querySelectorAll<HTMLElement>('.el-select-dropdown__item'),
+  ].find((item) => item.textContent?.includes(label));
+  expect(option).toBeTruthy();
+  option?.click();
+  await settle();
+}
+
 describe('article detail AI entry', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -483,6 +494,236 @@ describe('ai workbench', () => {
     expect(host.textContent).not.toContain('生成标题');
     expect(buttonByText(host, '生成稿件')?.disabled).toBe(false);
     expect(audienceInput.disabled).toBe(false);
+  });
+
+  it('reuses the pending generation key after analysis selection rolls back', async () => {
+    const current = analysis();
+    const alternativeJob = job('completed', { id: 20 });
+    const alternative = analysis(alternativeJob, {
+      createdAt: '2026-09-08T00:00:03Z',
+      id: 30,
+      jobId: alternativeJob.id,
+      summary: '候选分析摘要',
+    });
+    const selection = deferred<AIAnalysis>();
+    mocks.getAIAnalysesApi.mockResolvedValue({
+      items: [current, alternative],
+      page: 1,
+      pageSize: 20,
+      total: 2,
+    });
+    mocks.getAIAnalysisApi.mockImplementation((id: number) =>
+      id === alternative.id ? selection.promise : Promise.resolve(current),
+    );
+    const firstSubmission = deferred<{
+      generation: AIGeneration;
+      job: AIJob;
+      reused: boolean;
+    }>();
+    const retrySubmission = deferred<{
+      generation: AIGeneration;
+      job: AIJob;
+      reused: boolean;
+    }>();
+    mocks.startAIGenerationApi
+      .mockReturnValueOnce(firstSubmission.promise)
+      .mockReturnValueOnce(retrySubmission.promise);
+
+    const { host } = mountComponent(AIWorkbench);
+    await settle();
+    const audienceInput = host.querySelector<HTMLInputElement>(
+      'input[placeholder="例如：产品经理"]',
+    );
+    expect(audienceInput).toBeTruthy();
+    if (!audienceInput) return;
+    audienceInput.value = '产品团队';
+    audienceInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    buttonByText(host, '生成稿件')?.click();
+    await settle();
+    const firstKey =
+      mocks.startAIGenerationApi.mock.calls[0]?.[1]?.idempotencyKey;
+
+    await selectAnalysis(host, '分析 #30');
+    selection.reject(new Error('analysis unavailable'));
+    await settle();
+    buttonByText(host, '生成稿件')?.click();
+    await settle();
+
+    expect(mocks.startAIGenerationApi).toHaveBeenCalledTimes(2);
+    expect(mocks.startAIGenerationApi.mock.calls[1]?.[0]).toBe(current.id);
+    expect(mocks.startAIGenerationApi.mock.calls[1]?.[1]?.idempotencyKey).toBe(
+      firstKey,
+    );
+
+    const restoredGeneration = {
+      ...generation(62),
+      title: '恢复后的生成标题',
+    };
+    retrySubmission.resolve({
+      generation: restoredGeneration,
+      job: restoredGeneration.job as AIJob,
+      reused: true,
+    });
+    await settle();
+    expect(host.textContent).toContain('恢复后的生成标题');
+
+    const staleGeneration = {
+      ...generation(61),
+      title: '过期生成标题',
+    };
+    firstSubmission.resolve({
+      generation: staleGeneration,
+      job: staleGeneration.job as AIJob,
+      reused: false,
+    });
+    await settle();
+    expect(host.textContent).toContain('恢复后的生成标题');
+    expect(host.textContent).not.toContain('过期生成标题');
+  });
+
+  it('keeps an active generation visible after analysis selection rolls back', async () => {
+    const current = analysis();
+    const alternativeJob = job('completed', { id: 20 });
+    const alternative = analysis(alternativeJob, {
+      createdAt: '2026-09-08T00:00:03Z',
+      id: 30,
+      jobId: alternativeJob.id,
+      summary: '候选分析摘要',
+    });
+    const selection = deferred<AIAnalysis>();
+    mocks.getAIAnalysesApi.mockResolvedValue({
+      items: [current, alternative],
+      page: 1,
+      pageSize: 20,
+      total: 2,
+    });
+    mocks.getAIAnalysisApi.mockImplementation((id: number) =>
+      id === alternative.id ? selection.promise : Promise.resolve(current),
+    );
+    const activeJob = job('queued', {
+      id: 42,
+      promptVersion: 'generation-v1',
+      type: 'generation',
+    });
+    const activeGeneration = {
+      ...generation(),
+      job: activeJob,
+      jobId: activeJob.id,
+      title: '排队中的生成标题',
+    };
+    mocks.startAIGenerationApi.mockResolvedValue({
+      generation: activeGeneration,
+      job: activeJob,
+      reused: false,
+    });
+
+    const { host } = mountComponent(AIWorkbench);
+    await settle();
+    const audienceInput = host.querySelector<HTMLInputElement>(
+      'input[placeholder="例如：产品经理"]',
+    );
+    expect(audienceInput).toBeTruthy();
+    if (!audienceInput) return;
+    audienceInput.value = '产品团队';
+    audienceInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    buttonByText(host, '生成稿件')?.click();
+    await settle();
+    expect(host.textContent).toContain('生成结果');
+    expect(host.textContent).toContain('排队中');
+
+    await selectAnalysis(host, '分析 #30');
+    selection.reject(new Error('analysis unavailable'));
+    await settle();
+
+    expect(host.textContent).toContain('生成结果');
+    expect(host.textContent).toContain('排队中');
+    expect(host.textContent).toContain('分析资料加载失败，请稍后重试');
+  });
+
+  it('commits a successful analysis selection with a fresh generation key', async () => {
+    const current = analysis();
+    const alternativeJob = job('completed', { id: 20 });
+    const alternative = analysis(alternativeJob, {
+      createdAt: '2026-09-08T00:00:03Z',
+      id: 30,
+      jobId: alternativeJob.id,
+      summary: '候选分析摘要',
+    });
+    mocks.getAIAnalysesApi.mockResolvedValue({
+      items: [current, alternative],
+      page: 1,
+      pageSize: 20,
+      total: 2,
+    });
+    mocks.getAIAnalysisApi.mockImplementation((id: number) =>
+      Promise.resolve(id === alternative.id ? alternative : current),
+    );
+    mocks.startAIGenerationApi
+      .mockRejectedValueOnce(new Error('network unavailable'))
+      .mockResolvedValueOnce({
+        generation: { ...generation(), analysisId: alternative.id },
+        job: generation().job,
+        reused: false,
+      });
+
+    const { host } = mountComponent(AIWorkbench);
+    await settle();
+    const audienceInput = host.querySelector<HTMLInputElement>(
+      'input[placeholder="例如：产品经理"]',
+    );
+    expect(audienceInput).toBeTruthy();
+    if (!audienceInput) return;
+    audienceInput.value = '产品团队';
+    audienceInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    buttonByText(host, '生成稿件')?.click();
+    await settle();
+    const currentKey =
+      mocks.startAIGenerationApi.mock.calls[0]?.[1]?.idempotencyKey;
+
+    await selectAnalysis(host, '分析 #30');
+    buttonByText(host, '生成稿件')?.click();
+    await settle();
+
+    expect(mocks.startAIGenerationApi.mock.calls[1]?.[0]).toBe(alternative.id);
+    expect(
+      mocks.startAIGenerationApi.mock.calls[1]?.[1]?.idempotencyKey,
+    ).not.toBe(currentKey);
+  });
+
+  it('clears an analysis selection error when the next selection succeeds', async () => {
+    const current = analysis();
+    const alternativeJob = job('completed', { id: 20 });
+    const alternative = analysis(alternativeJob, {
+      createdAt: '2026-09-08T00:00:03Z',
+      id: 30,
+      jobId: alternativeJob.id,
+      summary: '候选分析摘要',
+    });
+    mocks.getAIAnalysesApi.mockResolvedValue({
+      items: [current, alternative],
+      page: 1,
+      pageSize: 20,
+      total: 2,
+    });
+    mocks.getAIAnalysisApi.mockImplementation((id: number) =>
+      id === alternative.id
+        ? Promise.reject(new Error('analysis unavailable'))
+        : Promise.resolve(current),
+    );
+
+    const { host } = mountComponent(AIWorkbench);
+    await settle();
+    await selectAnalysis(host, '分析 #30');
+    expect(host.textContent).toContain('分析资料加载失败，请稍后重试');
+
+    mocks.getAIAnalysisApi.mockResolvedValue(alternative);
+    await selectAnalysis(host, '分析 #30');
+
+    expect(host.textContent).toContain('候选分析摘要');
+    expect(host.textContent).not.toContain('分析资料加载失败，请稍后重试');
   });
 
   afterEach(() => {
