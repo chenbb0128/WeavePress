@@ -1,4 +1,4 @@
-import type { GenerationInput } from '#/api/ai';
+import type { AIJobEvent, GenerationInput } from '#/api/ai';
 
 import { describe, expect, it } from 'vitest';
 
@@ -23,6 +23,18 @@ function validInput(): GenerationInput {
 }
 
 describe('ai workbench model', () => {
+  it('accepts open-ended job event statuses', () => {
+    const event: AIJobEvent = {
+      createdAt: '2026-09-09T00:00:00Z',
+      id: 1,
+      jobId: 2,
+      message: 'AI 输出格式无效，正在执行一次格式修复',
+      status: 'format_repair',
+    };
+
+    expect(event.status).toBe('format_repair');
+  });
+
   it('only polls queued and running jobs', () => {
     expect(shouldPoll('queued')).toBe(true);
     expect(shouldPoll('running')).toBe(true);

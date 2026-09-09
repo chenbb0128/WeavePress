@@ -74,7 +74,7 @@ export interface AIJobEvent {
   id: number;
   jobId: number;
   message: string;
-  status: AIJobStatus;
+  status: string;
 }
 
 export interface AIJob {
