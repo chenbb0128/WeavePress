@@ -246,11 +246,13 @@ paths:
           description: 分析任务已进入队列或复用已有任务
           content: { application/json: { schema: { $ref: "#/components/schemas/StartAIAnalysisEnvelope" } } }
         "400": { $ref: "#/components/responses/Error" }
+        "406": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
@@ -298,11 +300,13 @@ paths:
           description: 生成任务已进入队列或复用已有任务
           content: { application/json: { schema: { $ref: "#/components/schemas/StartAIGenerationEnvelope" } } }
         "400": { $ref: "#/components/responses/Error" }
+        "406": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }

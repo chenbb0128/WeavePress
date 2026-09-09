@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -293,6 +294,35 @@ func TestAIQueryAndPathValidation(t *testing.T) {
 			assertStatus(t, recorder, tt.status)
 			if tt.field != "" && !strings.Contains(recorder.Body.String(), `"field":"`+tt.field+`"`) {
 				t.Fatalf("response missing field %q: %s", tt.field, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestAIListQueriesRejectUnknownRepeatedAndOverflowingValues(t *testing.T) {
+	maxInt := strconv.FormatUint(uint64(^uint(0)>>1), 10)
+	tests := []struct {
+		name  string
+		path  string
+		field string
+	}{
+		{name: "analyses unknown key", path: "/api/articles/8/ai-analyses?type=analysis", field: "type"},
+		{name: "analyses repeated value", path: "/api/articles/8/ai-analyses?page=1&page=2", field: "page"},
+		{name: "jobs unknown key", path: "/api/ai-jobs?sort=createdAt", field: "sort"},
+		{name: "jobs repeated value", path: "/api/ai-jobs?status=queued&status=failed", field: "status"},
+		{name: "jobs overflowing offset", path: "/api/ai-jobs?page=" + maxInt, field: "page"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeAIService{}
+			api, token := newAITestAPI(t, fake, workspace.RoleEditor)
+			recorder := performRequest(t, api, http.MethodGet, tt.path, "", token)
+			assertStatus(t, recorder, http.StatusUnprocessableEntity)
+			if !strings.Contains(recorder.Body.String(), `"field":"`+tt.field+`"`) {
+				t.Fatalf("response missing field %q: %s", tt.field, recorder.Body.String())
+			}
+			if fake.call != "" {
+				t.Fatalf("service called for invalid query: %q", fake.call)
 			}
 		})
 	}

@@ -3,6 +3,7 @@ package weaveapi
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -122,6 +123,10 @@ func (a *API) listAIAnalyses(c *gin.Context) {
 		response.Error(c, response.BadRequest("文章 ID 不正确", err))
 		return
 	}
+	if appErr := validateAIQuery(c, "page", "pageSize"); appErr != nil {
+		response.Error(c, appErr)
+		return
+	}
 	page, pageSize, appErr := aiPagination(c)
 	if appErr != nil {
 		response.Error(c, appErr)
@@ -188,6 +193,10 @@ func (a *API) getAIGeneration(c *gin.Context) {
 }
 
 func (a *API) listAIJobs(c *gin.Context) {
+	if appErr := validateAIQuery(c, "page", "pageSize", "type", "status", "articleId"); appErr != nil {
+		response.Error(c, appErr)
+		return
+	}
 	page, pageSize, appErr := aiPagination(c)
 	if appErr != nil {
 		response.Error(c, appErr)
@@ -241,10 +250,12 @@ func (a *API) retryAIJob(c *gin.Context) {
 
 func aiPagination(c *gin.Context) (int, int, *response.AppError) {
 	page, pageSize := 1, 20
+	pageValid, pageSizeValid := true, true
 	var details []response.ValidationDetail
 	if raw, exists := c.GetQuery("page"); exists {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed < 1 {
+			pageValid = false
 			details = append(details, response.ValidationDetail{Field: "page", Reason: "positive_integer"})
 		} else {
 			page = parsed
@@ -253,15 +264,47 @@ func aiPagination(c *gin.Context) (int, int, *response.AppError) {
 	if raw, exists := c.GetQuery("pageSize"); exists {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed < 1 || parsed > 100 {
+			pageSizeValid = false
 			details = append(details, response.ValidationDetail{Field: "pageSize", Reason: "range"})
 		} else {
 			pageSize = parsed
 		}
 	}
+	maxInt := int(^uint(0) >> 1)
+	if pageValid && pageSizeValid && page-1 > maxInt/pageSize {
+		details = append(details, response.ValidationDetail{Field: "page", Reason: "overflow"})
+	}
 	if len(details) > 0 {
 		return 0, 0, response.ValidationFailed(details)
 	}
 	return page, pageSize, nil
+}
+
+func validateAIQuery(c *gin.Context, allowedKeys ...string) *response.AppError {
+	allowed := make(map[string]struct{}, len(allowedKeys))
+	for _, key := range allowedKeys {
+		allowed[key] = struct{}{}
+	}
+	query := c.Request.URL.Query()
+	keys := make([]string, 0, len(query))
+	for key := range query {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var details []response.ValidationDetail
+	for _, key := range keys {
+		if _, ok := allowed[key]; !ok {
+			details = append(details, response.ValidationDetail{Field: key, Reason: "unknown"})
+			continue
+		}
+		if len(query[key]) != 1 {
+			details = append(details, response.ValidationDetail{Field: key, Reason: "duplicate"})
+		}
+	}
+	if len(details) > 0 {
+		return response.ValidationFailed(details)
+	}
+	return nil
 }
 
 func aiJobFilter(c *gin.Context) (aiwriting.JobFilter, *response.AppError) {
