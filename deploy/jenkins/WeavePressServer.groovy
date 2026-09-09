@@ -44,10 +44,11 @@ pipeline {
           }
           export GIT_SSH_COMMAND="$NAS_GIT_SSH_COMMAND"
           git clone --no-checkout --branch master --single-branch "$NAS_REPO" source
+          test -f source/deploy/jenkins/assert-component-current.sh
+          cp source/deploy/jenkins/assert-component-current.sh component-current.sh
           git -C source cat-file -e "$APP_SHA^{commit}"
           git -C source merge-base --is-ancestor "$APP_SHA" origin/master
-          master_sha="$(git -C source rev-parse origin/master)"
-          test "$master_sha" = "$APP_SHA"
+          bash component-current.sh source server "$APP_SHA"
           git -C source checkout --detach "$APP_SHA"
           actual_sha="$(git -C source rev-parse HEAD)"
           test "$actual_sha" = "$APP_SHA"
@@ -127,6 +128,8 @@ pipeline {
             sh '''#!/usr/bin/env bash
               set -Eeuo pipefail
               set +x
+              export GIT_SSH_COMMAND="$NAS_GIT_SSH_COMMAND"
+              bash component-current.sh source server "$APP_SHA"
               api_digest="$(<manifest-digests/api.digest)"
               worker_digest="$(<manifest-digests/worker.digest)"
               migrate_digest="$(<manifest-digests/migrate.digest)"
