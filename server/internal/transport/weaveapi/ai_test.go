@@ -328,6 +328,20 @@ func TestAIListQueriesRejectUnknownRepeatedAndOverflowingValues(t *testing.T) {
 	}
 }
 
+func TestAIListQueriesRejectMalformedRawQuery(t *testing.T) {
+	fake := &fakeAIService{}
+	api, token := newAITestAPI(t, fake, workspace.RoleEditor)
+	recorder := performRequest(t, api, http.MethodGet, "/api/ai-jobs?sort=x;y", "", token)
+	assertStatus(t, recorder, http.StatusUnprocessableEntity)
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"field":"query"`) || !strings.Contains(body, `"reason":"malformed"`) {
+		t.Fatalf("unexpected response: %s", body)
+	}
+	if fake.call != "" {
+		t.Fatalf("service called for malformed query: %q", fake.call)
+	}
+}
+
 func TestAIQueryRoutesReturnPagesAndForwardFilters(t *testing.T) {
 	fake := &fakeAIService{
 		analyses: aiwriting.Page[aiwriting.Analysis]{Items: []aiwriting.Analysis{{ID: 2}}, Total: 1, Page: 2, PageSize: 10},

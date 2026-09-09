@@ -3,6 +3,7 @@ package weaveapi
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -123,11 +124,12 @@ func (a *API) listAIAnalyses(c *gin.Context) {
 		response.Error(c, response.BadRequest("文章 ID 不正确", err))
 		return
 	}
-	if appErr := validateAIQuery(c, "page", "pageSize"); appErr != nil {
+	query, appErr := parseAIQuery(c, "page", "pageSize")
+	if appErr != nil {
 		response.Error(c, appErr)
 		return
 	}
-	page, pageSize, appErr := aiPagination(c)
+	page, pageSize, appErr := aiPagination(query)
 	if appErr != nil {
 		response.Error(c, appErr)
 		return
@@ -193,16 +195,17 @@ func (a *API) getAIGeneration(c *gin.Context) {
 }
 
 func (a *API) listAIJobs(c *gin.Context) {
-	if appErr := validateAIQuery(c, "page", "pageSize", "type", "status", "articleId"); appErr != nil {
-		response.Error(c, appErr)
-		return
-	}
-	page, pageSize, appErr := aiPagination(c)
+	query, appErr := parseAIQuery(c, "page", "pageSize", "type", "status", "articleId")
 	if appErr != nil {
 		response.Error(c, appErr)
 		return
 	}
-	filter, appErr := aiJobFilter(c)
+	page, pageSize, appErr := aiPagination(query)
+	if appErr != nil {
+		response.Error(c, appErr)
+		return
+	}
+	filter, appErr := aiJobFilter(query)
 	if appErr != nil {
 		response.Error(c, appErr)
 		return
@@ -248,11 +251,12 @@ func (a *API) retryAIJob(c *gin.Context) {
 	response.JSON(c, http.StatusAccepted, result)
 }
 
-func aiPagination(c *gin.Context) (int, int, *response.AppError) {
+func aiPagination(query url.Values) (int, int, *response.AppError) {
 	page, pageSize := 1, 20
 	pageValid, pageSizeValid := true, true
 	var details []response.ValidationDetail
-	if raw, exists := c.GetQuery("page"); exists {
+	if values, exists := query["page"]; exists {
+		raw := values[0]
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed < 1 {
 			pageValid = false
@@ -261,7 +265,8 @@ func aiPagination(c *gin.Context) (int, int, *response.AppError) {
 			page = parsed
 		}
 	}
-	if raw, exists := c.GetQuery("pageSize"); exists {
+	if values, exists := query["pageSize"]; exists {
+		raw := values[0]
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed < 1 || parsed > 100 {
 			pageSizeValid = false
@@ -280,12 +285,15 @@ func aiPagination(c *gin.Context) (int, int, *response.AppError) {
 	return page, pageSize, nil
 }
 
-func validateAIQuery(c *gin.Context, allowedKeys ...string) *response.AppError {
+func parseAIQuery(c *gin.Context, allowedKeys ...string) (url.Values, *response.AppError) {
+	query, err := url.ParseQuery(c.Request.URL.RawQuery)
+	if err != nil {
+		return nil, response.ValidationFailed([]response.ValidationDetail{{Field: "query", Reason: "malformed"}})
+	}
 	allowed := make(map[string]struct{}, len(allowedKeys))
 	for _, key := range allowedKeys {
 		allowed[key] = struct{}{}
 	}
-	query := c.Request.URL.Query()
 	keys := make([]string, 0, len(query))
 	for key := range query {
 		keys = append(keys, key)
@@ -302,13 +310,13 @@ func validateAIQuery(c *gin.Context, allowedKeys ...string) *response.AppError {
 		}
 	}
 	if len(details) > 0 {
-		return response.ValidationFailed(details)
+		return nil, response.ValidationFailed(details)
 	}
-	return nil
+	return query, nil
 }
 
-func aiJobFilter(c *gin.Context) (aiwriting.JobFilter, *response.AppError) {
-	filter := aiwriting.JobFilter{Type: c.Query("type"), Status: c.Query("status")}
+func aiJobFilter(query url.Values) (aiwriting.JobFilter, *response.AppError) {
+	filter := aiwriting.JobFilter{Type: query.Get("type"), Status: query.Get("status")}
 	var details []response.ValidationDetail
 	if filter.Type != "" && filter.Type != aiwriting.JobTypeAnalysis && filter.Type != aiwriting.JobTypeGeneration {
 		details = append(details, response.ValidationDetail{Field: "type", Reason: "invalid"})
@@ -318,7 +326,8 @@ func aiJobFilter(c *gin.Context) (aiwriting.JobFilter, *response.AppError) {
 	default:
 		details = append(details, response.ValidationDetail{Field: "status", Reason: "invalid"})
 	}
-	if raw, exists := c.GetQuery("articleId"); exists {
+	if values, exists := query["articleId"]; exists {
+		raw := values[0]
 		articleID, err := parsePositiveID(raw)
 		if err != nil {
 			details = append(details, response.ValidationDetail{Field: "articleId", Reason: "positive_integer"})
