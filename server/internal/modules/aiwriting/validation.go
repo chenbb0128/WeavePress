@@ -163,6 +163,13 @@ func ValidateAnalysis(source SourceDocument, output AnalysisOutput) error {
 }
 
 func ValidateGeneration(source SourceDocument, analysis Analysis, assets map[uint64]workspace.Asset, output GenerationOutput) error {
+	if err := validateGenerationStructure(source, analysis, output); err != nil {
+		return err
+	}
+	return validateGenerationAssets(source, assets, output)
+}
+
+func validateGenerationStructure(source SourceDocument, analysis Analysis, output GenerationOutput) error {
 	if invalidBoundedText(output.Title, 255) {
 		return invalidOutput("title must contain 1 to 255 runes")
 	}
@@ -183,6 +190,9 @@ func ValidateGeneration(source SourceDocument, analysis Analysis, assets map[uin
 	}
 
 	for _, block := range output.Blocks {
+		if block.Type != "image" && block.AssetID != nil {
+			return invalidOutput("assetId is only allowed on image blocks")
+		}
 		for _, factID := range block.FactIDs {
 			if _, ok := facts[factID]; !ok {
 				return invalidSourceReference(factID)
@@ -218,10 +228,6 @@ func ValidateGeneration(source SourceDocument, analysis Analysis, assets map[uin
 			if block.AssetID == nil || *block.AssetID == 0 {
 				return fmt.Errorf("%w: image assetId is required", ErrAssetInvalid)
 			}
-			asset, ok := assets[*block.AssetID]
-			if !ok || asset.ID != *block.AssetID || asset.ArticleID != source.Article.ID || asset.DownloadStatus != "completed" {
-				return fmt.Errorf("%w: asset %d", ErrAssetInvalid, *block.AssetID)
-			}
 		default:
 			return invalidOutput("generated block type is invalid")
 		}
@@ -229,6 +235,19 @@ func ValidateGeneration(source SourceDocument, analysis Analysis, assets map[uin
 
 	if generationOverlapsSource(source, output.Blocks) {
 		return ErrExcessiveSourceOverlap
+	}
+	return nil
+}
+
+func validateGenerationAssets(source SourceDocument, assets map[uint64]workspace.Asset, output GenerationOutput) error {
+	for _, block := range output.Blocks {
+		if block.Type != "image" {
+			continue
+		}
+		asset, ok := assets[*block.AssetID]
+		if !ok || asset.ID != *block.AssetID || asset.ArticleID != source.Article.ID || asset.DownloadStatus != "completed" {
+			return fmt.Errorf("%w: asset %d", ErrAssetInvalid, *block.AssetID)
+		}
 	}
 	return nil
 }

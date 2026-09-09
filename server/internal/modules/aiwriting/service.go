@@ -68,13 +68,13 @@ func (s *Service) StartAnalysis(ctx context.Context, articleID, userID uint64, f
 	if err != nil {
 		return Job{}, false, err
 	}
-	if reused {
+	if reused && job.Status != JobQueued {
 		return job, true, nil
 	}
 	if err := s.enqueue(ctx, job); err != nil {
 		return Job{}, false, s.recordQueueFailure(ctx, job.ID, err)
 	}
-	return job, false, nil
+	return job, reused, nil
 }
 
 func (s *Service) Status() Status {
@@ -131,13 +131,13 @@ func (s *Service) StartGeneration(ctx context.Context, analysisID, userID uint64
 	if err != nil {
 		return Generation{}, Job{}, false, err
 	}
-	if reused {
+	if reused && job.Status != JobQueued {
 		return generation, job, true, nil
 	}
 	if err := s.enqueue(ctx, job); err != nil {
 		return Generation{}, Job{}, false, s.recordQueueFailure(ctx, job.ID, err)
 	}
-	return generation, job, false, nil
+	return generation, job, reused, nil
 }
 
 func (s *Service) Generation(ctx context.Context, id uint64) (Generation, error) {
@@ -433,11 +433,14 @@ func (s *Service) decodeAndValidateGeneration(ctx context.Context, source Source
 	if err != nil {
 		return GenerationOutput{}, err
 	}
+	if err := validateGenerationStructure(source, analysis, output); err != nil {
+		return GenerationOutput{}, err
+	}
 	assets, err := s.loadReferencedAssets(ctx, output)
 	if err != nil {
 		return GenerationOutput{}, err
 	}
-	if err := ValidateGeneration(source, analysis, assets, output); err != nil {
+	if err := validateGenerationAssets(source, assets, output); err != nil {
 		return GenerationOutput{}, err
 	}
 	return output, nil
@@ -446,7 +449,7 @@ func (s *Service) decodeAndValidateGeneration(ctx context.Context, source Source
 func (s *Service) loadReferencedAssets(ctx context.Context, output GenerationOutput) (map[uint64]workspace.Asset, error) {
 	assets := make(map[uint64]workspace.Asset)
 	for _, block := range output.Blocks {
-		if block.AssetID == nil || *block.AssetID == 0 {
+		if block.Type != "image" || block.AssetID == nil || *block.AssetID == 0 {
 			continue
 		}
 		id := *block.AssetID
@@ -589,23 +592,49 @@ func decodeJobPayload(task *asynq.Task) (uint64, error) {
 	if task == nil {
 		return 0, fmt.Errorf("task is nil")
 	}
-	var payload struct {
-		JobID uint64 `json:"jobId"`
-	}
 	decoder := json.NewDecoder(strings.NewReader(string(task.Payload())))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&payload); err != nil {
+	opening, err := decoder.Token()
+	if err != nil {
 		return 0, err
 	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
+	if opening != json.Delim('{') {
+		return 0, fmt.Errorf("payload must be one JSON object")
+	}
+
+	var jobID uint64
+	seenJobID := false
+	for decoder.More() {
+		fieldToken, err := decoder.Token()
+		if err != nil {
+			return 0, err
+		}
+		field, ok := fieldToken.(string)
+		if !ok || field != "jobId" {
+			return 0, fmt.Errorf("unknown payload field")
+		}
+		if seenJobID {
+			return 0, fmt.Errorf("duplicate jobId")
+		}
+		seenJobID = true
+		if err := decoder.Decode(&jobID); err != nil {
+			return 0, err
+		}
+	}
+	closing, err := decoder.Token()
+	if err != nil {
+		return 0, err
+	}
+	if closing != json.Delim('}') {
+		return 0, fmt.Errorf("payload must be one JSON object")
+	}
+	if _, err := decoder.Token(); err != io.EOF {
 		if err == nil {
 			return 0, fmt.Errorf("multiple JSON values")
 		}
 		return 0, err
 	}
-	if payload.JobID == 0 {
+	if !seenJobID || jobID == 0 {
 		return 0, fmt.Errorf("jobId is required")
 	}
-	return payload.JobID, nil
+	return jobID, nil
 }

@@ -135,9 +135,6 @@ func (p *openAICompatible) Complete(ctx context.Context, request Request) (Respo
 		return Response{}, providerError(ErrorCodeRequestFailed, "AI 模型返回了空响应", false, nil)
 	}
 	content := decoded.Choices[0].Message.Content
-	if request.JSON && !json.Valid([]byte(content)) {
-		return Response{}, providerError(ErrorCodeRequestFailed, "AI 模型返回的内容不是有效 JSON", false, nil)
-	}
 
 	return Response{
 		Content: content,

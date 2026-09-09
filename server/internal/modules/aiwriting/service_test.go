@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -184,6 +186,48 @@ func (q *fakeAIEnqueuer) EnqueueContext(_ context.Context, task *asynq.Task, opt
 	return nil, q.err
 }
 
+type reusedJobEnqueueCase struct {
+	name        string
+	status      string
+	queueErr    error
+	wantCalls   int
+	wantErr     error
+	wantFailure bool
+}
+
+func reusedJobEnqueueCases() []reusedJobEnqueueCase {
+	queueErr := errors.New("redis unavailable")
+	return []reusedJobEnqueueCase{
+		{name: "queued", status: JobQueued, wantCalls: 1},
+		{name: "queued task ID conflict", status: JobQueued, queueErr: asynq.ErrTaskIDConflict, wantCalls: 1},
+		{name: "queued enqueue failure", status: JobQueued, queueErr: queueErr, wantCalls: 1, wantErr: queueErr, wantFailure: true},
+		{name: "running", status: JobRunning},
+		{name: "completed", status: JobCompleted},
+		{name: "failed", status: JobFailed},
+	}
+}
+
+func assertReusedJobEnqueue(t *testing.T, test reusedJobEnqueueCase, store *fakeAIStore, queue *fakeAIEnqueuer, err error) {
+	t.Helper()
+	if test.wantErr != nil {
+		if !errors.Is(err, test.wantErr) {
+			t.Fatalf("start error = %v, want %v", err, test.wantErr)
+		}
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	if queue.calls != test.wantCalls {
+		t.Fatalf("enqueue calls = %d, want %d", queue.calls, test.wantCalls)
+	}
+	if test.wantFailure {
+		if len(store.failures) != 1 || store.job.Status != JobFailed || !store.failures[0].Retryable || store.failures[0].Requeue {
+			t.Fatalf("job=%#v failures=%#v", store.job, store.failures)
+		}
+	} else if len(store.failures) != 0 {
+		t.Fatalf("failures = %#v", store.failures)
+	}
+}
+
 func testAIConfig() config.AIConfig {
 	return config.AIConfig{
 		Enabled:         true,
@@ -266,22 +310,24 @@ func TestStartAnalysisEnqueuesWithDeterministicOptions(t *testing.T) {
 	}
 }
 
-func TestStartAnalysisReusedDoesNotEnqueue(t *testing.T) {
-	store := &fakeAIStore{job: Job{ID: 7}, reuseAnalysis: true}
-	queue := &fakeAIEnqueuer{}
-	service := New(store, &fakeAIArticles{article: readyAIArticle()}, queue, &fakeAIProvider{}, testAIConfig())
+func TestStartAnalysisReusedJobReenqueuesOnlyWhenQueued(t *testing.T) {
+	for _, test := range reusedJobEnqueueCases() {
+		t.Run(test.name, func(t *testing.T) {
+			store := &fakeAIStore{job: Job{ID: 7, Type: JobTypeAnalysis, Status: test.status}, reuseAnalysis: true}
+			queue := &fakeAIEnqueuer{err: test.queueErr}
+			service := New(store, &fakeAIArticles{article: readyAIArticle()}, queue, &fakeAIProvider{}, testAIConfig())
 
-	_, reused, err := service.StartAnalysis(context.Background(), 12, 5, false)
-	if err != nil || !reused {
-		t.Fatalf("reused=%t error=%v", reused, err)
-	}
-	if queue.calls != 0 {
-		t.Fatalf("enqueue calls = %d, want 0", queue.calls)
+			job, reused, err := service.StartAnalysis(context.Background(), 12, 5, false)
+			assertReusedJobEnqueue(t, test, store, queue, err)
+			if test.wantErr == nil && (!reused || job.ID != 7) {
+				t.Fatalf("job=%#v reused=%t error=%v", job, reused, err)
+			}
+		})
 	}
 }
 
 func TestHandleAnalyzeTaskRejectsInvalidPayloadWithoutTouchingStore(t *testing.T) {
-	for _, raw := range []string{"", `{}`, `{"jobId":0}`, `{"jobId":7,"extra":true}`, `{"jobId":7}{"jobId":8}`} {
+	for _, raw := range []string{"", `{}`, `{"jobId":0}`, `{"jobId":7,"extra":true}`, `{"jobId":7}{"jobId":8}`, `{"jobId":7,"jobId":8}`} {
 		store := &fakeAIStore{}
 		service := New(store, &fakeAIArticles{}, nil, &fakeAIProvider{}, testAIConfig())
 		task := asynq.NewTask(TaskAnalyze, []byte(raw))
@@ -389,23 +435,25 @@ func TestStartGenerationRejectsArticleThatIsNotReadyBeforeCreatingJob(t *testing
 	}
 }
 
-func TestStartGenerationReusesIdempotentJobWithoutEnqueue(t *testing.T) {
-	analysis := Analysis{ID: 3, ArticleID: 12, AnalysisOutput: validAnalysisOutput(), Job: &Job{Status: JobCompleted}}
-	store := &fakeAIStore{
-		analysis:        analysis,
-		generation:      Generation{ID: 4, JobID: 9},
-		job:             Job{ID: 9, Type: JobTypeGeneration, ArticleID: 12},
-		reuseGeneration: true,
-	}
-	queue := &fakeAIEnqueuer{}
-	service := New(store, &fakeAIArticles{article: readyAIArticle()}, queue, &fakeAIProvider{}, testAIConfig())
+func TestStartGenerationReusedJobReenqueuesOnlyWhenQueued(t *testing.T) {
+	for _, test := range reusedJobEnqueueCases() {
+		t.Run(test.name, func(t *testing.T) {
+			analysis := Analysis{ID: 3, ArticleID: 12, AnalysisOutput: validAnalysisOutput(), Job: &Job{Status: JobCompleted}}
+			store := &fakeAIStore{
+				analysis:        analysis,
+				generation:      Generation{ID: 4, JobID: 9},
+				job:             Job{ID: 9, Type: JobTypeGeneration, ArticleID: 12, Status: test.status},
+				reuseGeneration: true,
+			}
+			queue := &fakeAIEnqueuer{err: test.queueErr}
+			service := New(store, &fakeAIArticles{article: readyAIArticle()}, queue, &fakeAIProvider{}, testAIConfig())
 
-	generation, job, reused, err := service.StartGeneration(context.Background(), analysis.ID, 5, validGenerationParams())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reused || generation.ID != 4 || job.ID != 9 || queue.calls != 0 {
-		t.Fatalf("generation=%#v job=%#v reused=%t enqueue calls=%d", generation, job, reused, queue.calls)
+			generation, job, reused, err := service.StartGeneration(context.Background(), analysis.ID, 5, validGenerationParams())
+			assertReusedJobEnqueue(t, test, store, queue, err)
+			if test.wantErr == nil && (!reused || generation.ID != 4 || job.ID != 9) {
+				t.Fatalf("generation=%#v job=%#v reused=%t error=%v", generation, job, reused, err)
+			}
+		})
 	}
 }
 
@@ -551,6 +599,39 @@ func TestHandleAnalyzeTaskRepairsInvalidJSONOnceAndAccumulatesUsage(t *testing.T
 	}
 	if store.job.TokenUsage != (TokenUsage{InputTokens: 9, OutputTokens: 5, TotalTokens: 14}) {
 		t.Fatalf("usage = %#v", store.job.TokenUsage)
+	}
+}
+
+func TestHandleAnalyzeTaskRepairsInvalidJSONFromRealProvider(t *testing.T) {
+	validJSON := encodeJSONForTest(t, validAnalysisOutput())
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		calls++
+		content := "not-json"
+		usage := llm.Usage{InputTokens: 7, OutputTokens: 3, TotalTokens: 10}
+		if calls == 2 {
+			content = validJSON
+			usage = llm.Usage{InputTokens: 2, OutputTokens: 2, TotalTokens: 4}
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{"content": content}}},
+			"usage": map[string]any{
+				"prompt_tokens": usage.InputTokens, "completion_tokens": usage.OutputTokens, "total_tokens": usage.TotalTokens,
+			},
+		})
+	}))
+	defer server.Close()
+
+	store := &fakeAIStore{job: Job{ID: 7, Type: JobTypeAnalysis, ArticleID: 12, Status: JobQueued}}
+	provider := llm.NewOpenAICompatible(server.URL, "test-key", "test-model", time.Second)
+	service := New(store, &fakeAIArticles{article: readyAIArticle()}, nil, provider, testAIConfig())
+
+	if err := service.HandleAnalyzeTask(context.Background(), jobTask(TaskAnalyze, 7)); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || len(store.events) != 1 || store.completeAnalysisCalls != 1 || store.job.TotalTokens != 14 {
+		t.Fatalf("provider calls=%d events=%#v complete=%d usage=%#v", calls, store.events, store.completeAnalysisCalls, store.job.TokenUsage)
 	}
 }
 
@@ -711,6 +792,31 @@ func TestHandleTaskErrorRequeuesRetryableProviderErrorsWhileAttemptsRemain(t *te
 	}
 }
 
+func TestHandleTaskErrorStopsRetryableErrorsAtOrPastRetryLimit(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		retryCount int
+	}{
+		{name: "at limit", retryCount: 3},
+		{name: "past limit", retryCount: 4},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &fakeAIStore{job: Job{ID: 7, Status: JobRunning}}
+			service := New(store, &fakeAIArticles{}, nil, nil, testAIConfig())
+			providerErr := &llm.Error{Code: llm.ErrorCodeUnavailable, Message: "temporary", Retryable: true}
+
+			err := service.handleTaskError(context.Background(), 7, providerErr, TokenUsage{TotalTokens: 3}, test.retryCount, 3)
+			if !errors.Is(err, asynq.SkipRetry) {
+				t.Fatalf("handleTaskError() error = %v, want SkipRetry", err)
+			}
+			failure := store.failures[0]
+			if store.job.Status != JobFailed || !failure.Retryable || failure.Requeue || failure.Usage.TotalTokens != 3 {
+				t.Fatalf("job=%#v failure=%#v", store.job, failure)
+			}
+		})
+	}
+}
+
 func TestHandleTaskErrorStopsPermanentProviderAndDomainErrors(t *testing.T) {
 	cases := []struct {
 		err  error
@@ -776,7 +882,7 @@ func TestHandleAnalyzeTaskResumesRunningAndSkipsCompletedJobs(t *testing.T) {
 }
 
 func TestHandleGenerateTaskRejectsInvalidPayloadWithoutTouchingStore(t *testing.T) {
-	for _, raw := range []string{"", `{}`, `{"jobId":0}`, `{"jobId":9,"extra":true}`, `{"jobId":9} trailing`} {
+	for _, raw := range []string{"", `{}`, `{"jobId":0}`, `{"jobId":9,"extra":true}`, `{"jobId":9} trailing`, `{"jobId":7,"jobId":8}`} {
 		store := &fakeAIStore{}
 		service := New(store, &fakeAIArticles{}, nil, &fakeAIProvider{}, testAIConfig())
 		err := service.HandleGenerateTask(context.Background(), asynq.NewTask(TaskGenerate, []byte(raw)))
@@ -824,6 +930,72 @@ func TestHandleGenerateTaskLoadsOnlyReferencedAssetsAndCompletesDraft(t *testing
 	}
 	if store.job.TotalTokens != 11 {
 		t.Fatalf("job usage = %#v", store.job.TokenUsage)
+	}
+}
+
+func TestHandleGenerateTaskValidatesStructureBeforeLoadingAssets(t *testing.T) {
+	missingAssetID := uint64(999)
+	tests := []struct {
+		name   string
+		mutate func(*GenerationOutput)
+	}{
+		{
+			name: "non-image block carries asset ID",
+			mutate: func(output *GenerationOutput) {
+				output.Blocks[0].AssetID = &missingAssetID
+			},
+		},
+		{
+			name: "invalid title precedes missing image asset",
+			mutate: func(output *GenerationOutput) {
+				output.Title = ""
+				output.Blocks = append(output.Blocks, GeneratedBlock{Type: "image", AssetID: &missingAssetID})
+			},
+		},
+		{
+			name: "invalid block precedes missing image asset",
+			mutate: func(output *GenerationOutput) {
+				output.Blocks = []GeneratedBlock{
+					{Type: "image", AssetID: &missingAssetID},
+					{Type: "paragraph"},
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			article := readyAIArticle()
+			asset := workspace.Asset{ID: 7, ArticleID: article.ID, DownloadStatus: "completed"}
+			analysis := validAnalysis()
+			analysis.ID, analysis.ArticleID, analysis.Job = 3, article.ID, &Job{Status: JobCompleted}
+			store := &fakeAIStore{
+				job:        Job{ID: 9, Type: JobTypeGeneration, ArticleID: article.ID, RequestedBy: 5, Status: JobQueued},
+				generation: Generation{ID: 4, JobID: 9, AnalysisID: 3, AngleID: "A1", Audience: "技术团队", Tone: "professional", TargetWords: 1000},
+				analysis:   analysis,
+			}
+			invalid := validGenerationOutput()
+			test.mutate(&invalid)
+			provider := &fakeAIProvider{responses: []llm.Response{
+				{Content: encodeJSONForTest(t, invalid)},
+				{Content: encodeJSONForTest(t, validGenerationOutput())},
+			}}
+			articles := &fakeAIArticles{article: article, assets: map[uint64]workspace.Asset{7: asset}}
+			service := New(store, articles, nil, provider, testAIConfig())
+
+			if err := service.HandleGenerateTask(context.Background(), jobTask(TaskGenerate, 9)); err != nil {
+				t.Fatal(err)
+			}
+			if len(provider.requests) != 2 || len(store.events) != 1 || store.events[0].Status != "format_repair" {
+				t.Fatalf("provider calls=%d events=%#v", len(provider.requests), store.events)
+			}
+			if !slices.Equal(articles.assetIDs, []uint64{7}) {
+				t.Fatalf("GetAsset IDs = %v, want repaired output asset [7] only", articles.assetIDs)
+			}
+			if store.completeGenerationCalls != 1 {
+				t.Fatalf("complete calls = %d", store.completeGenerationCalls)
+			}
+		})
 	}
 }
 

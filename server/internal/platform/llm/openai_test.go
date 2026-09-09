@@ -271,12 +271,10 @@ func TestOpenAICompleteRejectsMalformedSuccessResponse(t *testing.T) {
 	tests := []struct {
 		name string
 		body string
-		json bool
 	}{
-		{name: "invalid response json", body: `{`, json: false},
-		{name: "empty choices", body: `{"choices":[]}`, json: false},
-		{name: "empty content", body: `{"choices":[{"message":{"content":"  "}}]}`, json: false},
-		{name: "invalid json content", body: `{"choices":[{"message":{"content":"not-json"}}]}`, json: true},
+		{name: "invalid response json", body: `{`},
+		{name: "empty choices", body: `{"choices":[]}`},
+		{name: "empty content", body: `{"choices":[{"message":{"content":"  "}}]}`},
 	}
 
 	for _, tt := range tests {
@@ -288,9 +286,26 @@ func TestOpenAICompleteRejectsMalformedSuccessResponse(t *testing.T) {
 			defer server.Close()
 
 			provider := NewOpenAICompatible(server.URL, "test-key", "test-model", time.Second)
-			_, err := provider.Complete(context.Background(), Request{JSON: tt.json})
+			_, err := provider.Complete(context.Background(), Request{JSON: true})
 			assertProviderError(t, err, ErrorCodeRequestFailed, false)
 		})
+	}
+}
+
+func TestOpenAICompleteReturnsNonJSONContentAndUsageForCallerValidation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"choices":[{"message":{"content":"not-json"}}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatible(server.URL, "test-key", "test-model", time.Second)
+	response, err := provider.Complete(context.Background(), Request{JSON: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Content != "not-json" || response.Usage != (Usage{InputTokens: 7, OutputTokens: 3, TotalTokens: 10}) {
+		t.Fatalf("response = %#v", response)
 	}
 }
 
