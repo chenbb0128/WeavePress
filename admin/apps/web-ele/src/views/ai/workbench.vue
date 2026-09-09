@@ -134,6 +134,7 @@ const generationInputForValidation = computed<GenerationInput>(() => ({
 }));
 const generationAllowed = computed(
   () =>
+    !analysisSelecting.value &&
     Boolean(aiStatus.value.enabled) &&
     Boolean(selectedAnalysis.value?.job) &&
     canGenerate(
@@ -420,6 +421,7 @@ async function submitGeneration() {
   if (
     generationSubmitting.value ||
     generationPolling.value ||
+    analysisSelecting.value ||
     !selectedAnalysis.value ||
     !generationAllowed.value
   ) {
@@ -747,7 +749,11 @@ onBeforeUnmount(() => {
 
           <ElCard shadow="never">
             <template #header><strong>角度（3 个）</strong></template>
-            <ElRadioGroup v-model="generationForm.angleId" class="w-full">
+            <ElRadioGroup
+              v-model="generationForm.angleId"
+              class="w-full"
+              :disabled="analysisSelecting"
+            >
               <div class="grid w-full gap-3">
                 <ElCard
                   v-for="angle in analysisAngles"
@@ -776,7 +782,7 @@ onBeforeUnmount(() => {
               <ElFormItem label="目标读者">
                 <ElInput
                   v-model="generationForm.audience"
-                  :disabled="generationSubmitting"
+                  :disabled="generationSubmitting || analysisSelecting"
                   maxlength="100"
                   placeholder="例如：产品经理"
                   show-word-limit
@@ -785,7 +791,7 @@ onBeforeUnmount(() => {
               <ElFormItem label="语气">
                 <ElSelect
                   v-model="generationForm.tone"
-                  :disabled="generationSubmitting"
+                  :disabled="generationSubmitting || analysisSelecting"
                   class="w-full"
                 >
                   <ElOption
@@ -799,7 +805,7 @@ onBeforeUnmount(() => {
               <ElFormItem label="目标字数">
                 <ElInputNumber
                   v-model="generationForm.targetWords"
-                  :disabled="generationSubmitting"
+                  :disabled="generationSubmitting || analysisSelecting"
                   :max="5000"
                   :min="300"
                   :step="100"
@@ -810,7 +816,7 @@ onBeforeUnmount(() => {
             <ElFormItem label="补充要求">
               <ElInput
                 v-model="generationForm.additionalInstructions"
-                :disabled="generationSubmitting"
+                :disabled="generationSubmitting || analysisSelecting"
                 maxlength="500"
                 placeholder="可选：补充重点、禁用表达或结构要求"
                 :rows="4"
@@ -827,7 +833,10 @@ onBeforeUnmount(() => {
             />
             <ElButton
               :disabled="
-                generationSubmitting || generationPolling || !generationAllowed
+                generationSubmitting ||
+                generationPolling ||
+                analysisSelecting ||
+                !generationAllowed
               "
               :loading="generationSubmitting || generationPolling"
               type="primary"

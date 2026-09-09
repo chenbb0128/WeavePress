@@ -459,7 +459,13 @@ describe('ai workbench', () => {
     await settle();
 
     expect(mocks.getAIAnalysisApi).toHaveBeenLastCalledWith(30);
-    expect(buttonByText(host, '生成稿件')?.disabled).toBe(false);
+    const generationButton = buttonByText(host, '生成稿件');
+    const inputDisabledDuringSelection = audienceInput.disabled;
+    generationButton?.click();
+    await settle();
+    expect(mocks.startAIGenerationApi).toHaveBeenCalledOnce();
+    expect(generationButton?.disabled).toBe(true);
+    expect(inputDisabledDuringSelection).toBe(true);
 
     const staleGeneration = generation(61);
     submission.resolve({
@@ -469,13 +475,14 @@ describe('ai workbench', () => {
     });
     await settle();
     expect(host.textContent).not.toContain('生成标题');
-    expect(buttonByText(host, '生成稿件')?.disabled).toBe(false);
+    expect(buttonByText(host, '生成稿件')?.disabled).toBe(true);
 
     selection.reject(new Error('analysis unavailable'));
     await settle();
     expect(host.textContent).toContain('分析资料加载失败，请稍后重试');
     expect(host.textContent).not.toContain('生成标题');
     expect(buttonByText(host, '生成稿件')?.disabled).toBe(false);
+    expect(audienceInput.disabled).toBe(false);
   });
 
   afterEach(() => {
