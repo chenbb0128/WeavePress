@@ -187,15 +187,14 @@ func (q *fakeAIEnqueuer) EnqueueContext(_ context.Context, task *asynq.Task, opt
 }
 
 type reusedJobEnqueueCase struct {
-	name        string
-	status      string
-	attempts    uint
-	retryable   bool
-	errorCode   string
-	queueErr    error
-	wantCalls   int
-	wantErr     error
-	wantFailure bool
+	name      string
+	status    string
+	attempts  uint
+	retryable bool
+	errorCode string
+	queueErr  error
+	wantCalls int
+	wantErr   error
 }
 
 func reusedJobEnqueueCases() []reusedJobEnqueueCase {
@@ -203,7 +202,7 @@ func reusedJobEnqueueCases() []reusedJobEnqueueCase {
 	return []reusedJobEnqueueCase{
 		{name: "queued", status: JobQueued, wantCalls: 1},
 		{name: "queued task ID conflict", status: JobQueued, queueErr: asynq.ErrTaskIDConflict, wantCalls: 1},
-		{name: "queued enqueue failure", status: JobQueued, queueErr: queueErr, wantCalls: 1, wantErr: queueErr, wantFailure: true},
+		{name: "queued enqueue failure", status: JobQueued, queueErr: queueErr, wantCalls: 1, wantErr: queueErr},
 		{name: "queued automatic retry pending", status: JobQueued, attempts: 1, retryable: true, errorCode: llm.ErrorCodeRateLimited},
 		{name: "running", status: JobRunning},
 		{name: "completed", status: JobCompleted},
@@ -223,12 +222,8 @@ func assertReusedJobEnqueue(t *testing.T, test reusedJobEnqueueCase, store *fake
 	if queue.calls != test.wantCalls {
 		t.Fatalf("enqueue calls = %d, want %d", queue.calls, test.wantCalls)
 	}
-	if test.wantFailure {
-		if len(store.failures) != 1 || store.job.Status != JobFailed || !store.failures[0].Retryable || store.failures[0].Requeue {
-			t.Fatalf("job=%#v failures=%#v", store.job, store.failures)
-		}
-	} else if len(store.failures) != 0 {
-		t.Fatalf("failures = %#v", store.failures)
+	if len(store.failures) != 0 || store.job.Status != test.status {
+		t.Fatalf("job=%#v failures=%#v", store.job, store.failures)
 	}
 }
 
@@ -326,8 +321,15 @@ func TestStartAnalysisReusedJobReenqueuesOnlyWhenQueued(t *testing.T) {
 
 			job, reused, err := service.StartAnalysis(context.Background(), 12, 5, false)
 			assertReusedJobEnqueue(t, test, store, queue, err)
-			if test.wantErr == nil && (!reused || job.ID != 7) {
+			if !reused || job.ID != 7 || job.Status != test.status {
 				t.Fatalf("job=%#v reused=%t error=%v", job, reused, err)
+			}
+			if test.wantErr != nil {
+				queue.err = nil
+				job, reused, err = service.StartAnalysis(context.Background(), 12, 5, false)
+				if err != nil || !reused || job.ID != 7 || queue.calls != test.wantCalls+1 || len(store.failures) != 0 {
+					t.Fatalf("second start: job=%#v reused=%t error=%v enqueue calls=%d failures=%#v", job, reused, err, queue.calls, store.failures)
+				}
 			}
 		})
 	}
@@ -460,8 +462,15 @@ func TestStartGenerationReusedJobReenqueuesOnlyWhenQueued(t *testing.T) {
 
 			generation, job, reused, err := service.StartGeneration(context.Background(), analysis.ID, 5, validGenerationParams())
 			assertReusedJobEnqueue(t, test, store, queue, err)
-			if test.wantErr == nil && (!reused || generation.ID != 4 || job.ID != 9) {
+			if !reused || generation.ID != 4 || job.ID != 9 || job.Status != test.status {
 				t.Fatalf("generation=%#v job=%#v reused=%t error=%v", generation, job, reused, err)
+			}
+			if test.wantErr != nil {
+				queue.err = nil
+				generation, job, reused, err = service.StartGeneration(context.Background(), analysis.ID, 5, validGenerationParams())
+				if err != nil || !reused || generation.ID != 4 || job.ID != 9 || queue.calls != test.wantCalls+1 || len(store.failures) != 0 {
+					t.Fatalf("second start: generation=%#v job=%#v reused=%t error=%v enqueue calls=%d failures=%#v", generation, job, reused, err, queue.calls, store.failures)
+				}
 			}
 		})
 	}

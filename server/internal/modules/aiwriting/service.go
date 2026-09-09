@@ -76,6 +76,9 @@ func (s *Service) StartAnalysis(ctx context.Context, articleID, userID uint64, f
 		return job, true, nil
 	}
 	if err := s.enqueue(ctx, job); err != nil {
+		if reused {
+			return job, true, err
+		}
 		return Job{}, false, s.recordQueueFailure(ctx, job.ID, err)
 	}
 	return job, reused, nil
@@ -139,6 +142,9 @@ func (s *Service) StartGeneration(ctx context.Context, analysisID, userID uint64
 		return generation, job, true, nil
 	}
 	if err := s.enqueue(ctx, job); err != nil {
+		if reused {
+			return generation, job, true, err
+		}
 		return Generation{}, Job{}, false, s.recordQueueFailure(ctx, job.ID, err)
 	}
 	return generation, job, reused, nil
