@@ -2,8 +2,10 @@
 set -Eeuo pipefail
 umask 077
 
-readonly POST_RECEIVE="/volume1/docker/weavepress-git/WeavePress.git/hooks/post-receive"
+readonly GIT_DIR="/volume1/docker/weavepress-git/WeavePress.git"
+readonly POST_RECEIVE="$GIT_DIR/hooks/post-receive"
 readonly DISPATCH_TIMEOUT_SECONDS=55
+export GIT_DIR
 
 case "${1:-}" in
   --hook) mode=hook ;;

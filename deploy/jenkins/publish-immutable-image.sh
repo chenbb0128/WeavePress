@@ -74,21 +74,43 @@ elif ! grep -Eqi 'manifest unknown|no such manifest' "$manifest_error"; then
   die 'could not determine whether the immutable tag already exists'
 fi
 
+manifest_digest=""
 if [[ "$remote_exists" -eq 1 ]]; then
   docker pull "$image" >/dev/null 2>&1 || die 'could not pull the existing immutable tag'
   verify_pulled_image "$image" "$built_id"
   manifest_digest="$(inspect_repository_digest "$image")"
 else
-  timeout 900 docker push "$image" >"$push_log" 2>&1 || \
-    die 'image push result is not confirmed; rerun only after immutable-tag reconciliation'
-  manifest_digest="$(sed -nE 's/^.*digest: (sha256:[0-9a-f]{64}) size:.*$/\1/p' "$push_log" | tail -n 1)"
-  [[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die 'docker push did not report a valid manifest digest'
-  docker pull "$image" >/dev/null 2>&1 || die 'could not verify the pushed immutable tag'
-  verify_pulled_image "$image" "$built_id"
-  pulled_digest="$(inspect_repository_digest "$image")"
-  [[ "$pulled_digest" == "$manifest_digest" ]] || \
-    die 'immutable tag no longer resolves to the manifest digest just pushed'
+  for attempt in 1 2 3; do
+    : > "$push_log"
+    if timeout 900 docker push "$image" >"$push_log" 2>&1; then
+      manifest_digest="$(sed -nE 's/^.*digest: (sha256:[0-9a-f]{64}) size:.*$/\1/p' "$push_log" | tail -n 1)"
+      [[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || \
+        die 'docker push did not report a valid manifest digest'
+      break
+    fi
+
+    : > "$manifest_error"
+    if docker manifest inspect "$image" >/dev/null 2>"$manifest_error"; then
+      docker pull "$image" >/dev/null 2>&1 || \
+        die 'push failed and the remote tag could not be pulled for reconciliation'
+      verify_pulled_image "$image" "$built_id"
+      manifest_digest="$(inspect_repository_digest "$image")"
+      break
+    elif ! grep -Eqi 'manifest unknown|no such manifest' "$manifest_error"; then
+      die 'push failed and the remote immutable tag could not be reconciled'
+    fi
+
+    [[ "$attempt" -lt 3 ]] || die 'image push failed after 3 attempts and the remote tag is still absent'
+    printf 'Image push attempt %s failed before the remote tag existed; retrying the same built image.\n' "$attempt" >&2
+  done
 fi
+
+[[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die 'confirmed manifest digest is invalid'
+docker pull "$image" >/dev/null 2>&1 || die 'could not perform final immutable-tag verification'
+verify_pulled_image "$image" "$built_id"
+pulled_digest="$(inspect_repository_digest "$image")"
+[[ "$pulled_digest" == "$manifest_digest" ]] || \
+  die 'immutable tag no longer resolves to the confirmed manifest digest'
 
 output_temp="$(mktemp "${output}.XXXXXX")" || die 'could not allocate digest output'
 printf '%s\n' "$manifest_digest" > "$output_temp"

@@ -7,6 +7,16 @@
 - `/usr/local/sbin/weavepress-deploy-entrypoint`
 - `/usr/local/sbin/weavepress-external-secrets-install`
 
+## NAS 自动调度安装
+
+创建并核验 bare mirror、准备好 hook 使用的凭据后，在 NAS 上从已检出的 WeavePress 仓库执行一次：
+
+```bash
+bash deploy/nas/install-dispatch-pending /path/to/checked-out/WeavePress
+```
+
+该命令会一次安装并验证 `post-receive`、0700 state/bin 目录、`dispatch-pending`、每分钟唯一 crontab 条目和新鲜 heartbeat；它不会创建 `.enable-auto-deploy`，自动发布仍需在其他生产前置条件验收后显式启用。
+
 ## 首次初始化
 
 以 root 运行 `initialize-weavepress`。它只在 `.env` 不存在、公共 MySQL 尚无 `weavepress` schema、公共 Redis DB 7 为空时继续。脚本在容器内部使用公共 MySQL/Redis 的环境变量，不向日志打印密码；随后创建最小权限的 `weavepress_app` 与迁移专用 `weavepress_migrator`，以及素材和备份目录。

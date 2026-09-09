@@ -657,7 +657,11 @@ Before writes, report that this task will create only WeavePress NAS mirror/hook
 
 - [ ] **Step 2: 初始化 NAS mirror**
 
-Create `/volume1/docker/weavepress-git/WeavePress.git` as a bare repository, set `HEAD` to `refs/heads/master`, install the project-specific forced-command public key from `weavepress_ed25519.pub`, install the hook as executable, copy shared Jenkins callback credentials into the project `.secrets` directory without printing them, and leave `.enable-auto-deploy` absent.
+Create `/volume1/docker/weavepress-git/WeavePress.git` as a bare repository, set `HEAD` to `refs/heads/master`, install the project-specific forced-command public key from `weavepress_ed25519.pub`, copy shared Jenkins callback credentials into the project `.secrets` directory without printing them, and leave `.enable-auto-deploy` absent. Then install and verify the hook, 0700 state, pending dispatcher, one-minute crontab, and fresh heartbeat in one command from the checked-out repository:
+
+```bash
+bash deploy/nas/install-dispatch-pending /path/to/checked-out/WeavePress
+```
 
 - [ ] **Step 3: 配置 GitHub repository secrets**
 
