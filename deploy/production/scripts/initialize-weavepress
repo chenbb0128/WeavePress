@@ -27,7 +27,7 @@ exec 9>"$LOCK_FILE"
 flock -w 1800 9 || die 'another WeavePress initialization still holds the lock'
 [[ ! -e "$ENV_FILE" ]] || die "$ENV_FILE appeared while waiting for the initialization lock"
 
-redis_size="$(docker exec redis sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli -n 7 DBSIZE' 2>/dev/null)" || \
+redis_size="$(docker exec redis sh -c 'REDISCLI_AUTH="${REDISCLI_AUTH:-${REDIS_PASSWORD:-}}" redis-cli -n 7 DBSIZE' 2>/dev/null)" || \
   die 'could not inspect Redis DB 7'
 [[ "$redis_size" == "0" ]] || die 'Redis DB 7 is not empty'
 
@@ -127,7 +127,7 @@ media_signing_key="$(openssl rand -hex 32)"
 for generated_secret in "$app_password" "$migrator_password" "$jwt_secret" "$media_signing_key"; do
   [[ "$generated_secret" =~ ^[0-9a-f]{64}$ ]] || die 'openssl returned an invalid generated secret'
 done
-redis_password="$(docker exec redis sh -c 'printf %s "$REDIS_PASSWORD"')" || \
+redis_password="$(docker exec redis sh -c 'printf %s "${REDISCLI_AUTH:-${REDIS_PASSWORD:-}}"')" || \
   die 'could not read the shared Redis credential'
 [[ "$redis_password" =~ ^[A-Za-z0-9._~!@%+,/:=-]{1,512}$ ]] || \
   die 'shared Redis credential is empty or outside the production allowlist'

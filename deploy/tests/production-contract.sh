@@ -370,6 +370,56 @@ assert_control_character_matcher_semantics() {
   done
 }
 
+assert_redis_credential_case() {
+  local case_name="$1"
+  local expected="$2"
+  local actual
+  shift 2
+
+  actual="$(env "$@" bash -u -c 'printf %s "${REDISCLI_AUTH:-${REDIS_PASSWORD:-}}"' 2>&1)" || {
+    printf 'Redis credential case failed under nounset: %s\n' "$case_name" >&2
+    return 1
+  }
+  [[ "$actual" == "$expected" ]] || {
+    printf 'Redis credential case returned the wrong value: %s\n' "$case_name" >&2
+    return 1
+  }
+}
+
+assert_redis_credential_fallback_semantics() {
+  local rediscli_fixture='rediscli-auth-fixture-secret'
+  local legacy_fixture='redis-password-fixture-secret'
+  local output status
+
+  if output="$(
+    {
+      assert_redis_credential_case REDISCLI_AUTH-only "$rediscli_fixture" \
+        -u REDIS_PASSWORD REDISCLI_AUTH="$rediscli_fixture" &&
+      assert_redis_credential_case REDIS_PASSWORD-only "$legacy_fixture" \
+        -u REDISCLI_AUTH REDIS_PASSWORD="$legacy_fixture" &&
+      assert_redis_credential_case precedence "$rediscli_fixture" \
+        REDISCLI_AUTH="$rediscli_fixture" REDIS_PASSWORD="$legacy_fixture" &&
+      assert_redis_credential_case both-unset '' \
+        -u REDISCLI_AUTH -u REDIS_PASSWORD &&
+      printf 'Redis credential fallback behavior tests passed.\n'
+    } 2>&1
+  )"; then
+    status=0
+  else
+    status=$?
+  fi
+
+  if [[ "$output" == *"$rediscli_fixture"* || "$output" == *"$legacy_fixture"* ]]; then
+    printf 'Redis credential behavior test leaked a fixture secret.\n' >&2
+    return 1
+  fi
+  if [[ "$status" -ne 0 ]]; then
+    printf '%s\n' "$output" >&2
+    return "$status"
+  fi
+  printf '%s\n' "$output"
+}
+
 assert_production_script_contract() {
   local script script_file
   local behavior_runner="$contract_temp_dir/production-scripts-behavior.function"
@@ -434,7 +484,8 @@ assert_production_script_contract() {
   require_script_literal "$initialize" 'DB_NAME="weavepress"'
   require_script_literal "$initialize" 'APP_DIR="${WEAVEPRESS_APP_DIR:-/opt/apps/weavepress}"'
   require_script_literal "$initialize" 'docker exec redis sh -c'
-  require_script_literal "$initialize" 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli'
+  require_script_literal "$initialize" 'REDISCLI_AUTH="${REDISCLI_AUTH:-${REDIS_PASSWORD:-}}" redis-cli'
+  require_script_literal "$initialize" 'printf %s "${REDISCLI_AUTH:-${REDIS_PASSWORD:-}}"'
   require_script_literal "$initialize" '-n 7 DBSIZE'
   require_script_literal "$initialize" 'INFORMATION_SCHEMA.SCHEMATA'
   require_script_literal "$initialize" 'openssl rand -hex'
@@ -559,6 +610,7 @@ run_post_receive_real_flock() {
 
 run_production_script_self_test() {
   assert_control_character_matcher_semantics
+  assert_redis_credential_fallback_semantics
   assert_production_script_contract
   expect_entrypoint_rejection 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --component=server'
   expect_entrypoint_rejection 'deploy-weavepress 0000000000000000000000000000000000000000 --component=server'
