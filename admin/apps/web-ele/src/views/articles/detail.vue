@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 /* eslint-disable vue/html-closing-bracket-newline, vue/multiline-html-element-content-newline */
-import type { Article } from '#/api';
+import type { AIStatus, Article } from '#/api';
 
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -16,7 +16,7 @@ import {
   ElTag,
 } from 'element-plus';
 
-import { createDraftApi, getArticleApi } from '#/api';
+import { createDraftApi, getAIStatusApi, getArticleApi } from '#/api';
 
 defineOptions({ name: 'ArticleDetail' });
 const route = useRoute();
@@ -24,6 +24,12 @@ const router = useRouter();
 const loading = ref(true);
 const creatingDraft = ref(false);
 const article = ref<Article>();
+const aiStatus = ref<AIStatus>({ enabled: false, model: '', provider: '' });
+const aiDisabledReason = computed(() => {
+  if (article.value?.status !== 'ready') return '文章解析完成后可分析';
+  if (!aiStatus.value.enabled) return 'AI 服务尚未配置';
+  return '';
+});
 const assetURLs = computed(
   () =>
     new Map(
@@ -36,11 +42,20 @@ const assetURLs = computed(
 );
 onMounted(async () => {
   try {
-    article.value = await getArticleApi(Number(route.params.id));
+    const [articleData, status] = await Promise.all([
+      getArticleApi(Number(route.params.id)),
+      getAIStatusApi(),
+    ]);
+    article.value = articleData;
+    aiStatus.value = status;
   } finally {
     loading.value = false;
   }
 });
+async function analyze() {
+  if (!article.value || aiDisabledReason.value) return;
+  await router.push(`/ai/articles/${article.value.id}`);
+}
 async function createDraft() {
   if (!article.value) return;
   creatingDraft.value = true;
@@ -96,6 +111,8 @@ async function createDraft() {
               @click="createDraft"
             >
               生成微信稿件 </ElButton
+            ><ElButton :disabled="Boolean(aiDisabledReason)" @click="analyze">
+              AI 分析 </ElButton
             ><ElButton tag="a" :href="article.originalUrl" target="_blank">
               原文 </ElButton
             ><ElButton
@@ -107,6 +124,12 @@ async function createDraft() {
             </ElButton>
           </div>
         </div>
+        <p
+          v-if="aiDisabledReason"
+          class="text-muted-foreground mt-3 text-right text-sm"
+        >
+          {{ aiDisabledReason }}
+        </p>
       </ElCard>
       <ElAlert
         v-if="article.duplicateOfId"
