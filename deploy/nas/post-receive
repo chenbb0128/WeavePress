@@ -4,16 +4,18 @@ umask 077
 set +x
 
 readonly MASTER_REF="refs/heads/master"
-readonly SERVER_BASELINE_REF="refs/weavepress/last-processed-server"
-readonly GATEWAY_BASELINE_REF="refs/weavepress/last-processed-gateway"
 readonly ZERO_SHA="0000000000000000000000000000000000000000"
 readonly JENKINS_REQUEST_MAX_SECONDS=20
-readonly TRIGGER_ATTEMPTS=3
-readonly TRIGGER_RETRY_DELAY_SECONDS=2
 readonly LOCK_WAIT_SECONDS=180
+readonly HEARTBEAT_MAX_AGE_SECONDS=180
+readonly DISPATCH_NOT_SENT=10
+readonly DISPATCH_UNCERTAIN=11
+readonly DISPATCH_LOCAL_FAILURE=12
 readonly JENKINS_URL="http://127.0.0.1:18080"
 readonly ENABLE_FILE="/volume1/docker/weavepress-git/.enable-auto-deploy"
 readonly SECRETS_DIR="/volume1/docker/weavepress-git/.secrets"
+readonly STATE_DIR="/volume1/docker/weavepress-git/release-state"
+readonly DISPATCHER="/volume1/docker/weavepress-git/bin/dispatch-pending"
 readonly LOG_FILE="/volume1/docker/weavepress-git/post-receive.log"
 readonly LOCK_FILE="/volume1/docker/weavepress-git/post-receive.lock"
 readonly SERVER_JOB="WeavePress/WeavePressServer"
@@ -28,13 +30,91 @@ die() {
   exit 1
 }
 
+require_state_dir() {
+  local mode
+  [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]] || die 'release state directory is missing or unsafe'
+  mode="$(stat -c '%a' -- "$STATE_DIR")" || die 'could not inspect release state directory mode'
+  [[ "$mode" == 700 ]] || die 'release state directory mode must be 0700'
+}
+
+state_file() {
+  local component="$1"
+  local kind="$2"
+  [[ "$component" == server || "$component" == gateway ]] || die 'invalid state component'
+  [[ "$kind" == baseline || "$kind" == desired || "$kind" == uncertain ]] || die 'invalid state kind'
+  STATE_FILE="$STATE_DIR/${component}.${kind}"
+}
+
+read_state_sha() {
+  local path="$1"
+  local value=""
+  local extra=""
+  local mode
+
+  STATE_SHA="$ZERO_SHA"
+  [[ -e "$path" ]] || return 0
+  [[ -f "$path" && ! -L "$path" && -r "$path" ]] || die 'release state file is not a safe readable file'
+  mode="$(stat -c '%a' -- "$path")" || die 'could not inspect release state file mode'
+  [[ "$mode" == 600 ]] || die 'release state file mode must be 0600'
+  {
+    IFS= read -r value || [[ -n "$value" ]]
+    if IFS= read -r extra; then
+      die 'release state file must contain exactly one line'
+    fi
+  } < "$path"
+  [[ "$value" =~ ^[0-9a-f]{40}$ ]] || die 'release state file contains an invalid commit SHA'
+  STATE_SHA="$value"
+}
+
+write_state_sha() {
+  local path="$1"
+  local value="$2"
+  local temp
+  [[ "$value" =~ ^[0-9a-f]{40}$ ]] || die 'refused to write invalid release state SHA'
+  temp="$(mktemp "$STATE_DIR/.state.XXXXXX")" || die 'could not allocate release state file'
+  if ! printf '%s\n' "$value" > "$temp" || ! chmod 0600 "$temp" || ! mv -f -- "$temp" "$path"; then
+    rm -f -- "$temp"
+    die 'could not atomically write release state'
+  fi
+}
+
+remove_state_if() {
+  local path="$1"
+  local expected="$2"
+  [[ -e "$path" ]] || return 0
+  read_state_sha "$path"
+  [[ "$STATE_SHA" == "$expected" ]] || die 'release state changed before atomic acknowledgement'
+  rm -f -- "$path" || die 'could not acknowledge release state'
+}
+
+read_component_baseline() {
+  local component="$1"
+  state_file "$component" baseline
+  read_state_sha "$STATE_FILE"
+  COMPONENT_BASELINE="$STATE_SHA"
+  if [[ "$COMPONENT_BASELINE" != "$ZERO_SHA" ]]; then
+    git cat-file -e "${COMPONENT_BASELINE}^{commit}" 2>/dev/null || \
+      die 'stored component baseline is not a commit'
+  fi
+}
+
+advance_component_baseline() {
+  local component="$1"
+  local expected="$2"
+  local target="$3"
+  read_component_baseline "$component"
+  [[ "$COMPONENT_BASELINE" == "$expected" ]] || die 'component baseline changed before compare-and-swap'
+  state_file "$component" baseline
+  write_state_sha "$STATE_FILE" "$target"
+}
+
 read_secret() {
   local path="$1"
   local label="$2"
   local value=""
   local extra=""
 
-  [[ -f "$path" && -r "$path" ]] || die "$label credential file is not readable"
+  [[ -f "$path" && ! -L "$path" && -r "$path" ]] || die "$label credential file is not readable"
   {
     IFS= read -r value || [[ -n "$value" ]]
     if IFS= read -r extra; then
@@ -60,7 +140,7 @@ trigger_job() (
   local app_sha="$2"
   local folder="${job_path%%/*}"
   local job="${job_path#*/}"
-  local user token escaped_user escaped_token http_code header_line header_name header_value location queue_path
+  local user token escaped_user escaped_token http_code curl_status header_line header_name header_value location queue_path
   local curl_config=""
   local curl_headers=""
   local -a locations=()
@@ -75,13 +155,11 @@ trigger_job() (
   }
   trap cleanup_trigger EXIT
 
-  user="$(read_secret "$SECRETS_DIR/zdzq-hook-user" 'Jenkins user')" || return 1
-  token="$(read_secret "$SECRETS_DIR/zdzq-hook-token" 'Jenkins token')" || return 1
-  curl_config="$(mktemp "${TMPDIR:-/tmp}/weavepress-hook-curl.config.XXXXXX")" || \
-    die 'could not allocate Jenkins curl config'
-  curl_headers="$(mktemp "${TMPDIR:-/tmp}/weavepress-hook-curl.headers.XXXXXX")" || \
-    die 'could not allocate Jenkins response headers'
-  chmod 0600 "$curl_config" "$curl_headers"
+  user="$(read_secret "$SECRETS_DIR/zdzq-hook-user" 'Jenkins user')" || return "$DISPATCH_LOCAL_FAILURE"
+  token="$(read_secret "$SECRETS_DIR/zdzq-hook-token" 'Jenkins token')" || return "$DISPATCH_LOCAL_FAILURE"
+  curl_config="$(mktemp "${TMPDIR:-/tmp}/weavepress-hook-curl.config.XXXXXX")" || return "$DISPATCH_LOCAL_FAILURE"
+  curl_headers="$(mktemp "${TMPDIR:-/tmp}/weavepress-hook-curl.headers.XXXXXX")" || return "$DISPATCH_LOCAL_FAILURE"
+  chmod 0600 "$curl_config" "$curl_headers" || return "$DISPATCH_LOCAL_FAILURE"
   escaped_user="$(curl_config_escape "$user")"
   escaped_token="$(curl_config_escape "$token")"
   printf 'user = "%s:%s"\n' "$escaped_user" "$escaped_token" > "$curl_config"
@@ -90,7 +168,7 @@ trigger_job() (
   escaped_user=""
   escaped_token=""
 
-  if ! http_code="$(curl --config "$curl_config" \
+  if http_code="$(curl --config "$curl_config" \
     --noproxy '*' --silent --show-error \
     --request POST \
     --max-redirs 0 \
@@ -105,10 +183,22 @@ trigger_job() (
     --data-urlencode "DEPLOY=true" \
     --data-urlencode "TRIGGER_REPO=nas-hook" \
     "${JENKINS_URL}/job/${folder}/job/${job}/buildWithParameters")"; then
-    die "Jenkins dispatch failed for ${job_path} at ${app_sha}"
+    curl_status=0
+  else
+    curl_status=$?
   fi
-  [[ "$http_code" == 201 ]] || \
-    die "Jenkins dispatch returned HTTP ${http_code} for ${job_path} at ${app_sha}"
+  if [[ "$curl_status" -ne 0 ]]; then
+    if [[ "$curl_status" -eq 7 ]]; then
+      log "PENDING: Jenkins connection was not established for ${job_path} at ${app_sha}"
+      return "$DISPATCH_NOT_SENT"
+    fi
+    log "UNCERTAIN: Jenkins request result is ambiguous for ${job_path} at ${app_sha} (curl exit ${curl_status})"
+    return "$DISPATCH_UNCERTAIN"
+  fi
+  if [[ "$http_code" != 201 ]]; then
+    log "UNCERTAIN: Jenkins returned HTTP ${http_code} for ${job_path} at ${app_sha}"
+    return "$DISPATCH_UNCERTAIN"
+  fi
 
   while IFS= read -r header_line; do
     header_line="${header_line%$'\r'}"
@@ -120,43 +210,127 @@ trigger_job() (
     header_value="${header_value%"${header_value##*[![:space:]]}"}"
     locations+=("$header_value")
   done < "$curl_headers"
-  [[ "${#locations[@]}" -eq 1 ]] || \
-    die "Jenkins response must contain exactly one Location header for ${job_path} at ${app_sha}"
+  if [[ "${#locations[@]}" -ne 1 ]]; then
+    log "UNCERTAIN: Jenkins response Location count is invalid for ${job_path} at ${app_sha}"
+    return "$DISPATCH_UNCERTAIN"
+  fi
   location="${locations[0]}"
   if [[ "$location" == "$JENKINS_URL/"* ]]; then
     queue_path="/${location#"$JENKINS_URL/"}"
   else
     queue_path="$location"
   fi
-  [[ "$queue_path" =~ ^/queue/item/[0-9]+/$ ]] || \
-    die "Jenkins response contained an invalid Location header for ${job_path} at ${app_sha}"
+  if [[ ! "$queue_path" =~ ^/queue/item/[0-9]+/$ ]]; then
+    log "UNCERTAIN: Jenkins response Location is invalid for ${job_path} at ${app_sha}"
+    return "$DISPATCH_UNCERTAIN"
+  fi
   log "Dispatched ${job_path} at ${app_sha}"
 )
 
-trigger_job_with_retry() {
-  local job_path="$1"
-  local app_sha="$2"
-  local attempt=1
-
-  while [[ "$attempt" -le "$TRIGGER_ATTEMPTS" ]]; do
-    if trigger_job "$job_path" "$app_sha"; then
-      return 0
-    fi
-    if [[ "$attempt" -lt "$TRIGGER_ATTEMPTS" ]]; then
-      log "Retrying ${job_path} at ${app_sha} after failed attempt ${attempt}/${TRIGGER_ATTEMPTS}"
-      sleep "$TRIGGER_RETRY_DELAY_SECONDS"
-    fi
-    attempt=$((attempt + 1))
-  done
-
-  log "PENDING: ${job_path} at ${app_sha} after ${TRIGGER_ATTEMPTS} failed attempts"
-  return 1
+heartbeat_is_fresh() {
+  local heartbeat="$STATE_DIR/dispatcher.heartbeat"
+  local mode modified now age
+  [[ -f "$heartbeat" && ! -L "$heartbeat" ]] || return 1
+  mode="$(stat -c '%a' -- "$heartbeat")" || return 1
+  [[ "$mode" == 600 ]] || return 1
+  modified="$(stat -c '%Y' -- "$heartbeat")" || return 1
+  now="$(date '+%s')"
+  [[ "$modified" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 1
+  age=$((now - modified))
+  [[ "$age" -ge 0 && "$age" -le "$HEARTBEAT_MAX_AGE_SECONDS" ]]
 }
+
+record_heartbeat() {
+  write_state_sha "$STATE_DIR/dispatcher.heartbeat" "$(printf '%040d' "$(date '+%s')")"
+}
+
+process_pending_component() {
+  local component="$1"
+  local job_path="$2"
+  local desired uncertain baseline dispatch_status
+
+  state_file "$component" uncertain
+  read_state_sha "$STATE_FILE"
+  uncertain="$STATE_SHA"
+  if [[ "$uncertain" != "$ZERO_SHA" ]]; then
+    log "UNCERTAIN: ${job_path} at ${uncertain} requires operator reconciliation; automatic retry is blocked"
+    return 1
+  fi
+
+  state_file "$component" desired
+  desired_file="$STATE_FILE"
+  read_state_sha "$desired_file"
+  desired="$STATE_SHA"
+  [[ "$desired" != "$ZERO_SHA" ]] || return 0
+  git cat-file -e "${desired}^{commit}" 2>/dev/null || die 'desired release SHA is not a commit'
+  live_master="$(git rev-parse --verify "$MASTER_REF" 2>/dev/null)" || die 'could not resolve live master for pending dispatch'
+  git merge-base --is-ancestor "$desired" "$live_master" || die 'desired release SHA is not reachable from live master'
+
+  read_component_baseline "$component"
+  baseline="$COMPONENT_BASELINE"
+  if [[ "$baseline" == "$desired" ]]; then
+    remove_state_if "$desired_file" "$desired"
+    return 0
+  fi
+
+  if trigger_job "$job_path" "$desired"; then
+    advance_component_baseline "$component" "$baseline" "$desired"
+    remove_state_if "$desired_file" "$desired"
+    log "ACK: ${job_path} at ${desired}"
+    return 0
+  else
+    dispatch_status=$?
+  fi
+  case "$dispatch_status" in
+    "$DISPATCH_NOT_SENT"|"$DISPATCH_LOCAL_FAILURE")
+      log "PENDING: ${job_path} at ${desired}; scheduled dispatcher will retry"
+      return 1
+      ;;
+    "$DISPATCH_UNCERTAIN")
+      state_file "$component" uncertain
+      write_state_sha "$STATE_FILE" "$desired"
+      remove_state_if "$desired_file" "$desired"
+      log "UNCERTAIN: ${job_path} at ${desired}; automatic retry disabled"
+      return 1
+      ;;
+    *)
+      die 'dispatcher returned an unknown status'
+      ;;
+  esac
+}
+
+run_dispatcher() {
+  local mode="$1"
+  local failed=false
+  require_state_dir
+  if [[ "$mode" == scheduled ]]; then
+    record_heartbeat
+  elif [[ "$mode" == hook ]]; then
+    heartbeat_is_fresh || {
+      log 'PENDING: scheduled dispatcher heartbeat is missing or stale; automatic dispatch is blocked'
+      return 1
+    }
+  else
+    die 'dispatcher mode must be hook or scheduled'
+  fi
+
+  exec 9>>"$LOCK_FILE"
+  flock -w "$LOCK_WAIT_SECONDS" 9 || die 'another WeavePress release state process still holds the lock'
+  if process_pending_component server "$SERVER_JOB"; then :; else failed=true; fi
+  if process_pending_component gateway "$GATEWAY_JOB"; then :; else failed=true; fi
+  [[ "$failed" == false ]]
+}
+
+if [[ "${1:-}" == --dispatch-pending ]]; then
+  [[ $# -eq 2 ]] || die 'dispatcher invocation is malformed'
+  run_dispatcher "$2"
+  exit $?
+fi
+[[ $# -eq 0 ]] || die 'post-receive does not accept arguments'
 
 master_seen=false
 oldrev=""
 newrev=""
-
 while read -r received_old received_new received_ref extra; do
   [[ "$received_ref" == "$MASTER_REF" ]] || continue
   [[ -z "${extra:-}" ]] || die 'malformed receive record for master'
@@ -167,42 +341,19 @@ while read -r received_old received_new received_ref extra; do
 done
 
 [[ "$master_seen" == true ]] || exit 0
-[[ "$oldrev" == "$ZERO_SHA" || "$oldrev" =~ ^[0-9a-f]{40}$ ]] || \
-  die 'invalid old revision for master'
+[[ "$oldrev" == "$ZERO_SHA" || "$oldrev" =~ ^[0-9a-f]{40}$ ]] || die 'invalid old revision for master'
 [[ "$newrev" =~ ^[0-9a-f]{40}$ ]] || die 'master deletion or invalid new revision is not deployable'
 git cat-file -e "${newrev}^{commit}" 2>/dev/null || die 'new master revision is not a commit'
 if [[ "$oldrev" != "$ZERO_SHA" ]]; then
   git cat-file -e "${oldrev}^{commit}" 2>/dev/null || die 'old master revision is not a commit'
 fi
 
+require_state_dir
 exec 9>>"$LOCK_FILE"
-flock -w "$LOCK_WAIT_SECONDS" 9 || die 'another WeavePress post-receive hook still holds the lock'
-live_master="$(git rev-parse --verify "$MASTER_REF" 2>/dev/null)" || \
-  die 'could not resolve live master revision'
+flock -w "$LOCK_WAIT_SECONDS" 9 || die 'another WeavePress release state process still holds the lock'
+live_master="$(git rev-parse --verify "$MASTER_REF" 2>/dev/null)" || die 'could not resolve live master revision'
 [[ "$live_master" =~ ^[0-9a-f]{40}$ ]] || die 'live master revision is invalid'
 git cat-file -e "${live_master}^{commit}" 2>/dev/null || die 'live master revision is not a commit'
-
-resolve_component_baseline() {
-  local baseline_ref="$1"
-  local candidate=""
-
-  resolved_baseline="$ZERO_SHA"
-  if candidate="$(git rev-parse --verify "$baseline_ref" 2>/dev/null)"; then
-    [[ "$candidate" =~ ^[0-9a-f]{40}$ ]] || die 'stored component processing baseline is invalid'
-    git cat-file -e "${candidate}^{commit}" 2>/dev/null || \
-      die 'stored component processing baseline is not a commit'
-    resolved_baseline="$candidate"
-  fi
-}
-
-advance_component_baseline() {
-  local baseline_ref="$1"
-  local baseline_expected="$2"
-  local live_master="$3"
-
-  git update-ref "$baseline_ref" "$live_master" "$baseline_expected" || \
-    die 'could not atomically advance a component processing baseline'
-}
 
 component_has_changes() {
   local component="$1"
@@ -212,7 +363,7 @@ component_has_changes() {
   local component_changed=false
 
   changed_paths_file="$(mktemp)" || die 'could not allocate changed-path buffer'
-  if [[ "$baseline" =~ ^0{40}$ ]]; then
+  if [[ "$baseline" == "$ZERO_SHA" ]]; then
     git ls-tree -r -z --name-only "$target" -- > "$changed_paths_file" || {
       rm -f -- "$changed_paths_file"
       die 'could not enumerate initial master tree'
@@ -226,10 +377,10 @@ component_has_changes() {
 
   while IFS= read -r -d '' path; do
     case "$component:$path" in
-      server:server/*|server:deploy/production/*|server:deploy/jenkins/assert-component-current.sh|server:deploy/jenkins/publish-immutable-image.sh)
+      server:server/*|server:deploy/production/*|server:deploy/jenkins/assert-component-current.sh|server:deploy/jenkins/checkout-component-source.sh|server:deploy/jenkins/publish-immutable-image.sh|server:deploy/jenkins/verify-acr-immutable-policy.sh)
         component_changed=true
         ;;
-      gateway:admin/*|gateway:web/*|gateway:.dockerignore|gateway:deploy/Dockerfile.gateway|gateway:deploy/Dockerfile.gateway.dockerignore|gateway:deploy/nginx.conf|gateway:deploy/jenkins/assert-component-current.sh|gateway:deploy/jenkins/publish-immutable-image.sh|gateway:deploy/jenkins/verify-gateway-release.sh)
+      gateway:admin/*|gateway:web/*|gateway:.dockerignore|gateway:deploy/Dockerfile.gateway|gateway:deploy/Dockerfile.gateway.dockerignore|gateway:deploy/nginx.conf|gateway:deploy/jenkins/assert-component-current.sh|gateway:deploy/jenkins/checkout-component-source.sh|gateway:deploy/jenkins/publish-immutable-image.sh|gateway:deploy/jenkins/verify-acr-immutable-policy.sh|gateway:deploy/jenkins/verify-gateway-release.sh)
         component_changed=true
         ;;
     esac
@@ -238,30 +389,22 @@ component_has_changes() {
   [[ "$component_changed" == true ]]
 }
 
-process_component() {
+queue_component() {
   local component="$1"
-  local job_path="$2"
-  local baseline_ref="$3"
   local baseline
-
-  resolve_component_baseline "$baseline_ref"
-  baseline="$resolved_baseline"
+  read_component_baseline "$component"
+  baseline="$COMPONENT_BASELINE"
   if [[ "$baseline" == "$live_master" ]]; then
-    log "${component} at ${live_master} is already processed"
     return 0
   fi
-
-  if ! component_has_changes "$component" "$baseline" "$live_master"; then
-    advance_component_baseline "$baseline_ref" "$baseline" "$live_master"
+  if component_has_changes "$component" "$baseline" "$live_master"; then
+    state_file "$component" desired
+    write_state_sha "$STATE_FILE" "$live_master"
+    log "DESIRED: ${component} at ${live_master}"
+  else
+    advance_component_baseline "$component" "$baseline" "$live_master"
     log "Processed ${component} baseline at ${live_master}; no matching paths changed"
-    return 0
   fi
-
-  if trigger_job_with_retry "$job_path" "$live_master"; then
-    advance_component_baseline "$baseline_ref" "$baseline" "$live_master"
-    return 0
-  fi
-  return 1
 }
 
 if [[ "$newrev" != "$live_master" ]]; then
@@ -269,25 +412,21 @@ if [[ "$newrev" != "$live_master" ]]; then
 fi
 
 if [[ ! -f "$ENABLE_FILE" ]]; then
-  resolve_component_baseline "$SERVER_BASELINE_REF"
-  server_baseline="$resolved_baseline"
-  resolve_component_baseline "$GATEWAY_BASELINE_REF"
-  gateway_baseline="$resolved_baseline"
-  advance_component_baseline "$SERVER_BASELINE_REF" "$server_baseline" "$live_master"
-  advance_component_baseline "$GATEWAY_BASELINE_REF" "$gateway_baseline" "$live_master"
+  for component in server gateway; do
+    read_component_baseline "$component"
+    advance_component_baseline "$component" "$COMPONENT_BASELINE" "$live_master"
+    state_file "$component" desired
+    rm -f -- "$STATE_FILE"
+    state_file "$component" uncertain
+    rm -f -- "$STATE_FILE"
+  done
   log "Mirrored master at ${live_master}; synchronized manual-release baselines while automatic deployment remains disabled"
   exit 0
 fi
 
-processing_failed=false
-if process_component server "$SERVER_JOB" "$SERVER_BASELINE_REF"; then
-  :
-else
-  processing_failed=true
-fi
-if process_component gateway "$GATEWAY_JOB" "$GATEWAY_BASELINE_REF"; then
-  :
-else
-  processing_failed=true
-fi
-[[ "$processing_failed" == false ]] || exit 1
+queue_component server
+queue_component gateway
+flock -u 9
+exec 9>&-
+[[ -x "$DISPATCHER" && ! -L "$DISPATCHER" ]] || die 'pending dispatcher is missing or unsafe'
+"$DISPATCHER" --hook

@@ -12,6 +12,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/ci-and-mirror.yml"
@@ -32,6 +34,11 @@ JOBS = JENKINS / "jobs.json"
 IMMUTABLE_PUBLISH = JENKINS / "publish-immutable-image.sh"
 GATEWAY_VERIFY = JENKINS / "verify-gateway-release.sh"
 COMPONENT_CURRENT = JENKINS / "assert-component-current.sh"
+COMPONENT_CHECKOUT = JENKINS / "checkout-component-source.sh"
+ACR_POLICY_VERIFY = JENKINS / "verify-acr-immutable-policy.sh"
+DECLARATIVE_LINTER = JENKINS / "validate-declarative-pipelines.sh"
+PENDING_DISPATCHER = ROOT / "deploy/nas/dispatch-pending"
+PENDING_INSTALLER = ROOT / "deploy/nas/install-dispatch-pending"
 GATEWAY_DOCKERFILE = ROOT / "deploy/Dockerfile.gateway"
 GATEWAY_CONFIG = ROOT / "deploy/nginx.conf"
 SERVER_DOCKERFILE = ROOT / "server/deployments/Dockerfile"
@@ -103,13 +110,10 @@ def assert_workflow_active_commands(text: str) -> None:
 
 def assert_hook_active_dispatch(text: str) -> None:
     active = "\n".join(uncommented_lines(text, "#"))
-    for component, job, baseline in (
-        ("server", "SERVER_JOB", "SERVER_BASELINE_REF"),
-        ("gateway", "GATEWAY_JOB", "GATEWAY_BASELINE_REF"),
-    ):
-        pattern = rf'^\s*(?:if\s+)?process_component {component} "\${job}" "\${baseline}"(?:;\s*then)?\s*$'
+    for component in ("server", "gateway"):
+        pattern = rf"^\s*queue_component {component}\s*$"
         if len(re.findall(pattern, active, re.MULTILINE)) != 1:
-            fail(f"NAS hook must actively process {component} exactly once")
+            fail(f"NAS hook must actively queue {component} exactly once")
 
 
 def assert_gateway_deploy_guards(text: str) -> None:
@@ -143,7 +147,7 @@ def assert_comment_bypass_mutations() -> None:
 
     hook = read_required(HOOK)
     hook_mutant = re.sub(
-        r'(?m)^(\s*(?:if\s+)?process_component (?:server|gateway) "\$(?:SERVER|GATEWAY)_JOB" "\$(?:SERVER|GATEWAY)_BASELINE_REF"(?:;\s*then)?\s*)$',
+        r"(?m)^(\s*queue_component (?:server|gateway)\s*)$",
         r'# \1',
         hook,
     )
@@ -393,6 +397,12 @@ def assert_git_pathname_semantics() -> None:
 def assert_workflow() -> None:
     text = read_required(WORKFLOW)
     context = str(WORKFLOW.relative_to(ROOT))
+    try:
+        workflow_model = yaml.load(text, Loader=yaml.BaseLoader)
+    except yaml.YAMLError as error:
+        fail(f"{context} is invalid YAML: {error}")
+    if not isinstance(workflow_model, dict) or not isinstance(workflow_model.get("jobs"), dict):
+        fail(f"{context} must parse as a workflow mapping with jobs")
     assert_workflow_active_commands(text)
     require(text, "push:\n    branches: [master]", context)
     require(text, "workflow_dispatch:", context)
@@ -475,12 +485,11 @@ def assert_hook() -> None:
     for literal in (
         "set -Eeuo pipefail",
         'MASTER_REF="refs/heads/master"',
-        'SERVER_BASELINE_REF="refs/weavepress/last-processed-server"',
-        'GATEWAY_BASELINE_REF="refs/weavepress/last-processed-gateway"',
+        'STATE_DIR="/volume1/docker/weavepress-git/release-state"',
+        'DISPATCHER="/volume1/docker/weavepress-git/bin/dispatch-pending"',
         "JENKINS_REQUEST_MAX_SECONDS=20",
-        "TRIGGER_ATTEMPTS=3",
-        "TRIGGER_RETRY_DELAY_SECONDS=2",
         "LOCK_WAIT_SECONDS=180",
+        "HEARTBEAT_MAX_AGE_SECONDS=180",
         'ENABLE_FILE="/volume1/docker/weavepress-git/.enable-auto-deploy"',
         'SECRETS_DIR="/volume1/docker/weavepress-git/.secrets"',
         'LOG_FILE="/volume1/docker/weavepress-git/post-receive.log"',
@@ -488,14 +497,15 @@ def assert_hook() -> None:
         'exec 9>>"$LOCK_FILE"',
         'flock -w "$LOCK_WAIT_SECONDS" 9',
         'git rev-parse --verify "$MASTER_REF"',
-        "^0{40}$",
         'git ls-tree -r -z --name-only "$target" --',
         'git diff --no-renames --name-only -z "$baseline" "$target" --',
         'component_has_changes "$component" "$baseline" "$live_master"',
-        'git update-ref "$baseline_ref" "$live_master" "$baseline_expected"',
+        'write_state_sha "$STATE_FILE" "$target"',
+        "component baseline changed before compare-and-swap",
+        "dispatcher.heartbeat",
         "while IFS= read -r -d '' path",
-        "server:server/*|server:deploy/production/*|server:deploy/jenkins/assert-component-current.sh|server:deploy/jenkins/publish-immutable-image.sh)",
-        "gateway:admin/*|gateway:web/*|gateway:.dockerignore|gateway:deploy/Dockerfile.gateway|gateway:deploy/Dockerfile.gateway.dockerignore|gateway:deploy/nginx.conf|gateway:deploy/jenkins/assert-component-current.sh|gateway:deploy/jenkins/publish-immutable-image.sh|gateway:deploy/jenkins/verify-gateway-release.sh)",
+        "server:server/*|server:deploy/production/*|server:deploy/jenkins/assert-component-current.sh|server:deploy/jenkins/checkout-component-source.sh|server:deploy/jenkins/publish-immutable-image.sh|server:deploy/jenkins/verify-acr-immutable-policy.sh)",
+        "gateway:admin/*|gateway:web/*|gateway:.dockerignore|gateway:deploy/Dockerfile.gateway|gateway:deploy/Dockerfile.gateway.dockerignore|gateway:deploy/nginx.conf|gateway:deploy/jenkins/assert-component-current.sh|gateway:deploy/jenkins/checkout-component-source.sh|gateway:deploy/jenkins/publish-immutable-image.sh|gateway:deploy/jenkins/verify-acr-immutable-policy.sh|gateway:deploy/jenkins/verify-gateway-release.sh)",
         "WeavePress/WeavePressServer",
         "WeavePress/WeavePressGateway",
         'read_secret "$SECRETS_DIR/zdzq-hook-user"',
@@ -506,30 +516,26 @@ def assert_hook() -> None:
         "--connect-timeout 5",
         '--max-time "$JENKINS_REQUEST_MAX_SECONDS"',
         "--write-out '%{http_code}'",
-        '[[ "$http_code" == 201 ]]',
-        'Location header',
+        '[[ "$http_code" != 201 ]]',
+        'response Location',
         '--data-urlencode "BRANCH=master"',
         '--data-urlencode "APP_SHA=${app_sha}"',
         '--data-urlencode "DEPLOY=true"',
-        'trigger_job_with_retry "$job_path" "$live_master"',
-        'if trigger_job_with_retry "$job_path" "$live_master"; then\n    advance_component_baseline "$baseline_ref" "$baseline" "$live_master"',
-        'PENDING: ${job_path} at ${app_sha} after ${TRIGGER_ATTEMPTS} failed attempts',
-        "processing_failed=false",
-        'if process_component server "$SERVER_JOB" "$SERVER_BASELINE_REF"; then',
-        'if process_component gateway "$GATEWAY_JOB" "$GATEWAY_BASELINE_REF"; then',
-        '[[ "$processing_failed" == false ]] || exit 1',
+        '[[ "$curl_status" -eq 7 ]]',
+        "automatic retry disabled",
+        'queue_component server',
+        'queue_component gateway',
+        '"$DISPATCHER" --hook',
+        "--dispatch-pending",
     ):
         require(text, literal, context)
-    require_before(text, 'if [[ ! -f "$ENABLE_FILE" ]]', 'process_component server "$SERVER_JOB"', context)
-    require_before(text, 'if [[ ! -f "$ENABLE_FILE" ]]', 'process_component gateway "$GATEWAY_JOB"', context)
-    require_before(text, 'flock -w "$LOCK_WAIT_SECONDS" 9', 'git rev-parse --verify "$MASTER_REF"', context)
-    require_before(text, 'git rev-parse --verify "$MASTER_REF"', 'git diff --no-renames', context)
-    require_before(text, 'git rev-parse --verify "$MASTER_REF"', 'process_component server "$SERVER_JOB"', context)
-    if text.count('process_component server "$SERVER_JOB" "$SERVER_BASELINE_REF"') != 1:
-        fail(f"{context} must process Server at most once per receive")
-    if text.count('process_component gateway "$GATEWAY_JOB" "$GATEWAY_BASELINE_REF"') != 1:
-        fail(f"{context} must process Gateway at most once per receive")
+    require_before(text, 'if [[ ! -f "$ENABLE_FILE" ]]', 'queue_component server', context)
+    require_before(text, 'if [[ ! -f "$ENABLE_FILE" ]]', 'queue_component gateway', context)
+    if text.count("queue_component server") != 1 or text.count("queue_component gateway") != 1:
+        fail(f"{context} must queue each component once per receive")
     reject(text, r"last-processed-master", context)
+    reject(text, r"refs/weavepress/", context)
+    reject(text, r"trigger_job_with_retry", context)
     reject(text, r"set\s+-x", context)
     reject(text, r"curl[^\n]*--user", context)
     reject(text, r"curl[^\n]*--location", context)
@@ -550,7 +556,9 @@ def assert_direct_pipeline(component: str, path: Path) -> None:
         "weavepress-tencent-prod-ssh",
         "aliyun-acr-zdzq",
         "StrictHostKeyChecking=yes",
-        "merge-base --is-ancestor \"$APP_SHA\" origin/master",
+        "git clone --no-checkout --branch master --single-branch --no-tags",
+        "git -C source show 'refs/remotes/origin/master:deploy/jenkins/checkout-component-source.sh'",
+        "bash checkout-component-source.sh source",
         "bash component-current.sh source",
         'test "$actual_sha" = "$APP_SHA"',
         "docker logout registry.cn-hangzhou.aliyuncs.com",
@@ -559,17 +567,21 @@ def assert_direct_pipeline(component: str, path: Path) -> None:
         "sha256:[0-9a-f]{64}",
         "set +x",
         f'"$APP_SHA --component={component}"',
+        "verify-acr-immutable-policy.sh",
     ):
         require(text, literal, context)
     if text.count(SHA_RE) < 1:
         fail(f"{context} must validate a complete lowercase 40-character APP_SHA")
     require_before(text, "docker login", "publish-immutable-image.sh", context)
+    require_before(text, "verify-acr-immutable-policy.sh", "docker login", context)
     require_before(text, "trap cleanup EXIT", "publish-immutable-image.sh", context)
     reject(text, r"StrictHostKeyChecking=accept-new", context)
+    reject(text, r"test -f source/deploy/jenkins/assert-component-current\.sh", context)
     reject(text, r"docker\s+login[^\n]*--password(?:\s|=)(?!-stdin)", context)
     reject(text, r"(?:ACR_PASSWORD|GITHUB_TOKEN)\s*=\s*['\"][^$'\"]", context)
 
     if component == "server":
+        require(text, 'bash checkout-component-source.sh source server "$APP_SHA" component-current.sh', context)
         require(text, 'bash component-current.sh source server "$APP_SHA"', context)
         builds = (
             "docker build -f source/server/deployments/Dockerfile --build-arg APP_SHA=$APP_SHA --build-arg TARGET=api -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-api:$APP_SHA source/server",
@@ -586,6 +598,7 @@ def assert_direct_pipeline(component: str, path: Path) -> None:
         for digest_file in ("api.digest", "worker.digest", "migrate.digest"):
             require(text, digest_file, context)
     else:
+        require(text, 'bash checkout-component-source.sh source gateway "$APP_SHA" component-current.sh', context)
         require(text, 'bash component-current.sh source gateway "$APP_SHA"', context)
         require(
             text,
@@ -613,8 +626,7 @@ def assert_image_release_contract() -> None:
         "org.opencontainers.image.revision",
         "docker pull",
         "docker push",
-        "attempt=1",
-        '[[ "$attempt" -lt 3 ]]',
+        "timeout 900 docker push",
         "RepoDigests",
         "sha256:[0-9a-f]{64}",
     ):
@@ -625,11 +637,14 @@ def assert_image_release_contract() -> None:
     server_dockerfile = read_required(SERVER_DOCKERFILE)
     require(server_dockerfile, "ARG APP_SHA", str(SERVER_DOCKERFILE.relative_to(ROOT)))
     require(server_dockerfile, "org.opencontainers.image.revision=$APP_SHA", str(SERVER_DOCKERFILE.relative_to(ROOT)))
+    require(server_dockerfile, "gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab", str(SERVER_DOCKERFILE.relative_to(ROOT)))
 
     gateway_dockerfile = read_required(GATEWAY_DOCKERFILE)
     gateway_context = str(GATEWAY_DOCKERFILE.relative_to(ROOT))
     for literal in ("ARG APP_SHA", "^[0-9a-f]{40}$", "org.opencontainers.image.revision=$APP_SHA", "__WEAVEPRESS_APP_SHA__"):
         require(gateway_dockerfile, literal, gateway_context)
+    require(gateway_dockerfile, "docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32", gateway_context)
+    require(gateway_dockerfile, "node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf", gateway_context)
     gateway_config = read_required(GATEWAY_CONFIG)
     require(gateway_config, "X-WeavePress-Release", str(GATEWAY_CONFIG.relative_to(ROOT)))
     require(gateway_config, "__WEAVEPRESS_APP_SHA__", str(GATEWAY_CONFIG.relative_to(ROOT)))
@@ -646,8 +661,8 @@ def assert_image_release_contract() -> None:
         'git -C "$repository" fetch --no-tags origin',
         'merge-base --is-ancestor "$app_sha" "$master_sha"',
         'git -C "$repository" diff --no-renames --name-only -z "$app_sha" "$master_sha" --',
-        "server:server/*|server:deploy/production/*|server:deploy/jenkins/assert-component-current.sh|server:deploy/jenkins/publish-immutable-image.sh)",
-        "gateway:admin/*|gateway:web/*|gateway:.dockerignore|gateway:deploy/Dockerfile.gateway|gateway:deploy/Dockerfile.gateway.dockerignore|gateway:deploy/nginx.conf|gateway:deploy/jenkins/assert-component-current.sh|gateway:deploy/jenkins/publish-immutable-image.sh|gateway:deploy/jenkins/verify-gateway-release.sh)",
+        "server:server/*|server:deploy/production/*|server:deploy/jenkins/assert-component-current.sh|server:deploy/jenkins/checkout-component-source.sh|server:deploy/jenkins/publish-immutable-image.sh|server:deploy/jenkins/verify-acr-immutable-policy.sh)",
+        "gateway:admin/*|gateway:web/*|gateway:.dockerignore|gateway:deploy/Dockerfile.gateway|gateway:deploy/Dockerfile.gateway.dockerignore|gateway:deploy/nginx.conf|gateway:deploy/jenkins/assert-component-current.sh|gateway:deploy/jenkins/checkout-component-source.sh|gateway:deploy/jenkins/publish-immutable-image.sh|gateway:deploy/jenkins/verify-acr-immutable-policy.sh|gateway:deploy/jenkins/verify-gateway-release.sh)",
     ):
         require(freshness, literal, freshness_context)
 
@@ -656,9 +671,9 @@ def assert_sync_pipeline(component: str, path: Path) -> None:
     text = read_required(path)
     context = str(path.relative_to(ROOT))
     direct_job = (
-        "WeavePress/WeavePressServer"
+        "/WeavePress/WeavePressServer"
         if component == "server"
-        else "WeavePress/WeavePressGateway"
+        else "/WeavePress/WeavePressGateway"
     )
     for literal in (
         "string(name: 'BRANCH', defaultValue: 'master'",
@@ -674,6 +689,7 @@ def assert_sync_pipeline(component: str, path: Path) -> None:
         "UNCHANGED=true",
         direct_job,
         "if (!params.DEPLOY_WHEN_UNCHANGED)",
+        "wait: true, propagate: true",
         "booleanParam(name: 'DEPLOY', value: true)",
     ):
         require(text, literal, context)
@@ -792,13 +808,18 @@ def assert_no_placeholders_or_secret_literals() -> None:
         IMMUTABLE_PUBLISH,
         GATEWAY_VERIFY,
         COMPONENT_CURRENT,
+        COMPONENT_CHECKOUT,
+        ACR_POLICY_VERIFY,
+        DECLARATIVE_LINTER,
+        PENDING_DISPATCHER,
+        PENDING_INSTALLER,
     ]
     for path in paths:
         text = read_required(path)
         context = str(path.relative_to(ROOT))
         if path.suffix == ".groovy":
             assert_groovy_structure(path)
-        elif path.suffix == ".sh" or path == HOOK:
+        elif path.suffix == ".sh" or path in (HOOK, PENDING_DISPATCHER, PENDING_INSTALLER):
             result = run_bash_n(path)
             if result.returncode != 0:
                 fail(f"bash -n rejected {context}: {result.stderr.strip()}")

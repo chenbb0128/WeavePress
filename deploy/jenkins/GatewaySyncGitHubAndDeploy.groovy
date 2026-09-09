@@ -20,7 +20,7 @@ pipeline {
     GITHUB_HTTP_PROXY = 'http://192.168.31.227:7890'
     NAS_REPO = 'ssh://chenhua@192.168.31.240/volume1/docker/weavepress-git/WeavePress.git'
     NAS_GIT_SSH_COMMAND = 'ssh -i /var/jenkins_home/.ssh/nas_classmate_git_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/var/jenkins_home/.ssh/known_hosts'
-    DIRECT_DEPLOY_JOB = 'WeavePress/WeavePressGateway'
+    DIRECT_DEPLOY_JOB = '/WeavePress/WeavePressGateway'
   }
 
   stages {
@@ -110,7 +110,7 @@ pipeline {
             echo 'GitHub 与 NAS 已一致，按参数跳过发布。'
             return
           }
-          build job: env.DIRECT_DEPLOY_JOB, wait: false, parameters: [
+          build job: env.DIRECT_DEPLOY_JOB, wait: true, propagate: true, parameters: [
             string(name: 'BRANCH', value: 'master'),
             string(name: 'APP_SHA', value: synced),
             booleanParam(name: 'PUSH_ACR', value: true),

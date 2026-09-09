@@ -36,10 +36,10 @@ git -C "$repository" diff --no-renames --name-only -z "$app_sha" "$master_sha" -
 component_changed=false
 while IFS= read -r -d '' path; do
   case "$component:$path" in
-    server:server/*|server:deploy/production/*|server:deploy/jenkins/assert-component-current.sh|server:deploy/jenkins/publish-immutable-image.sh)
+    server:server/*|server:deploy/production/*|server:deploy/jenkins/assert-component-current.sh|server:deploy/jenkins/checkout-component-source.sh|server:deploy/jenkins/publish-immutable-image.sh|server:deploy/jenkins/verify-acr-immutable-policy.sh)
       component_changed=true
       ;;
-    gateway:admin/*|gateway:web/*|gateway:.dockerignore|gateway:deploy/Dockerfile.gateway|gateway:deploy/Dockerfile.gateway.dockerignore|gateway:deploy/nginx.conf|gateway:deploy/jenkins/assert-component-current.sh|gateway:deploy/jenkins/publish-immutable-image.sh|gateway:deploy/jenkins/verify-gateway-release.sh)
+    gateway:admin/*|gateway:web/*|gateway:.dockerignore|gateway:deploy/Dockerfile.gateway|gateway:deploy/Dockerfile.gateway.dockerignore|gateway:deploy/nginx.conf|gateway:deploy/jenkins/assert-component-current.sh|gateway:deploy/jenkins/checkout-component-source.sh|gateway:deploy/jenkins/publish-immutable-image.sh|gateway:deploy/jenkins/verify-acr-immutable-policy.sh|gateway:deploy/jenkins/verify-gateway-release.sh)
       component_changed=true
       ;;
   esac

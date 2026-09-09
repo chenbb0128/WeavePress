@@ -43,13 +43,10 @@ pipeline {
             exit 64
           }
           export GIT_SSH_COMMAND="$NAS_GIT_SSH_COMMAND"
-          git clone --no-checkout --branch master --single-branch "$NAS_REPO" source
-          test -f source/deploy/jenkins/assert-component-current.sh
-          cp source/deploy/jenkins/assert-component-current.sh component-current.sh
-          git -C source cat-file -e "$APP_SHA^{commit}"
-          git -C source merge-base --is-ancestor "$APP_SHA" origin/master
-          bash component-current.sh source server "$APP_SHA"
-          git -C source checkout --detach "$APP_SHA"
+          timeout 300 git clone --no-checkout --branch master --single-branch --no-tags "$NAS_REPO" source
+          timeout 30 git -C source show 'refs/remotes/origin/master:deploy/jenkins/checkout-component-source.sh' > checkout-component-source.sh
+          chmod 0700 checkout-component-source.sh
+          timeout 240 bash checkout-component-source.sh source server "$APP_SHA" component-current.sh
           actual_sha="$(git -C source rev-parse HEAD)"
           test "$actual_sha" = "$APP_SHA"
           test -f source/server/deployments/Dockerfile
@@ -89,8 +86,15 @@ pipeline {
         }
       }
       steps {
+        sh '''#!/usr/bin/env bash
+          set -Eeuo pipefail
+          timeout 120 bash source/deploy/jenkins/verify-acr-immutable-policy.sh \
+            registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-api \
+            registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-worker \
+            registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-migrate
+        '''
         withCredentials([usernamePassword(credentialsId: 'aliyun-acr-zdzq', usernameVariable: 'ACR_USER', passwordVariable: 'ACR_PASSWORD')]) {
-          sh(label: '推送三个不可变镜像（每个最多三次）', script: '''#!/usr/bin/env bash
+          sh(label: '推送三个不可变镜像', script: '''#!/usr/bin/env bash
             set -Eeuo pipefail
             set +x
             docker_config="$(mktemp -d)"

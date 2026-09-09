@@ -4,6 +4,7 @@ umask 077
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 freshness="$repo_root/deploy/jenkins/assert-component-current.sh"
+checkout_source="$repo_root/deploy/jenkins/checkout-component-source.sh"
 test_root="$(mktemp -d)"
 trap 'rm -rf -- "$test_root"' EXIT
 
@@ -11,6 +12,8 @@ fail() {
   printf 'Component freshness behavior violation: %s\n' "$1" >&2
   exit 1
 }
+
+[[ -f "$checkout_source" ]] || fail 'checkout-component-source helper is missing'
 
 bare="$test_root/origin.git"
 work="$test_root/work"
@@ -137,5 +140,37 @@ if bash "$freshness" "$checkout" server "$divergent_rev" >/dev/null 2>&1; then
 fi
 [[ "$(git --git-dir "$bare" rev-parse refs/heads/master)" == "$freshness_rev" ]] || \
   fail 'test fixture master did not reach the final safety-helper commit'
+
+bootstrap_bare="$test_root/bootstrap-origin.git"
+bootstrap_work="$test_root/bootstrap-work"
+bootstrap_checkout="$test_root/bootstrap-checkout"
+bootstrap_runner="$test_root/checkout-component-source.sh"
+bootstrap_current="$test_root/component-current.sh"
+git init --bare "$bootstrap_bare" >/dev/null
+git init "$bootstrap_work" >/dev/null
+git -C "$bootstrap_work" config user.name 'CI contract'
+git -C "$bootstrap_work" config user.email 'ci-contract@example.invalid'
+mkdir -p "$bootstrap_work/server" "$bootstrap_work/deploy/jenkins"
+printf 'server\n' > "$bootstrap_work/server/value.txt"
+cp "$freshness" "$bootstrap_work/deploy/jenkins/assert-component-current.sh"
+cp "$checkout_source" "$bootstrap_work/deploy/jenkins/checkout-component-source.sh"
+git -C "$bootstrap_work" add .
+git -C "$bootstrap_work" commit -m bootstrap >/dev/null
+bootstrap_sha="$(git -C "$bootstrap_work" rev-parse HEAD)"
+git -C "$bootstrap_work" remote add origin "$bootstrap_bare"
+git -C "$bootstrap_work" push origin master >/dev/null
+git clone --no-checkout --branch master --single-branch --no-tags \
+  "$bootstrap_bare" "$bootstrap_checkout" >/dev/null
+[[ ! -e "$bootstrap_checkout/deploy/jenkins/checkout-component-source.sh" ]] || \
+  fail 'clone --no-checkout unexpectedly populated the helper in the worktree'
+git -C "$bootstrap_checkout" show \
+  'refs/remotes/origin/master:deploy/jenkins/checkout-component-source.sh' > "$bootstrap_runner"
+chmod 0700 "$bootstrap_runner"
+bash "$bootstrap_runner" "$bootstrap_checkout" server "$bootstrap_sha" "$bootstrap_current" >/dev/null || \
+  fail 'origin/master bootstrap helper did not prepare the requested Server checkout'
+[[ "$(git -C "$bootstrap_checkout" rev-parse HEAD)" == "$bootstrap_sha" ]] || \
+  fail 'bootstrap helper did not detach at the requested APP_SHA'
+cmp -s "$freshness" "$bootstrap_current" || \
+  fail 'bootstrap helper did not preserve the trusted origin/master freshness helper'
 
 printf 'Component freshness behavior tests passed.\n'

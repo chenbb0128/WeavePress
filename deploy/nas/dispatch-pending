@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+readonly POST_RECEIVE="/volume1/docker/weavepress-git/WeavePress.git/hooks/post-receive"
+readonly DISPATCH_TIMEOUT_SECONDS=55
+
+case "${1:-}" in
+  --hook) mode=hook ;;
+  --scheduled) mode=scheduled ;;
+  *)
+    printf 'Usage: %s --hook|--scheduled\n' "$0" >&2
+    exit 64
+    ;;
+esac
+[[ $# -eq 1 ]] || exit 64
+[[ -x "$POST_RECEIVE" && ! -L "$POST_RECEIVE" ]] || {
+  printf 'dispatch-pending: installed post-receive hook is missing or unsafe\n' >&2
+  exit 1
+}
+exec timeout "$DISPATCH_TIMEOUT_SECONDS" "$POST_RECEIVE" --dispatch-pending "$mode"

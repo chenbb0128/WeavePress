@@ -79,15 +79,8 @@ if [[ "$remote_exists" -eq 1 ]]; then
   verify_pulled_image "$image" "$built_id"
   manifest_digest="$(inspect_repository_digest "$image")"
 else
-  attempt=1
-  while true; do
-    if docker push "$image" >"$push_log" 2>&1; then
-      break
-    fi
-    [[ "$attempt" -lt 3 ]] || die 'image push failed after three attempts'
-    sleep $((attempt * 10))
-    attempt=$((attempt + 1))
-  done
+  timeout 900 docker push "$image" >"$push_log" 2>&1 || \
+    die 'image push result is not confirmed; rerun only after immutable-tag reconciliation'
   manifest_digest="$(sed -nE 's/^.*digest: (sha256:[0-9a-f]{64}) size:.*$/\1/p' "$push_log" | tail -n 1)"
   [[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die 'docker push did not report a valid manifest digest'
   docker pull "$image" >/dev/null 2>&1 || die 'could not verify the pushed immutable tag'

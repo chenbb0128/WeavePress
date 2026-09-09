@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+readonly INSTALL_ROOT="/volume1/docker/weavepress-git"
+readonly BARE_REPO="$INSTALL_ROOT/WeavePress.git"
+readonly STATE_DIR="$INSTALL_ROOT/release-state"
+readonly BIN_DIR="$INSTALL_ROOT/bin"
+
+die() {
+  printf 'install-dispatch-pending: %s\n' "$1" >&2
+  exit 1
+}
+
+[[ $# -eq 1 ]] || die 'expected checked-out WeavePress repository root'
+source_root="$1"
+[[ -d "$BARE_REPO" ]] || die 'WeavePress bare repository is missing'
+[[ -f "$source_root/deploy/nas/post-receive" ]] || die 'source post-receive hook is missing'
+[[ -f "$source_root/deploy/nas/dispatch-pending" ]] || die 'source pending dispatcher is missing'
+
+install -d -m 0700 "$STATE_DIR" "$BIN_DIR"
+install -m 0700 "$source_root/deploy/nas/post-receive" "$BARE_REPO/hooks/post-receive.new"
+install -m 0700 "$source_root/deploy/nas/dispatch-pending" "$BIN_DIR/dispatch-pending.new"
+mv -f -- "$BARE_REPO/hooks/post-receive.new" "$BARE_REPO/hooks/post-receive"
+mv -f -- "$BIN_DIR/dispatch-pending.new" "$BIN_DIR/dispatch-pending"
+
+printf '%s\n' \
+  'Installed hook and dispatcher.' \
+  'Before enabling automatic deploy, configure NAS Task Scheduler to run every minute:' \
+  '/volume1/docker/weavepress-git/bin/dispatch-pending --scheduled' \
+  'Automatic dispatch remains fail-closed until a fresh scheduler heartbeat exists.'
