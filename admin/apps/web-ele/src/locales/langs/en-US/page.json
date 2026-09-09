@@ -14,6 +14,10 @@
     "title": "Articles",
     "detailTitle": "Article Detail"
   },
+  "ai": {
+    "workbenchTitle": "AI Writing Workspace",
+    "jobsTitle": "AI Jobs"
+  },
   "drafts": {
     "title": "WeChat Drafts",
     "detailTitle": "Draft Workspace"

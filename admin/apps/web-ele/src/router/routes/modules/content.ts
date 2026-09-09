@@ -48,13 +48,35 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    name: 'AIWorkbench',
+    path: '/ai/articles/:articleId',
+    component: () => import('#/views/ai/workbench.vue'),
+    meta: {
+      activePath: '/articles',
+      authority: ['admin', 'editor'],
+      hideInMenu: true,
+      title: $t('page.ai.workbenchTitle'),
+    },
+  },
+  {
+    name: 'AIJobs',
+    path: '/ai/jobs',
+    component: () => import('#/views/ai/jobs.vue'),
+    meta: {
+      authority: ['admin', 'editor'],
+      icon: 'lucide:sparkles',
+      order: 4,
+      title: $t('page.ai.jobsTitle'),
+    },
+  },
+  {
     name: 'Drafts',
     path: '/drafts',
     component: () => import('#/views/drafts/index.vue'),
     meta: {
       authority: ['admin', 'editor'],
       icon: 'lucide:file-pen-line',
-      order: 4,
+      order: 5,
       title: $t('page.drafts.title'),
     },
   },
@@ -76,7 +98,7 @@ const routes: RouteRecordRaw[] = [
     meta: {
       authority: ['admin', 'editor'],
       icon: 'lucide:send',
-      order: 5,
+      order: 6,
       title: $t('page.wechat.publishJobsTitle'),
     },
   },
