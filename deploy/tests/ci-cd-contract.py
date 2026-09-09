@@ -41,6 +41,7 @@ PINNED_UBUNTU = (
     "0e0a0fc6d18feda9db1590da249ac93e8d5abfea8f4c3c0c849ce512b5ef8982"
 )
 PINNED_NGINX = "nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10"
+PINNED_GIT_FLOCK = "golang@sha256:e401dae1bf814e29204a8cb7915682e1780951e609ca0dd8865ee1937f510c48"
 SHA_RE = "^[0-9a-f]{40}$"
 
 
@@ -102,10 +103,13 @@ def assert_workflow_active_commands(text: str) -> None:
 
 def assert_hook_active_dispatch(text: str) -> None:
     active = "\n".join(uncommented_lines(text, "#"))
-    for job in ("SERVER_JOB", "GATEWAY_JOB"):
-        pattern = rf'^\s*(?:\[\[[^\n]+\]\]\s*\|\|\s*)?trigger_job "\${job}" "\$live_master"\s*$'
+    for component, job, baseline in (
+        ("server", "SERVER_JOB", "SERVER_BASELINE_REF"),
+        ("gateway", "GATEWAY_JOB", "GATEWAY_BASELINE_REF"),
+    ):
+        pattern = rf'^\s*(?:if\s+)?process_component {component} "\${job}" "\${baseline}"(?:;\s*then)?\s*$'
         if len(re.findall(pattern, active, re.MULTILINE)) != 1:
-            fail(f"NAS hook must actively dispatch {job} exactly once")
+            fail(f"NAS hook must actively process {component} exactly once")
 
 
 def assert_gateway_deploy_guards(text: str) -> None:
@@ -139,7 +143,7 @@ def assert_comment_bypass_mutations() -> None:
 
     hook = read_required(HOOK)
     hook_mutant = re.sub(
-        r'(?m)^(\s*(?:\[\[[^\n]+\]\]\s*\|\|\s*)?trigger_job "\$(?:SERVER|GATEWAY)_JOB" "\$live_master"\s*)$',
+        r'(?m)^(\s*(?:if\s+)?process_component (?:server|gateway) "\$(?:SERVER|GATEWAY)_JOB" "\$(?:SERVER|GATEWAY)_BASELINE_REF"(?:;\s*then)?\s*)$',
         r'# \1',
         hook,
     )
@@ -444,7 +448,12 @@ def assert_workflow() -> None:
     nginx_inspect = f"docker image inspect {PINNED_NGINX}"
     require_before(text, nginx_pull, nginx_inspect, context)
     require_before(text, nginx_inspect, run_contract, context)
+    flock_pull = f"docker pull {PINNED_GIT_FLOCK}"
+    flock_inspect = f"docker image inspect {PINNED_GIT_FLOCK}"
+    require_before(text, flock_pull, flock_inspect, context)
+    require_before(text, flock_inspect, run_contract, context)
     reject(text, r"ubuntu:[0-9]", context)
+    reject(text, r"golang:[0-9]", context)
     reject(text, r"docker run[^\n]*(?!.*--network none)", context)
 
     production_contract = read_required(PRODUCTION_CONTRACT)
@@ -452,7 +461,11 @@ def assert_workflow() -> None:
     require(production_contract, "--network none", str(PRODUCTION_CONTRACT.relative_to(ROOT)))
     require(production_contract, PINNED_UBUNTU, str(PRODUCTION_CONTRACT.relative_to(ROOT)))
     require(production_contract, PINNED_NGINX, str(PRODUCTION_CONTRACT.relative_to(ROOT)))
+    require(production_contract, PINNED_GIT_FLOCK, str(PRODUCTION_CONTRACT.relative_to(ROOT)))
+    require(production_contract, "--require-real-flock", str(PRODUCTION_CONTRACT.relative_to(ROOT)))
+    require(production_contract, '"$docker_repo_root:/repo:ro"', str(PRODUCTION_CONTRACT.relative_to(ROOT)))
     reject(production_contract, r"ubuntu:[0-9]", str(PRODUCTION_CONTRACT.relative_to(ROOT)))
+    reject(production_contract, r"golang:[0-9]", str(PRODUCTION_CONTRACT.relative_to(ROOT)))
 
 
 def assert_hook() -> None:
@@ -462,22 +475,27 @@ def assert_hook() -> None:
     for literal in (
         "set -Eeuo pipefail",
         'MASTER_REF="refs/heads/master"',
-        'BASELINE_REF="refs/weavepress/last-processed-master"',
+        'SERVER_BASELINE_REF="refs/weavepress/last-processed-server"',
+        'GATEWAY_BASELINE_REF="refs/weavepress/last-processed-gateway"',
+        "JENKINS_REQUEST_MAX_SECONDS=20",
+        "TRIGGER_ATTEMPTS=3",
+        "TRIGGER_RETRY_DELAY_SECONDS=2",
+        "LOCK_WAIT_SECONDS=180",
         'ENABLE_FILE="/volume1/docker/weavepress-git/.enable-auto-deploy"',
         'SECRETS_DIR="/volume1/docker/weavepress-git/.secrets"',
         'LOG_FILE="/volume1/docker/weavepress-git/post-receive.log"',
         'LOCK_FILE="/volume1/docker/weavepress-git/post-receive.lock"',
         'exec 9>>"$LOCK_FILE"',
-        "flock -w 90 9",
+        'flock -w "$LOCK_WAIT_SECONDS" 9',
         'git rev-parse --verify "$MASTER_REF"',
         "^0{40}$",
-        'git ls-tree -r -z --name-only "$live_master" --',
-        'git diff --no-renames --name-only -z "$baseline" "$live_master" --',
-        'git update-ref "$BASELINE_REF" "$live_master" "$baseline_expected"',
+        'git ls-tree -r -z --name-only "$target" --',
+        'git diff --no-renames --name-only -z "$baseline" "$target" --',
+        'component_has_changes "$component" "$baseline" "$live_master"',
+        'git update-ref "$baseline_ref" "$live_master" "$baseline_expected"',
         "while IFS= read -r -d '' path",
-        "deploy/jenkins/assert-component-current.sh|deploy/jenkins/publish-immutable-image.sh)",
-        "server/*|deploy/production/*)",
-        "admin/*|web/*|.dockerignore|deploy/Dockerfile.gateway|deploy/Dockerfile.gateway.dockerignore|deploy/nginx.conf|deploy/jenkins/verify-gateway-release.sh)",
+        "server:server/*|server:deploy/production/*|server:deploy/jenkins/assert-component-current.sh|server:deploy/jenkins/publish-immutable-image.sh)",
+        "gateway:admin/*|gateway:web/*|gateway:.dockerignore|gateway:deploy/Dockerfile.gateway|gateway:deploy/Dockerfile.gateway.dockerignore|gateway:deploy/nginx.conf|gateway:deploy/jenkins/assert-component-current.sh|gateway:deploy/jenkins/publish-immutable-image.sh|gateway:deploy/jenkins/verify-gateway-release.sh)",
         "WeavePress/WeavePressServer",
         "WeavePress/WeavePressGateway",
         'read_secret "$SECRETS_DIR/zdzq-hook-user"',
@@ -486,32 +504,32 @@ def assert_hook() -> None:
         'curl --config "$curl_config"',
         "--max-redirs 0",
         "--connect-timeout 5",
-        "--max-time 20",
+        '--max-time "$JENKINS_REQUEST_MAX_SECONDS"',
         "--write-out '%{http_code}'",
         '[[ "$http_code" == 201 ]]',
         'Location header',
         '--data-urlencode "BRANCH=master"',
         '--data-urlencode "APP_SHA=${app_sha}"',
         '--data-urlencode "DEPLOY=true"',
+        'trigger_job_with_retry "$job_path" "$live_master"',
+        'if trigger_job_with_retry "$job_path" "$live_master"; then\n    advance_component_baseline "$baseline_ref" "$baseline" "$live_master"',
+        'PENDING: ${job_path} at ${app_sha} after ${TRIGGER_ATTEMPTS} failed attempts',
+        "processing_failed=false",
+        'if process_component server "$SERVER_JOB" "$SERVER_BASELINE_REF"; then',
+        'if process_component gateway "$GATEWAY_JOB" "$GATEWAY_BASELINE_REF"; then',
+        '[[ "$processing_failed" == false ]] || exit 1',
     ):
         require(text, literal, context)
-    require_before(text, 'if [[ ! -f "$ENABLE_FILE" ]]', 'trigger_job "$SERVER_JOB"', context)
-    require_before(text, 'if [[ ! -f "$ENABLE_FILE" ]]', 'trigger_job "$GATEWAY_JOB"', context)
-    require_before(text, 'server_changed=false', 'trigger_job "$SERVER_JOB"', context)
-    require_before(text, 'gateway_changed=false', 'trigger_job "$GATEWAY_JOB"', context)
-    require_before(text, "flock -w 90 9", 'git rev-parse --verify "$MASTER_REF"', context)
+    require_before(text, 'if [[ ! -f "$ENABLE_FILE" ]]', 'process_component server "$SERVER_JOB"', context)
+    require_before(text, 'if [[ ! -f "$ENABLE_FILE" ]]', 'process_component gateway "$GATEWAY_JOB"', context)
+    require_before(text, 'flock -w "$LOCK_WAIT_SECONDS" 9', 'git rev-parse --verify "$MASTER_REF"', context)
     require_before(text, 'git rev-parse --verify "$MASTER_REF"', 'git diff --no-renames', context)
-    require_before(text, 'git rev-parse --verify "$MASTER_REF"', 'trigger_job "$SERVER_JOB"', context)
-    if text.count('trigger_job "$SERVER_JOB" "$live_master"') != 1:
-        fail(f"{context} must dispatch the Server job at most once per receive")
-    if text.count('trigger_job "$GATEWAY_JOB" "$live_master"') != 1:
-        fail(f"{context} must dispatch the Gateway job at most once per receive")
-    final_baseline_advance = text.rfind("\nadvance_baseline")
-    if final_baseline_advance < 0:
-        fail(f"{context} must advance the processing baseline after dispatch")
-    for job in ("SERVER_JOB", "GATEWAY_JOB"):
-        if text.find(f'trigger_job "${job}" "$live_master"') > final_baseline_advance:
-            fail(f"{context} must advance the processing baseline after all Jenkins dispatches")
+    require_before(text, 'git rev-parse --verify "$MASTER_REF"', 'process_component server "$SERVER_JOB"', context)
+    if text.count('process_component server "$SERVER_JOB" "$SERVER_BASELINE_REF"') != 1:
+        fail(f"{context} must process Server at most once per receive")
+    if text.count('process_component gateway "$GATEWAY_JOB" "$GATEWAY_BASELINE_REF"') != 1:
+        fail(f"{context} must process Gateway at most once per receive")
+    reject(text, r"last-processed-master", context)
     reject(text, r"set\s+-x", context)
     reject(text, r"curl[^\n]*--user", context)
     reject(text, r"curl[^\n]*--location", context)

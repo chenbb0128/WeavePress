@@ -4,8 +4,13 @@ umask 077
 set +x
 
 readonly MASTER_REF="refs/heads/master"
-readonly BASELINE_REF="refs/weavepress/last-processed-master"
+readonly SERVER_BASELINE_REF="refs/weavepress/last-processed-server"
+readonly GATEWAY_BASELINE_REF="refs/weavepress/last-processed-gateway"
 readonly ZERO_SHA="0000000000000000000000000000000000000000"
+readonly JENKINS_REQUEST_MAX_SECONDS=20
+readonly TRIGGER_ATTEMPTS=3
+readonly TRIGGER_RETRY_DELAY_SECONDS=2
+readonly LOCK_WAIT_SECONDS=180
 readonly JENKINS_URL="http://127.0.0.1:18080"
 readonly ENABLE_FILE="/volume1/docker/weavepress-git/.enable-auto-deploy"
 readonly SECRETS_DIR="/volume1/docker/weavepress-git/.secrets"
@@ -70,8 +75,8 @@ trigger_job() (
   }
   trap cleanup_trigger EXIT
 
-  user="$(read_secret "$SECRETS_DIR/zdzq-hook-user" 'Jenkins user')"
-  token="$(read_secret "$SECRETS_DIR/zdzq-hook-token" 'Jenkins token')"
+  user="$(read_secret "$SECRETS_DIR/zdzq-hook-user" 'Jenkins user')" || return 1
+  token="$(read_secret "$SECRETS_DIR/zdzq-hook-token" 'Jenkins token')" || return 1
   curl_config="$(mktemp "${TMPDIR:-/tmp}/weavepress-hook-curl.config.XXXXXX")" || \
     die 'could not allocate Jenkins curl config'
   curl_headers="$(mktemp "${TMPDIR:-/tmp}/weavepress-hook-curl.headers.XXXXXX")" || \
@@ -90,7 +95,7 @@ trigger_job() (
     --request POST \
     --max-redirs 0 \
     --connect-timeout 5 \
-    --max-time 20 \
+    --max-time "$JENKINS_REQUEST_MAX_SECONDS" \
     --dump-header "$curl_headers" \
     --output /dev/null \
     --write-out '%{http_code}' \
@@ -128,6 +133,26 @@ trigger_job() (
   log "Dispatched ${job_path} at ${app_sha}"
 )
 
+trigger_job_with_retry() {
+  local job_path="$1"
+  local app_sha="$2"
+  local attempt=1
+
+  while [[ "$attempt" -le "$TRIGGER_ATTEMPTS" ]]; do
+    if trigger_job "$job_path" "$app_sha"; then
+      return 0
+    fi
+    if [[ "$attempt" -lt "$TRIGGER_ATTEMPTS" ]]; then
+      log "Retrying ${job_path} at ${app_sha} after failed attempt ${attempt}/${TRIGGER_ATTEMPTS}"
+      sleep "$TRIGGER_RETRY_DELAY_SECONDS"
+    fi
+    attempt=$((attempt + 1))
+  done
+
+  log "PENDING: ${job_path} at ${app_sha} after ${TRIGGER_ATTEMPTS} failed attempts"
+  return 1
+}
+
 master_seen=false
 oldrev=""
 newrev=""
@@ -151,99 +176,118 @@ if [[ "$oldrev" != "$ZERO_SHA" ]]; then
 fi
 
 exec 9>>"$LOCK_FILE"
-flock -w 90 9 || die 'another WeavePress post-receive hook still holds the lock'
+flock -w "$LOCK_WAIT_SECONDS" 9 || die 'another WeavePress post-receive hook still holds the lock'
 live_master="$(git rev-parse --verify "$MASTER_REF" 2>/dev/null)" || \
   die 'could not resolve live master revision'
 [[ "$live_master" =~ ^[0-9a-f]{40}$ ]] || die 'live master revision is invalid'
 git cat-file -e "${live_master}^{commit}" 2>/dev/null || die 'live master revision is not a commit'
 
-baseline="$ZERO_SHA"
-baseline_expected="$ZERO_SHA"
-if resolved_baseline="$(git rev-parse --verify "$BASELINE_REF" 2>/dev/null)"; then
-  [[ "$resolved_baseline" =~ ^[0-9a-f]{40}$ ]] || die 'stored processing baseline is invalid'
-  git cat-file -e "${resolved_baseline}^{commit}" 2>/dev/null || \
-    die 'stored processing baseline is not a commit'
-  baseline="$resolved_baseline"
-  baseline_expected="$resolved_baseline"
-fi
+resolve_component_baseline() {
+  local baseline_ref="$1"
+  local candidate=""
 
-advance_baseline() {
-  git update-ref "$BASELINE_REF" "$live_master" "$baseline_expected" || \
-    die 'could not atomically advance the processing baseline'
+  resolved_baseline="$ZERO_SHA"
+  if candidate="$(git rev-parse --verify "$baseline_ref" 2>/dev/null)"; then
+    [[ "$candidate" =~ ^[0-9a-f]{40}$ ]] || die 'stored component processing baseline is invalid'
+    git cat-file -e "${candidate}^{commit}" 2>/dev/null || \
+      die 'stored component processing baseline is not a commit'
+    resolved_baseline="$candidate"
+  fi
 }
 
-if [[ ! -f "$ENABLE_FILE" ]]; then
-  advance_baseline
-  log "Mirrored master at ${live_master}; recorded manual-release baseline while automatic deployment remains disabled"
-  exit 0
-fi
+advance_component_baseline() {
+  local baseline_ref="$1"
+  local baseline_expected="$2"
+  local live_master="$3"
 
-if [[ "$baseline" == "$live_master" ]]; then
-  if [[ "$newrev" != "$live_master" ]]; then
-    log "Ignored stale master receive at ${newrev}; live master ${live_master} is already processed"
+  git update-ref "$baseline_ref" "$live_master" "$baseline_expected" || \
+    die 'could not atomically advance a component processing baseline'
+}
+
+component_has_changes() {
+  local component="$1"
+  local baseline="$2"
+  local target="$3"
+  local changed_paths_file path
+  local component_changed=false
+
+  changed_paths_file="$(mktemp)" || die 'could not allocate changed-path buffer'
+  if [[ "$baseline" =~ ^0{40}$ ]]; then
+    git ls-tree -r -z --name-only "$target" -- > "$changed_paths_file" || {
+      rm -f -- "$changed_paths_file"
+      die 'could not enumerate initial master tree'
+    }
   else
-    log "Master ${live_master} is already processed"
+    git diff --no-renames --name-only -z "$baseline" "$target" -- > "$changed_paths_file" || {
+      rm -f -- "$changed_paths_file"
+      die 'could not derive accumulated component paths'
+    }
   fi
-  exit 0
-fi
+
+  while IFS= read -r -d '' path; do
+    case "$component:$path" in
+      server:server/*|server:deploy/production/*|server:deploy/jenkins/assert-component-current.sh|server:deploy/jenkins/publish-immutable-image.sh)
+        component_changed=true
+        ;;
+      gateway:admin/*|gateway:web/*|gateway:.dockerignore|gateway:deploy/Dockerfile.gateway|gateway:deploy/Dockerfile.gateway.dockerignore|gateway:deploy/nginx.conf|gateway:deploy/jenkins/assert-component-current.sh|gateway:deploy/jenkins/publish-immutable-image.sh|gateway:deploy/jenkins/verify-gateway-release.sh)
+        component_changed=true
+        ;;
+    esac
+  done < "$changed_paths_file"
+  rm -f -- "$changed_paths_file"
+  [[ "$component_changed" == true ]]
+}
+
+process_component() {
+  local component="$1"
+  local job_path="$2"
+  local baseline_ref="$3"
+  local baseline
+
+  resolve_component_baseline "$baseline_ref"
+  baseline="$resolved_baseline"
+  if [[ "$baseline" == "$live_master" ]]; then
+    log "${component} at ${live_master} is already processed"
+    return 0
+  fi
+
+  if ! component_has_changes "$component" "$baseline" "$live_master"; then
+    advance_component_baseline "$baseline_ref" "$baseline" "$live_master"
+    log "Processed ${component} baseline at ${live_master}; no matching paths changed"
+    return 0
+  fi
+
+  if trigger_job_with_retry "$job_path" "$live_master"; then
+    advance_component_baseline "$baseline_ref" "$baseline" "$live_master"
+    return 0
+  fi
+  return 1
+}
+
 if [[ "$newrev" != "$live_master" ]]; then
   log "Coalescing stale master receive at ${newrev} into live master ${live_master}"
 fi
 
-changed_paths_file="$(mktemp)" || die 'could not allocate changed-path buffer'
-cleanup_changed_paths() {
-  [[ -z "$changed_paths_file" ]] || rm -f -- "$changed_paths_file"
-}
-trap cleanup_changed_paths EXIT
-if [[ "$baseline" =~ ^0{40}$ ]]; then
-  git ls-tree -r -z --name-only "$live_master" -- > "$changed_paths_file" || \
-    die 'could not enumerate initial master tree'
-else
-  git diff --no-renames --name-only -z "$baseline" "$live_master" -- > "$changed_paths_file" || \
-    die 'could not derive accumulated changed paths'
-fi
-
-server_changed=false
-gateway_changed=false
-while IFS= read -r -d '' path; do
-  case "$path" in
-    deploy/jenkins/assert-component-current.sh|deploy/jenkins/publish-immutable-image.sh)
-      server_changed=true
-      gateway_changed=true
-      ;;
-    server/*|deploy/production/*)
-      server_changed=true
-      ;;
-    admin/*|web/*|.dockerignore|deploy/Dockerfile.gateway|deploy/Dockerfile.gateway.dockerignore|deploy/nginx.conf|deploy/jenkins/verify-gateway-release.sh)
-      gateway_changed=true
-      ;;
-  esac
-done < "$changed_paths_file"
-rm -f -- "$changed_paths_file"
-changed_paths_file=""
-
-if [[ "$server_changed" == false && "$gateway_changed" == false ]]; then
-  advance_baseline
-  log "Processed master at ${live_master}; no deployable component changed"
+if [[ ! -f "$ENABLE_FILE" ]]; then
+  resolve_component_baseline "$SERVER_BASELINE_REF"
+  server_baseline="$resolved_baseline"
+  resolve_component_baseline "$GATEWAY_BASELINE_REF"
+  gateway_baseline="$resolved_baseline"
+  advance_component_baseline "$SERVER_BASELINE_REF" "$server_baseline" "$live_master"
+  advance_component_baseline "$GATEWAY_BASELINE_REF" "$gateway_baseline" "$live_master"
+  log "Mirrored master at ${live_master}; synchronized manual-release baselines while automatic deployment remains disabled"
   exit 0
 fi
 
-rechecked_master="$(git rev-parse --verify "$MASTER_REF" 2>/dev/null)" || \
-  die 'could not recheck live master revision before dispatch'
-[[ "$rechecked_master" == "$live_master" ]] || \
-  die 'live master advanced before Jenkins dispatch; processing baseline was not updated'
-
-[[ "$server_changed" == false ]] || trigger_job "$SERVER_JOB" "$live_master"
-if [[ "$gateway_changed" == true ]]; then
-  rechecked_master="$(git rev-parse --verify "$MASTER_REF" 2>/dev/null)" || \
-    die 'could not recheck live master revision before Gateway dispatch'
-  [[ "$rechecked_master" == "$live_master" ]] || \
-    die 'live master advanced during Jenkins dispatch; processing baseline was not updated'
-  trigger_job "$GATEWAY_JOB" "$live_master"
+processing_failed=false
+if process_component server "$SERVER_JOB" "$SERVER_BASELINE_REF"; then
+  :
+else
+  processing_failed=true
 fi
-
-rechecked_master="$(git rev-parse --verify "$MASTER_REF" 2>/dev/null)" || \
-  die 'could not recheck live master revision after dispatch'
-[[ "$rechecked_master" == "$live_master" ]] || \
-  die 'live master advanced after Jenkins dispatch; processing baseline was not updated'
-advance_baseline
+if process_component gateway "$GATEWAY_JOB" "$GATEWAY_BASELINE_REF"; then
+  :
+else
+  processing_failed=true
+fi
+[[ "$processing_failed" == false ]] || exit 1

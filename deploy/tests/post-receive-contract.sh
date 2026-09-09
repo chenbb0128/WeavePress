@@ -2,6 +2,16 @@
 set -Eeuo pipefail
 umask 077
 
+require_real_flock=false
+case "${1:-}" in
+  '') ;;
+  --require-real-flock) require_real_flock=true ;;
+  *)
+    printf 'Usage: %s [--require-real-flock]\n' "$0" >&2
+    exit 2
+    ;;
+esac
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source_hook="$repo_root/deploy/nas/post-receive"
 test_root="$(mktemp -d)"
@@ -41,7 +51,8 @@ git -C "$work" add .
 git -C "$work" commit -m server-only >/dev/null
 newestrev="$(git -C "$work" rev-parse HEAD)"
 zero_sha='0000000000000000000000000000000000000000'
-baseline_ref='refs/weavepress/last-processed-master'
+server_baseline_ref='refs/weavepress/last-processed-server'
+gateway_baseline_ref='refs/weavepress/last-processed-gateway'
 git -C "$work" remote add bare "$bare"
 git -C "$work" push bare "$newrev:refs/heads/master" >/dev/null
 git -C "$work" push bare "$newestrev:refs/heads/fixture-newest" >/dev/null
@@ -55,6 +66,7 @@ sed \
   -e "s|/volume1/docker/weavepress-git/.secrets|$secrets|g" \
   -e "s|/volume1/docker/weavepress-git/post-receive.log|$hook_log|g" \
   -e "s|/volume1/docker/weavepress-git/post-receive.lock|$lock_file|g" \
+  -e 's|readonly TRIGGER_RETRY_DELAY_SECONDS=2|readonly TRIGGER_RETRY_DELAY_SECONDS=0|' \
   "$source_hook" > "$hook"
 chmod +x "$hook"
 
@@ -89,6 +101,9 @@ fi
 if [[ "${MOCK_FAIL_CALL:-0}" -eq "$count" ]]; then
   exit 28
 fi
+case ",${MOCK_FAIL_CALLS:-}," in
+  *",$count,"*) exit 28 ;;
+esac
 printf 'HTTP/1.1 %s Contract\r\n' "${MOCK_HTTP_CODE:-201}" > "$headers"
 if [[ "${MOCK_LOCATION+x}" == x ]]; then
   printf 'Location: %s\r\n' "$MOCK_LOCATION" >> "$headers"
@@ -101,7 +116,7 @@ chmod +x "$mock_bin/curl"
 cat > "$mock_bin/flock" <<'MOCK_FLOCK'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-[[ "${1:-}" == -w && "${2:-}" == 90 && "${3:-}" == 9 ]] || exit 92
+[[ "${1:-}" == -w && "${2:-}" =~ ^[0-9]+$ && "${3:-}" == 9 ]] || exit 92
 [[ "${MOCK_FLOCK_MARK_ATTEMPT:-0}" != 1 ]] || : > "$MOCK_STATE/stale-flock-attempted"
 [[ -z "${REAL_FLOCK:-}" ]] || exec "$REAL_FLOCK" "$@"
 MOCK_FLOCK
@@ -113,21 +128,34 @@ reset_case() {
 
 prepare_case() {
   local live="$1"
-  local baseline="${2:-}"
+  local server_baseline="${2:-}"
+  local gateway_baseline="${3:-${2:-}}"
   git --git-dir "$bare" update-ref refs/heads/master "$live"
-  if [[ -n "$baseline" ]]; then
-    git --git-dir "$bare" update-ref "$baseline_ref" "$baseline"
+  if [[ -n "$server_baseline" ]]; then
+    git --git-dir "$bare" update-ref "$server_baseline_ref" "$server_baseline"
   else
-    git --git-dir "$bare" update-ref -d "$baseline_ref" >/dev/null 2>&1 || true
+    git --git-dir "$bare" update-ref -d "$server_baseline_ref" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$gateway_baseline" ]]; then
+    git --git-dir "$bare" update-ref "$gateway_baseline_ref" "$gateway_baseline"
+  else
+    git --git-dir "$bare" update-ref -d "$gateway_baseline_ref" >/dev/null 2>&1 || true
   fi
   reset_case
 }
 
-assert_baseline() {
-  local expected="$1"
-  local actual
-  actual="$(git --git-dir "$bare" rev-parse --verify "$baseline_ref")" || fail 'persistent processing baseline is missing'
-  [[ "$actual" == "$expected" ]] || fail "processing baseline is $actual, expected $expected"
+assert_baselines() {
+  local expected_server="$1"
+  local expected_gateway="$2"
+  local actual_server actual_gateway
+  actual_server="$(git --git-dir "$bare" rev-parse --verify "$server_baseline_ref")" || \
+    fail 'persistent Server processing baseline is missing'
+  actual_gateway="$(git --git-dir "$bare" rev-parse --verify "$gateway_baseline_ref")" || \
+    fail 'persistent Gateway processing baseline is missing'
+  [[ "$actual_server" == "$expected_server" ]] || \
+    fail "Server processing baseline is $actual_server, expected $expected_server"
+  [[ "$actual_gateway" == "$expected_gateway" ]] || \
+    fail "Gateway processing baseline is $actual_gateway, expected $expected_gateway"
 }
 
 run_hook() {
@@ -142,6 +170,20 @@ run_hook() {
     "$@" "$hook"
 }
 
+assert_invalid_credentials_rejected() {
+  local case_name="$1"
+
+  prepare_case "$newrev" "$oldrev"
+  if run_hook "$oldrev $newrev refs/heads/master" env \
+    MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/credential-bypass/ >/dev/null 2>&1; then
+    fail "$case_name credential was accepted when Jenkins returned 201"
+  fi
+  [[ ! -e "$state/curl-count" ]] || fail "$case_name credential reached curl"
+  assert_baselines "$newrev" "$oldrev"
+  printf 'contract-user\n' > "$secrets/zdzq-hook-user"
+  printf 'ContractToken-NotForProduction\n' > "$secrets/zdzq-hook-token"
+}
+
 touch "$enable"
 prepare_case "$newrev" "$oldrev"
 run_hook "$oldrev $newrev refs/heads/master" env \
@@ -149,7 +191,7 @@ run_hook "$oldrev $newrev refs/heads/master" env \
   fail 'valid 201 responses with a relative Jenkins queue Location were rejected'
 [[ "$(<"$state/curl-count")" == 1 ]] || fail 'Gateway-only change did not dispatch exactly one job'
 grep -aFq 'WeavePressGateway' "$state/curl-argv-1" || fail 'Gateway-only change dispatched the wrong component'
-assert_baseline "$newrev"
+assert_baselines "$newrev" "$newrev"
 for argv in "$state"/curl-argv-*; do
   if grep -aFq 'ContractToken-NotForProduction' "$argv"; then
     fail 'Jenkins token appeared in curl argv'
@@ -163,6 +205,13 @@ if find "$test_root" -maxdepth 1 -name 'weavepress-hook-curl.*' -print -quit | g
   fail 'hook left a curl credential or header file behind'
 fi
 
+rm -f -- "$secrets/zdzq-hook-user"
+assert_invalid_credentials_rejected 'missing Jenkins user'
+printf 'contract-user\nunexpected-second-line\n' > "$secrets/zdzq-hook-user"
+assert_invalid_credentials_rejected 'multiline Jenkins user'
+printf 'ContractToken-NotForProduction\001suffix\n' > "$secrets/zdzq-hook-token"
+assert_invalid_credentials_rejected 'control-character Jenkins token'
+
 prepare_case "$newrev" "$oldrev"
 run_hook "$oldrev $newrev refs/heads/master" env \
   MOCK_HTTP_CODE=201 MOCK_LOCATION=http://127.0.0.1:18080/queue/item/456/ >/dev/null 2>&1 || \
@@ -173,7 +222,7 @@ run_hook "$zero_sha $newestrev refs/heads/master" env \
   MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/457/ >/dev/null 2>&1 || \
   fail 'initial master creation did not enumerate and dispatch deployable components'
 [[ "$(<"$state/curl-count")" == 2 ]] || fail 'initial master creation did not dispatch both changed components'
-assert_baseline "$newestrev"
+assert_baselines "$newestrev" "$newestrev"
 
 prepare_case "$newrev" "$oldrev"
 run_hook "$oldrev $newrev refs/heads/ignored"$'\n'"$oldrev $newrev refs/heads/master" env \
@@ -218,7 +267,7 @@ run_hook "$newrev $newestrev refs/heads/master" env \
 [[ "$(<"$state/curl-count")" == 2 ]] || fail 'normal-order receives did not dispatch one job per component change'
 grep -aFq 'WeavePressServer' "$state/curl-argv-2" || fail 'normal-order Server receive dispatched the wrong component'
 grep -aFq "APP_SHA=$newestrev" "$state/curl-argv-2" || fail 'normal-order Server dispatch used the wrong SHA'
-assert_baseline "$newestrev"
+assert_baselines "$newestrev" "$newestrev"
 
 prepare_case "$newestrev" "$oldrev"
 run_hook "$newrev $newestrev refs/heads/master" env \
@@ -230,7 +279,7 @@ grep -aFq 'WeavePressServer' "$state/curl-argv-1" || fail 'latest-first processi
 grep -aFq 'WeavePressGateway' "$state/curl-argv-2" || fail 'latest-first processing missed Gateway dispatch'
 grep -aFq "APP_SHA=$newestrev" "$state/curl-argv-1" || fail 'latest-first Server dispatch did not use live master'
 grep -aFq "APP_SHA=$newestrev" "$state/curl-argv-2" || fail 'latest-first Gateway dispatch did not use live master'
-assert_baseline "$newestrev"
+assert_baselines "$newestrev" "$newestrev"
 run_hook "$oldrev $newrev refs/heads/master" env \
   MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/792/ >/dev/null 2>&1 || \
   fail 'stale Gateway receive was not handled cleanly after latest-first processing'
@@ -238,28 +287,79 @@ run_hook "$oldrev $newrev refs/heads/master" env \
 grep -Fqi 'stale' "$hook_log" || fail 'stale receive handling was not recorded'
 
 prepare_case "$newestrev" "$oldrev"
+run_hook "$newrev $newestrev refs/heads/master" env \
+  MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/793/ MOCK_FAIL_CALLS=2 >/dev/null 2>&1 || \
+  fail 'Gateway first-attempt failure was not retried successfully'
+[[ "$(<"$state/curl-count")" == 3 ]] || fail 'Gateway first-attempt failure did not produce exactly one retry'
+grep -aFq 'WeavePressServer' "$state/curl-argv-1" || fail 'Server was not dispatched before Gateway retry'
+grep -aFq 'WeavePressGateway' "$state/curl-argv-2" || fail 'Gateway first attempt was not dispatched second'
+grep -aFq 'WeavePressGateway' "$state/curl-argv-3" || fail 'Gateway retry did not target only Gateway'
+assert_baselines "$newestrev" "$newestrev"
+
+prepare_case "$newestrev" "$oldrev"
+run_hook "$newrev $newestrev refs/heads/master" env \
+  MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/794/ MOCK_FAIL_CALLS=1 >/dev/null 2>&1 || \
+  fail 'Server first-attempt failure was not retried successfully'
+[[ "$(<"$state/curl-count")" == 3 ]] || fail 'Server first-attempt failure did not produce exactly one retry'
+grep -aFq 'WeavePressServer' "$state/curl-argv-1" || fail 'Server first attempt targeted the wrong component'
+grep -aFq 'WeavePressServer' "$state/curl-argv-2" || fail 'Server retry did not target only Server'
+grep -aFq 'WeavePressGateway' "$state/curl-argv-3" || fail 'Gateway was not dispatched once after Server recovered'
+assert_baselines "$newestrev" "$newestrev"
+
+prepare_case "$newestrev" "$oldrev"
 if run_hook "$newrev $newestrev refs/heads/master" env \
-  MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/793/ MOCK_FAIL_CALL=2 >/dev/null 2>&1; then
-  fail 'partial Jenkins enqueue failure was accepted'
+  MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/795/ MOCK_FAIL_CALLS=2,3,4 >/dev/null 2>&1; then
+  fail 'persistent Gateway enqueue failure was accepted'
 fi
-assert_baseline "$oldrev"
+[[ "$(<"$state/curl-count")" == 4 ]] || fail 'persistent Gateway failure did not exhaust three component attempts'
+grep -aFq 'WeavePressServer' "$state/curl-argv-1" || fail 'Server did not succeed before persistent Gateway failure'
+for call in 2 3 4; do
+  grep -aFq 'WeavePressGateway' "$state/curl-argv-$call" || fail 'persistent Gateway retry targeted the wrong component'
+done
+assert_baselines "$newestrev" "$oldrev"
+grep -Fq "PENDING: ${GATEWAY_JOB:-WeavePress/WeavePressGateway} at $newestrev after 3 failed attempts" "$hook_log" || \
+  fail 'persistent Gateway failure did not write a non-sensitive pending log'
+run_hook "$newrev $newestrev refs/heads/master" env \
+  MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/796/ >/dev/null 2>&1 || \
+  fail 'same-live retry did not recover persistent Gateway failure'
+[[ "$(<"$state/curl-count")" == 5 ]] || fail 'same-live retry repeated an already successful Server enqueue'
+grep -aFq 'WeavePressGateway' "$state/curl-argv-5" || fail 'same-live retry did not target only failed Gateway'
+assert_baselines "$newestrev" "$newestrev"
+
+prepare_case "$newestrev" "$oldrev"
+if run_hook "$newrev $newestrev refs/heads/master" env \
+  MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/797/ MOCK_FAIL_CALLS=1,2,3 >/dev/null 2>&1; then
+  fail 'persistent Server enqueue failure was accepted'
+fi
+[[ "$(<"$state/curl-count")" == 4 ]] || fail 'persistent Server failure did not continue to one Gateway enqueue'
+for call in 1 2 3; do
+  grep -aFq 'WeavePressServer' "$state/curl-argv-$call" || fail 'persistent Server retry targeted the wrong component'
+done
+grep -aFq 'WeavePressGateway' "$state/curl-argv-4" || fail 'Gateway was skipped after persistent Server failure'
+assert_baselines "$oldrev" "$newestrev"
+run_hook "$newrev $newestrev refs/heads/master" env \
+  MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/798/ >/dev/null 2>&1 || \
+  fail 'same-live retry did not recover persistent Server failure'
+[[ "$(<"$state/curl-count")" == 5 ]] || fail 'same-live retry repeated an already successful Gateway enqueue'
+grep -aFq 'WeavePressServer' "$state/curl-argv-5" || fail 'same-live retry did not target only failed Server'
+assert_baselines "$newestrev" "$newestrev"
 
 if [[ -n "$real_flock" ]]; then
   prepare_case "$newestrev" "$oldrev"
   run_hook "$newrev $newestrev refs/heads/master" env \
-    MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/795/ \
-    MOCK_DELAY_CALL=2 MOCK_DELAY_SECONDS=2 MOCK_FAIL_CALL=2 >/dev/null 2>&1 &
+    MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/799/ \
+    MOCK_DELAY_CALL=4 MOCK_DELAY_SECONDS=2 MOCK_FAIL_CALLS=2,3,4 >/dev/null 2>&1 &
   latest_hook_pid=$!
   for _ in {1..100}; do
-    [[ ! -f "$state/curl-call-2-started" ]] || break
+    [[ ! -f "$state/curl-call-4-started" ]] || break
     sleep 0.05
   done
-  [[ -f "$state/curl-call-2-started" ]] || {
+  [[ -f "$state/curl-call-4-started" ]] || {
     wait "$latest_hook_pid" >/dev/null 2>&1 || true
-    fail 'latest hook did not reach its delayed second enqueue'
+    fail 'latest hook did not reach its delayed final Gateway retry'
   }
   run_hook "$oldrev $newrev refs/heads/master" env \
-    MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/796/ MOCK_FLOCK_MARK_ATTEMPT=1 >/dev/null 2>&1 &
+    MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/800/ MOCK_FLOCK_MARK_ATTEMPT=1 >/dev/null 2>&1 &
   stale_hook_pid=$!
   for _ in {1..100}; do
     [[ ! -f "$state/stale-flock-attempted" ]] || break
@@ -267,7 +367,7 @@ if [[ -n "$real_flock" ]]; then
   done
   [[ -f "$state/stale-flock-attempted" ]] || fail 'stale hook did not reach flock while the latest hook held it'
   sleep 0.2
-  [[ "$(<"$state/curl-count")" == 2 ]] || \
+  [[ "$(<"$state/curl-count")" == 4 ]] || \
     fail 'waiting stale hook entered curl before the latest hook released the lock'
   kill -0 "$latest_hook_pid" 2>/dev/null || fail 'latest hook exited before stale lock contention was observed'
   kill -0 "$stale_hook_pid" 2>/dev/null || fail 'waiting stale hook exited before lock release'
@@ -275,10 +375,13 @@ if [[ -n "$real_flock" ]]; then
     fail 'latest hook unexpectedly accepted its delayed partial enqueue failure'
   fi
   wait "$stale_hook_pid" || fail 'waiting stale hook did not recover after the latest hook failed'
-  [[ "$(<"$state/curl-count")" == 4 ]] || \
-    fail 'waiting stale hook did not retry both accumulated component enqueues'
-  assert_baseline "$newestrev"
+  [[ "$(<"$state/curl-count")" == 5 ]] || \
+    fail 'waiting stale hook repeated Server instead of retrying only failed Gateway'
+  grep -aFq 'WeavePressGateway' "$state/curl-argv-5" || \
+    fail 'waiting stale hook did not retry failed Gateway'
+  assert_baselines "$newestrev" "$newestrev"
 else
+  [[ "$require_real_flock" == false ]] || fail 'real flock is required but unavailable'
   printf 'Real flock concurrency case skipped: flock is unavailable in this shell.\n'
 fi
 
@@ -287,7 +390,7 @@ rm -f -- "$enable"
 run_hook "$newrev $newestrev refs/heads/master" env >/dev/null 2>&1 || \
   fail 'disabled hook rejected a mirrored master update'
 [[ ! -e "$state/curl-count" ]] || fail 'default-off hook dispatched a Jenkins job'
-assert_baseline "$newestrev"
+assert_baselines "$newestrev" "$newestrev"
 touch "$enable"
 run_hook "$newrev $newestrev refs/heads/master" env \
   MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/794/ >/dev/null 2>&1 || \

@@ -544,6 +544,19 @@ run_production_scripts_behavior() {
     bash deploy/tests/production-scripts-contract.sh
 }
 
+run_post_receive_real_flock() {
+  local docker_repo_root="$repo_root"
+
+  case "$(uname -s)" in
+    CYGWIN*|MINGW*|MSYS*) docker_repo_root="$(cygpath -w "$repo_root")" ;;
+  esac
+  MSYS_NO_PATHCONV=1 docker run --rm --user 0:0 --pull never --network none \
+    -v "$docker_repo_root:/repo:ro" \
+    -w /repo \
+    golang@sha256:e401dae1bf814e29204a8cb7915682e1780951e609ca0dd8865ee1937f510c48 \
+    bash deploy/tests/post-receive-contract.sh --require-real-flock
+}
+
 run_production_script_self_test() {
   assert_control_character_matcher_semantics
   assert_production_script_contract
@@ -601,6 +614,7 @@ case "${1:-}" in
     compose_model="$contract_temp_dir/compose.json"
     dev_compose_model="$contract_temp_dir/dev-compose.json"
     "$python_bin" -B "$ci_cd_contract"
+    run_post_receive_real_flock
     run_gateway_self_test
     run_production_script_self_test
     "$python_bin" -B "$compose_contract" --source-self-test
@@ -612,6 +626,7 @@ case "${1:-}" in
     ;;
   '')
     "$python_bin" -B "$ci_cd_contract"
+    run_post_receive_real_flock
     assert_gateway_contract "$gateway"
     run_production_script_self_test
     compose_model="$contract_temp_dir/compose.json"
