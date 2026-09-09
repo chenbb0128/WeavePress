@@ -80,7 +80,8 @@ chmod +x "$hook"
 
 dispatcher="$test_root/dispatch-pending"
 sed \
-  -e "s|/volume1/docker/weavepress-git/WeavePress.git/hooks/post-receive|$hook|g" \
+  -e "s|readonly GIT_DIR=\"/volume1/docker/weavepress-git/WeavePress.git\"|readonly GIT_DIR=\"$bare\"|" \
+  -e "s|readonly POST_RECEIVE=\"\\\$GIT_DIR/hooks/post-receive\"|readonly POST_RECEIVE=\"$hook\"|" \
   "$source_dispatcher" > "$dispatcher"
 chmod +x "$dispatcher"
 

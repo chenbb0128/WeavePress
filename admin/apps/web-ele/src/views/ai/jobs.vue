@@ -6,6 +6,7 @@ import { onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 import { useAccess } from '@vben/access';
+
 import dayjs from 'dayjs';
 import {
   ElButton,
@@ -171,14 +172,15 @@ async function load() {
     }
   } finally {
     requestInFlight = false;
-    if (destroyed) return;
-    if (reloadQueued || epoch !== loadEpoch) {
-      reloadQueued = false;
-      void load();
-      return;
+    if (!destroyed) {
+      if (reloadQueued || epoch !== loadEpoch) {
+        reloadQueued = false;
+        void load();
+      } else {
+        loading.value = false;
+        schedulePoll();
+      }
     }
-    loading.value = false;
-    schedulePoll();
   }
 }
 
@@ -333,7 +335,9 @@ onBeforeUnmount(() => {
         <ElTableColumn label="状态" width="100">
           <template #default="{ row }">
             <ElTag :type="jobTagType(row.status)">
-              {{ AI_JOB_STATUS_LABELS[row.status as AIJobStatus] || row.status }}
+              {{
+                AI_JOB_STATUS_LABELS[row.status as AIJobStatus] || row.status
+              }}
             </ElTag>
           </template>
         </ElTableColumn>
@@ -465,7 +469,9 @@ onBeforeUnmount(() => {
             重新执行
           </ElButton>
           <ElButton
-            v-if="selected.type === 'analysis' && selected.status === 'completed'"
+            v-if="
+              selected.type === 'analysis' && selected.status === 'completed'
+            "
             type="primary"
             @click="openResult(selected)"
           >
