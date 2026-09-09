@@ -63,7 +63,7 @@ defineOptions({ name: 'AIWorkbench' });
 const POLL_INTERVAL = 3000;
 const route = useRoute();
 const router = useRouter();
-const articleId = Number(route.params.id);
+const articleId = Number(route.params.articleId);
 const validArticleId = Number.isSafeInteger(articleId) && articleId > 0;
 
 const loading = ref(true);
@@ -219,6 +219,7 @@ function stopGenerationPolling() {
 function applyAnalysis(value: AIAnalysis) {
   stopGenerationPolling();
   generationActionEpoch += 1;
+  generationSubmitting.value = false;
   selectedAnalysis.value = value;
   selectedAnalysisId.value = value.id;
   generation.value = undefined;

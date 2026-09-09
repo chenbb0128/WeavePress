@@ -20,7 +20,10 @@ const mocks = vi.hoisted(() => ({
   getArticleApi: vi.fn(),
   push: vi.fn(),
   retryAIJobApi: vi.fn(),
-  routeParams: { id: '7' },
+  routeParams: {
+    articleId: undefined as string | undefined,
+    id: '7' as string | undefined,
+  },
   startAIAnalysisApi: vi.fn(),
   startAIGenerationApi: vi.fn(),
 }));
@@ -111,7 +114,10 @@ function job(status: AIJob['status'], overrides: Partial<AIJob> = {}): AIJob {
   };
 }
 
-function analysis(currentJob: AIJob = job('completed')): AIAnalysis {
+function analysis(
+  currentJob: AIJob = job('completed'),
+  overrides: Partial<AIAnalysis> = {},
+): AIAnalysis {
   return {
     angles: [
       {
@@ -157,6 +163,7 @@ function analysis(currentJob: AIJob = job('completed')): AIAnalysis {
         text: '观点一',
       },
     ],
+    ...overrides,
   };
 }
 
@@ -212,9 +219,11 @@ function mountComponent(component: Parameters<typeof createApp>[0]) {
   const host = document.createElement('div');
   document.body.append(host);
   const app = createApp(component);
+  const errors: unknown[] = [];
+  app.config.errorHandler = (error) => errors.push(error);
   mountedApps.push(app);
   app.mount(host);
-  return { app, host };
+  return { app, errors, host };
 }
 
 async function settle() {
@@ -234,6 +243,7 @@ describe('article detail AI entry', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mocks.routeParams.id = '7';
+    mocks.routeParams.articleId = undefined;
   });
 
   afterEach(() => {
@@ -290,13 +300,28 @@ describe('article detail AI entry', () => {
       expect(host.textContent).toContain(hint);
     },
   );
+
+  it('keeps the article usable when AI status loading fails', async () => {
+    mocks.getArticleApi.mockResolvedValue(article());
+    mocks.getAIStatusApi.mockRejectedValue(new Error('status unavailable'));
+
+    const { errors, host } = mountComponent(ArticleDetail);
+    await settle();
+
+    expect(errors).toEqual([]);
+    expect(host.textContent).toContain('示例文章');
+    expect(buttonByText(host, '生成微信稿件')).toBeDefined();
+    expect(buttonByText(host, 'AI 分析')?.disabled).toBe(true);
+    expect(host.textContent).toContain('AI 服务尚未配置');
+  });
 });
 
 describe('ai workbench', () => {
   beforeEach(() => {
     vi.useRealTimers();
     vi.resetAllMocks();
-    mocks.routeParams.id = '7';
+    mocks.routeParams.id = undefined;
+    mocks.routeParams.articleId = '7';
     mocks.confirm.mockResolvedValue('confirm');
     mocks.getArticleApi.mockResolvedValue(article());
     mocks.getAIStatusApi.mockResolvedValue({
@@ -310,6 +335,77 @@ describe('ai workbench', () => {
       pageSize: 20,
       total: 0,
     });
+  });
+
+  it('loads the articleId route parameter', async () => {
+    const { host } = mountComponent(AIWorkbench);
+    await settle();
+
+    expect(mocks.getArticleApi).toHaveBeenCalledWith(7);
+    expect(host.textContent).not.toContain('文章 ID 无效');
+  });
+
+  it('unlocks generation and ignores its stale result after switching analysis', async () => {
+    const latest = analysis();
+    const olderJob = job('completed', { id: 20 });
+    const older = analysis(olderJob, {
+      createdAt: '2026-09-08T00:00:03Z',
+      id: 30,
+      jobId: olderJob.id,
+      summary: '旧分析摘要',
+    });
+    mocks.getAIAnalysesApi.mockResolvedValue({
+      items: [latest, older],
+      page: 1,
+      pageSize: 20,
+      total: 2,
+    });
+    mocks.getAIAnalysisApi.mockImplementation((id: number) =>
+      Promise.resolve(id === older.id ? older : latest),
+    );
+    const submission = deferred<{
+      generation: AIGeneration;
+      job: AIJob;
+      reused: boolean;
+    }>();
+    mocks.startAIGenerationApi.mockReturnValue(submission.promise);
+
+    const { host } = mountComponent(AIWorkbench);
+    await settle();
+    const audienceInput = host.querySelector<HTMLInputElement>(
+      'input[placeholder="例如：产品经理"]',
+    );
+    expect(audienceInput).toBeTruthy();
+    if (!audienceInput) return;
+    audienceInput.value = '产品团队';
+    audienceInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    buttonByText(host, '生成稿件')?.click();
+    await settle();
+    expect(mocks.startAIGenerationApi).toHaveBeenCalledOnce();
+
+    host.querySelector<HTMLElement>('.w-72 .el-select__wrapper')?.click();
+    await settle();
+    const olderOption = [
+      ...document.querySelectorAll<HTMLElement>('.el-select-dropdown__item'),
+    ].find((option) => option.textContent?.includes('分析 #30'));
+    expect(olderOption).toBeTruthy();
+    olderOption?.click();
+    await settle();
+
+    expect(mocks.getAIAnalysisApi).toHaveBeenLastCalledWith(30);
+    expect(host.textContent).toContain('旧分析摘要');
+    expect(buttonByText(host, '生成稿件')?.disabled).toBe(false);
+
+    const staleGeneration = generation(61);
+    submission.resolve({
+      generation: staleGeneration,
+      job: staleGeneration.job as AIJob,
+      reused: false,
+    });
+    await settle();
+    expect(host.textContent).not.toContain('生成标题');
+    expect(host.textContent).toContain('旧分析摘要');
   });
 
   afterEach(() => {
@@ -448,7 +544,7 @@ describe('ai workbench', () => {
   });
 
   it('rejects an invalid article ID before loading remote data', async () => {
-    mocks.routeParams.id = 'not-a-number';
+    mocks.routeParams.articleId = 'not-a-number';
 
     const { host } = mountComponent(AIWorkbench);
     await settle();

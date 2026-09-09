@@ -42,9 +42,15 @@ const assetURLs = computed(
 );
 onMounted(async () => {
   try {
+    const articleRequest = getArticleApi(Number(route.params.id));
+    const statusRequest = getAIStatusApi().catch(() => ({
+      enabled: false,
+      model: '',
+      provider: '',
+    }));
     const [articleData, status] = await Promise.all([
-      getArticleApi(Number(route.params.id)),
-      getAIStatusApi(),
+      articleRequest,
+      statusRequest,
     ]);
     article.value = articleData;
     aiStatus.value = status;
