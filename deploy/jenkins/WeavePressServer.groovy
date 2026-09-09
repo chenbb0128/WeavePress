@@ -64,12 +64,17 @@ pipeline {
     }
 
     stage('构建 Server 三个不可变镜像') {
+      environment {
+        HTTP_PROXY = 'http://192.168.31.227:7890'
+        HTTPS_PROXY = 'http://192.168.31.227:7890'
+        NO_PROXY = '127.0.0.1,localhost,192.168.31.240,124.220.53.160,116.62.159.237'
+      }
       steps {
         sh '''#!/usr/bin/env bash
           set -Eeuo pipefail
-          docker build -f source/server/deployments/Dockerfile --build-arg APP_SHA=$APP_SHA --build-arg TARGET=api -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-api:$APP_SHA source/server
-          docker build -f source/server/deployments/Dockerfile --build-arg APP_SHA=$APP_SHA --build-arg TARGET=worker -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-worker:$APP_SHA source/server
-          docker build -f source/server/deployments/Dockerfile --build-arg APP_SHA=$APP_SHA --build-arg TARGET=migrate -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-migrate:$APP_SHA source/server
+          docker build -f source/server/deployments/Dockerfile --build-arg HTTP_PROXY="$HTTP_PROXY" --build-arg HTTPS_PROXY="$HTTPS_PROXY" --build-arg NO_PROXY="$NO_PROXY" --build-arg APP_SHA=$APP_SHA --build-arg TARGET=api -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-api:$APP_SHA source/server
+          docker build -f source/server/deployments/Dockerfile --build-arg HTTP_PROXY="$HTTP_PROXY" --build-arg HTTPS_PROXY="$HTTPS_PROXY" --build-arg NO_PROXY="$NO_PROXY" --build-arg APP_SHA=$APP_SHA --build-arg TARGET=worker -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-worker:$APP_SHA source/server
+          docker build -f source/server/deployments/Dockerfile --build-arg HTTP_PROXY="$HTTP_PROXY" --build-arg HTTPS_PROXY="$HTTPS_PROXY" --build-arg NO_PROXY="$NO_PROXY" --build-arg APP_SHA=$APP_SHA --build-arg TARGET=migrate -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-migrate:$APP_SHA source/server
           docker image inspect \
             "registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-api:$APP_SHA" \
             "registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-worker:$APP_SHA" \

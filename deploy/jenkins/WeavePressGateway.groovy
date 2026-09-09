@@ -64,10 +64,15 @@ pipeline {
     }
 
     stage('构建 Gateway 不可变镜像') {
+      environment {
+        HTTP_PROXY = 'http://192.168.31.227:7890'
+        HTTPS_PROXY = 'http://192.168.31.227:7890'
+        NO_PROXY = '127.0.0.1,localhost,192.168.31.240,124.220.53.160,116.62.159.237'
+      }
       steps {
         sh '''#!/usr/bin/env bash
           set -Eeuo pipefail
-          docker build -f source/deploy/Dockerfile.gateway --build-arg APP_SHA=$APP_SHA -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-gateway:$APP_SHA source
+          docker build -f source/deploy/Dockerfile.gateway --build-arg HTTP_PROXY="$HTTP_PROXY" --build-arg HTTPS_PROXY="$HTTPS_PROXY" --build-arg NO_PROXY="$NO_PROXY" --build-arg APP_SHA=$APP_SHA -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-gateway:$APP_SHA source
           docker image inspect "registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-gateway:$APP_SHA" >/dev/null
         '''
       }

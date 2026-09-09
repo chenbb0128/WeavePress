@@ -547,6 +547,25 @@ def assert_hook() -> None:
 def assert_direct_pipeline(component: str, path: Path) -> None:
     text = read_required(path)
     context = str(path.relative_to(ROOT))
+    build_stage_name = (
+        "stage('构建 Server 三个不可变镜像')"
+        if component == "server"
+        else "stage('构建 Gateway 不可变镜像')"
+    )
+    build_stage_at = text.find(build_stage_name)
+    next_stage_at = text.find("\n    stage(", build_stage_at + len(build_stage_name))
+    require(text, build_stage_name, context)
+    require(text, "environment {", context)
+    build_stage = text[build_stage_at : next_stage_at if next_stage_at >= 0 else len(text)]
+    top_environment_at = text.find("\n  environment {")
+    stages_at = text.find("\n  stages {")
+    top_environment = text[top_environment_at:stages_at]
+    for variable in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"):
+        require(build_stage, f"{variable} =", context)
+        if variable in top_environment:
+            fail(f"{context} must keep {variable} out of top-level environment")
+    for host in ("127.0.0.1", "localhost", "192.168.31.240", "124.220.53.160", "116.62.159.237"):
+        require(build_stage, host, context)
     for literal in (
         "string(name: 'BRANCH', defaultValue: 'master'",
         "string(name: 'APP_SHA', defaultValue: ''",
@@ -584,9 +603,9 @@ def assert_direct_pipeline(component: str, path: Path) -> None:
         require(text, 'bash checkout-component-source.sh source server "$APP_SHA" component-current.sh', context)
         require(text, 'bash component-current.sh source server "$APP_SHA"', context)
         builds = (
-            "docker build -f source/server/deployments/Dockerfile --build-arg APP_SHA=$APP_SHA --build-arg TARGET=api -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-api:$APP_SHA source/server",
-            "docker build -f source/server/deployments/Dockerfile --build-arg APP_SHA=$APP_SHA --build-arg TARGET=worker -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-worker:$APP_SHA source/server",
-            "docker build -f source/server/deployments/Dockerfile --build-arg APP_SHA=$APP_SHA --build-arg TARGET=migrate -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-migrate:$APP_SHA source/server",
+            'docker build -f source/server/deployments/Dockerfile --build-arg HTTP_PROXY="$HTTP_PROXY" --build-arg HTTPS_PROXY="$HTTPS_PROXY" --build-arg NO_PROXY="$NO_PROXY" --build-arg APP_SHA=$APP_SHA --build-arg TARGET=api -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-api:$APP_SHA source/server',
+            'docker build -f source/server/deployments/Dockerfile --build-arg HTTP_PROXY="$HTTP_PROXY" --build-arg HTTPS_PROXY="$HTTPS_PROXY" --build-arg NO_PROXY="$NO_PROXY" --build-arg APP_SHA=$APP_SHA --build-arg TARGET=worker -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-worker:$APP_SHA source/server',
+            'docker build -f source/server/deployments/Dockerfile --build-arg HTTP_PROXY="$HTTP_PROXY" --build-arg HTTPS_PROXY="$HTTPS_PROXY" --build-arg NO_PROXY="$NO_PROXY" --build-arg APP_SHA=$APP_SHA --build-arg TARGET=migrate -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-migrate:$APP_SHA source/server',
         )
         for command in builds:
             require(text, command, context)
@@ -602,7 +621,7 @@ def assert_direct_pipeline(component: str, path: Path) -> None:
         require(text, 'bash component-current.sh source gateway "$APP_SHA"', context)
         require(
             text,
-            "docker build -f source/deploy/Dockerfile.gateway --build-arg APP_SHA=$APP_SHA -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-gateway:$APP_SHA source",
+            'docker build -f source/deploy/Dockerfile.gateway --build-arg HTTP_PROXY="$HTTP_PROXY" --build-arg HTTPS_PROXY="$HTTPS_PROXY" --build-arg NO_PROXY="$NO_PROXY" --build-arg APP_SHA=$APP_SHA -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-gateway:$APP_SHA source',
             context,
         )
         if text.count("docker build -f source/deploy/Dockerfile.gateway") != 1:
