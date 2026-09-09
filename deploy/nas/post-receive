@@ -92,15 +92,22 @@ if [[ ! -f "$ENABLE_FILE" ]]; then
   exit 0
 fi
 
+changed_paths_file="$(mktemp)" || die 'could not allocate changed-path buffer'
+cleanup_changed_paths() {
+  [[ -z "$changed_paths_file" ]] || rm -f -- "$changed_paths_file"
+}
+trap cleanup_changed_paths EXIT
 if [[ "$oldrev" =~ ^0{40}$ ]]; then
-  changed_paths="$(git ls-tree -r --name-only "$newrev")" || die 'could not enumerate initial master tree'
+  git ls-tree -r -z --name-only "$newrev" -- > "$changed_paths_file" || \
+    die 'could not enumerate initial master tree'
 else
-  changed_paths="$(git diff --name-only "$oldrev" "$newrev")" || die 'could not derive changed paths'
+  git diff --no-renames --name-only -z "$oldrev" "$newrev" -- > "$changed_paths_file" || \
+    die 'could not derive changed paths'
 fi
 
 server_changed=false
 gateway_changed=false
-while IFS= read -r path; do
+while IFS= read -r -d '' path; do
   case "$path" in
     server/*|deploy/production/*)
       server_changed=true
@@ -109,7 +116,9 @@ while IFS= read -r path; do
       gateway_changed=true
       ;;
   esac
-done <<< "$changed_paths"
+done < "$changed_paths_file"
+rm -f -- "$changed_paths_file"
+changed_paths_file=""
 
 if [[ "$server_changed" == false && "$gateway_changed" == false ]]; then
   log "Mirrored master at ${newrev}; no deployable component changed"

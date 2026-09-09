@@ -4,8 +4,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -58,6 +62,170 @@ def require_before(text: str, first: str, second: str, context: str) -> None:
     second_at = text.find(second)
     if first_at < 0 or second_at < 0 or first_at >= second_at:
         fail(f"{context} must place {first!r} before {second!r}")
+
+
+def bash_binary() -> str:
+    configured = os.environ.get("BASH_BIN")
+    if configured:
+        return configured
+    if os.name == "nt":
+        git_binary = shutil.which("git")
+        if git_binary:
+            bundled_bash = Path(git_binary).resolve().parents[1] / "bin/bash.exe"
+            if bundled_bash.is_file():
+                return str(bundled_bash)
+    discovered = shutil.which("bash")
+    if not discovered:
+        fail("bash is required to validate the NAS hook")
+    return discovered
+
+
+def run_bash_n(path: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [bash_binary(), "-n", str(path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def assert_hook_bash_syntax() -> None:
+    result = run_bash_n(HOOK)
+    if result.returncode != 0:
+        fail(f"bash -n rejected {HOOK.relative_to(ROOT)}: {result.stderr.strip()}")
+
+    with tempfile.TemporaryDirectory(prefix="weavepress-hook-syntax-") as temp_dir:
+        mutant = Path(temp_dir) / "post-receive"
+        mutant.write_text(
+            read_required(HOOK) + "\nif true; then\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        mutation_result = run_bash_n(mutant)
+        if mutation_result.returncode == 0:
+            fail("bash -n accepted a NAS hook mutation with an unterminated if block")
+    print("Mutation rejected: NAS hook unterminated if block.")
+
+
+def git_binary() -> str:
+    configured = os.environ.get("GIT_BIN")
+    if configured:
+        return configured
+    discovered = shutil.which("git")
+    if not discovered:
+        fail("git is required to validate NUL-delimited changed paths")
+    return discovered
+
+
+def run_git(
+    arguments: list[str],
+    *,
+    git_dir: Path | None = None,
+    input_bytes: bytes | None = None,
+    environment: dict[str, str] | None = None,
+    strip_output: bool = True,
+) -> bytes:
+    command = [git_binary()]
+    if git_dir is not None:
+        command.extend(["--git-dir", str(git_dir)])
+    command.extend(arguments)
+    result = subprocess.run(
+        command,
+        input=input_bytes,
+        check=False,
+        capture_output=True,
+        env=environment,
+    )
+    if result.returncode != 0:
+        fail(
+            f"git {' '.join(arguments)} failed during pathname self-test: "
+            f"{result.stderr.decode('utf-8', errors='replace').strip()}"
+        )
+    return result.stdout.strip() if strip_output else result.stdout
+
+
+def make_tree(git_dir: Path, entries: list[tuple[bytes, bytes, bytes, bytes]]) -> bytes:
+    payload = b"".join(
+        mode + b" " + object_type + b" " + object_id + b"\t" + name + b"\0"
+        for mode, object_type, object_id, name in entries
+    )
+    return run_git(["mktree", "-z"], git_dir=git_dir, input_bytes=payload)
+
+
+def assert_git_pathname_semantics() -> None:
+    with tempfile.TemporaryDirectory(prefix="weavepress-git-paths-") as temp_dir:
+        git_dir = Path(temp_dir) / "objects.git"
+        run_git(["init", "--bare", str(git_dir)])
+        blob = run_git(
+            ["hash-object", "-w", "--stdin"],
+            git_dir=git_dir,
+            input_bytes=b"same content for rename detection\n",
+        )
+        old_name = b"leaving\nsource.txt"
+        new_name = b"arriving\tdestination.txt"
+        old_server = make_tree(git_dir, [(b"100644", b"blob", blob, old_name)])
+        new_admin = make_tree(git_dir, [(b"100644", b"blob", blob, new_name)])
+        old_root = make_tree(git_dir, [(b"040000", b"tree", old_server, b"server")])
+        new_root = make_tree(git_dir, [(b"040000", b"tree", new_admin, b"admin")])
+        git_environment = os.environ.copy()
+        git_environment.update(
+            {
+                "GIT_AUTHOR_NAME": "CI contract",
+                "GIT_AUTHOR_EMAIL": "ci-contract@example.invalid",
+                "GIT_COMMITTER_NAME": "CI contract",
+                "GIT_COMMITTER_EMAIL": "ci-contract@example.invalid",
+            }
+        )
+        old_commit = run_git(
+            ["commit-tree", old_root.decode("ascii"), "-m", "old"],
+            git_dir=git_dir,
+            environment=git_environment,
+        )
+        new_commit = run_git(
+            [
+                "commit-tree",
+                new_root.decode("ascii"),
+                "-p",
+                old_commit.decode("ascii"),
+                "-m",
+                "new",
+            ],
+            git_dir=git_dir,
+            environment=git_environment,
+        )
+        changed = run_git(
+            [
+                "diff",
+                "--no-renames",
+                "--name-only",
+                "-z",
+                old_commit.decode("ascii"),
+                new_commit.decode("ascii"),
+                "--",
+            ],
+            git_dir=git_dir,
+            strip_output=False,
+        ).split(b"\0")
+        changed_paths = {path for path in changed if path}
+        expected_changed = {b"server/" + old_name, b"admin/" + new_name}
+        if changed_paths != expected_changed:
+            fail("--no-renames -z did not preserve both special rename pathnames")
+
+        initial = run_git(
+            [
+                "ls-tree",
+                "-r",
+                "-z",
+                "--name-only",
+                new_commit.decode("ascii"),
+                "--",
+            ],
+            git_dir=git_dir,
+            strip_output=False,
+        ).split(b"\0")
+        if {path for path in initial if path} != {b"admin/" + new_name}:
+            fail("ls-tree -z did not preserve the initial special pathname")
+    print("Git pathname self-test passed: rename source/target and NUL framing preserved.")
 
 
 def assert_workflow() -> None:
@@ -126,8 +294,9 @@ def assert_hook() -> None:
         'SECRETS_DIR="/volume1/docker/weavepress-git/.secrets"',
         'LOG_FILE="/volume1/docker/weavepress-git/post-receive.log"',
         "^0{40}$",
-        'git ls-tree -r --name-only "$newrev"',
-        'git diff --name-only "$oldrev" "$newrev"',
+        'git ls-tree -r -z --name-only "$newrev" --',
+        'git diff --no-renames --name-only -z "$oldrev" "$newrev" --',
+        "while IFS= read -r -d '' path",
         "server/*|deploy/production/*)",
         "admin/*|web/*|deploy/Dockerfile.gateway|deploy/nginx.conf)",
         "WeavePress/WeavePressServer",
@@ -149,6 +318,7 @@ def assert_hook() -> None:
     if text.count('trigger_job "$GATEWAY_JOB" "$newrev"') != 1:
         fail(f"{context} must dispatch the Gateway job at most once per receive")
     reject(text, r"set\s+-x", context)
+    reject(text, r"changed_paths=\"\$\(git\s+(?:ls-tree|diff)", context)
     reject(text, r"\.enable-auto-deploy.*(?:touch|mkdir|install|>)", context)
     reject(text, r"log .*\b(?:token|password|secret|user)=", context)
 
@@ -227,7 +397,7 @@ def assert_sync_pipeline(component: str, path: Path) -> None:
         "ssh://chenhua@192.168.31.240/volume1/docker/weavepress-git/WeavePress.git",
         "refs/heads/master",
         "StrictHostKeyChecking=yes",
-        'git push --force-with-lease="refs/heads/master:$nas_sha" nas HEAD:refs/heads/master',
+        "git push nas HEAD:refs/heads/master",
         "UNCHANGED=false",
         "UNCHANGED=true",
         direct_job,
@@ -238,7 +408,7 @@ def assert_sync_pipeline(component: str, path: Path) -> None:
     require_before(text, "if [ \"$github_sha\" = \"$nas_sha\" ]", "git clone", context)
     require_before(
         text,
-        'git push --force-with-lease="refs/heads/master:$nas_sha" nas HEAD:refs/heads/master',
+        "git push nas HEAD:refs/heads/master",
         "UNCHANGED=false",
         context,
     )
@@ -246,7 +416,8 @@ def assert_sync_pipeline(component: str, path: Path) -> None:
     if text.count("build job:") != 1:
         fail(f"{context} must trigger the direct job only in the unchanged branch")
     reject(text, r"git push\s+--mirror", context)
-    reject(text, r"git push\s+--force\s", context)
+    reject(text, r"git push[^\n]*(?:--force|--force-with-lease)", context)
+    reject(text, r"git push[^\n]*\|\|\s*true", context)
     reject(text, r"refs/heads/\$", context)
     reject(text, r"set\s+-x", context)
     reject(text, r"StrictHostKeyChecking=accept-new", context)
@@ -354,6 +525,8 @@ def assert_no_placeholders_or_secret_literals() -> None:
 
 def main() -> int:
     assert_workflow()
+    assert_hook_bash_syntax()
+    assert_git_pathname_semantics()
     assert_hook()
     for component, path in DIRECT_PIPELINES.items():
         assert_direct_pipeline(component, path)

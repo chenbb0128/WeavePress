@@ -84,7 +84,7 @@ pipeline {
             git -C sync-source remote add nas "$NAS_REPO"
             (
               cd sync-source
-              GIT_SSH_COMMAND="$NAS_GIT_SSH_COMMAND" git push --force-with-lease="refs/heads/master:$nas_sha" nas HEAD:refs/heads/master
+              GIT_SSH_COMMAND="$NAS_GIT_SSH_COMMAND" git push nas HEAD:refs/heads/master
             )
             printf 'UNCHANGED=false\nSYNCED_COMMIT=%s\n' "$actual_sha" > sync-result.env
           '''
