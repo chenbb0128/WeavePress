@@ -220,6 +220,150 @@ paths:
       security: [ { bearerAuth: [] } ]
       parameters: [ { $ref: "#/components/parameters/ID" } ]
       responses: { "202": { description: 已重新排队 }, "403": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" } }
+  /api/ai/status:
+    get:
+      summary: AI 采编配置状态
+      security: [ { bearerAuth: [] } ]
+      responses:
+        "200":
+          description: AI 配置状态
+          content: { application/json: { schema: { $ref: "#/components/schemas/AIStatusEnvelope" } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/articles/{id}/ai-analyses:
+    parameters: [ { $ref: "#/components/parameters/ID" } ]
+    post:
+      summary: 为来源文章创建 AI 分析任务
+      security: [ { bearerAuth: [] } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/StartAIAnalysisInput" } } }
+      responses:
+        "202":
+          description: 分析任务已进入队列或复用已有任务
+          content: { application/json: { schema: { $ref: "#/components/schemas/StartAIAnalysisEnvelope" } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    get:
+      summary: 来源文章的 AI 分析列表
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/Page" }, { $ref: "#/components/parameters/PageSize" } ]
+      responses:
+        "200":
+          description: AI 分析分页列表
+          content: { application/json: { schema: { $ref: "#/components/schemas/AIAnalysisPageEnvelope" } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/ai-analyses/{id}:
+    get:
+      summary: AI 分析详情
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "200":
+          description: AI 分析详情
+          content: { application/json: { schema: { $ref: "#/components/schemas/AIAnalysisEnvelope" } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/ai-analyses/{id}/generations:
+    post:
+      summary: 基于 AI 分析创建采编稿件生成任务
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/GenerationInput" } } }
+      responses:
+        "202":
+          description: 生成任务已进入队列或复用已有任务
+          content: { application/json: { schema: { $ref: "#/components/schemas/StartAIGenerationEnvelope" } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/ai-generations/{id}:
+    get:
+      summary: AI 生成结果详情
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "200":
+          description: AI 生成结果详情
+          content: { application/json: { schema: { $ref: "#/components/schemas/AIGenerationEnvelope" } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/ai-jobs:
+    get:
+      summary: AI 任务列表
+      security: [ { bearerAuth: [] } ]
+      parameters:
+        - { $ref: "#/components/parameters/Page" }
+        - { $ref: "#/components/parameters/PageSize" }
+        - { name: type, in: query, schema: { $ref: "#/components/schemas/AIJobType" } }
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/AIJobStatus" } }
+        - { name: articleId, in: query, schema: { type: integer, format: int64, minimum: 1 } }
+      responses:
+        "200":
+          description: AI 任务分页列表
+          content: { application/json: { schema: { $ref: "#/components/schemas/AIJobPageEnvelope" } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/ai-jobs/{id}:
+    get:
+      summary: AI 任务详情（含来源文章和状态事件）
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "200":
+          description: AI 任务详情
+          content: { application/json: { schema: { $ref: "#/components/schemas/AIJobEnvelope" } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/ai-jobs/{id}/retry:
+    post:
+      summary: 手动重试失败的 AI 任务
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "202":
+          description: AI 任务已重新排队
+          content: { application/json: { schema: { $ref: "#/components/schemas/AIJobEnvelope" } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /media/assets/{id}:
     get:
       summary: 签名素材访问
@@ -288,6 +432,281 @@ components:
               code: { type: string, example: WECHAT_TITLE_TOO_LONG }
               message: { type: string }
               field: { type: string }
+    AIJobStatus:
+      type: string
+      enum: [queued, running, completed, failed]
+    AIJobType:
+      type: string
+      enum: [analysis, generation]
+    TokenUsage:
+      type: object
+      required: [inputTokens, outputTokens, totalTokens]
+      properties:
+        inputTokens: { type: integer, minimum: 0 }
+        outputTokens: { type: integer, minimum: 0 }
+        totalTokens: { type: integer, minimum: 0 }
+    AIStatus:
+      type: object
+      required: [enabled, provider, model]
+      properties:
+        enabled: { type: boolean }
+        provider: { type: string, example: openai-compatible }
+        model: { type: string }
+    StartAIAnalysisInput:
+      type: object
+      additionalProperties: false
+      properties:
+        force: { type: boolean, default: false }
+    GenerationInput:
+      type: object
+      additionalProperties: false
+      required: [angleId, audience, tone, targetWords, idempotencyKey]
+      properties:
+        angleId: { type: string, minLength: 1, pattern: '.*\S.*' }
+        audience: { type: string, minLength: 1, maxLength: 100, pattern: '.*\S.*' }
+        tone: { type: string, enum: [professional, plain, analytical, storytelling, warm] }
+        targetWords: { type: integer, minimum: 300, maximum: 5000 }
+        additionalInstructions: { type: string, maxLength: 500, default: "" }
+        idempotencyKey:
+          type: string
+          minLength: 8
+          maxLength: 128
+          pattern: '^[\u0000-\u007F]{8,128}$'
+          description: 8 到 128 个 ASCII 字符。
+    AIFact:
+      type: object
+      required: [id, text, sourceBlockIds, confidence]
+      properties:
+        id: { type: string }
+        text: { type: string }
+        sourceBlockIds: { type: array, items: { type: string } }
+        confidence: { type: string, enum: [high, medium, low] }
+    AIViewpoint:
+      type: object
+      required: [id, text, holder, sourceBlockIds]
+      properties:
+        id: { type: string }
+        text: { type: string }
+        holder: { type: string }
+        sourceBlockIds: { type: array, items: { type: string } }
+    AIQuote:
+      type: object
+      required: [id, text, sourceBlockId]
+      properties:
+        id: { type: string }
+        text: { type: string }
+        sourceBlockId: { type: string }
+    AIRisk:
+      type: object
+      required: [id, text, sourceBlockIds]
+      properties:
+        id: { type: string }
+        text: { type: string }
+        sourceBlockIds: { type: array, items: { type: string } }
+    AIAngle:
+      type: object
+      required: [id, title, thesis, outline]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        thesis: { type: string }
+        outline: { type: array, items: { type: string } }
+    AIJobArticle:
+      type: object
+      description: AI 任务关联的来源文章；存储键、哈希等内部字段不会返回。
+      required: [id, title, sourceType, status, createdBy, createdAt, updatedAt]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        originalUrl: { type: string }
+        canonicalUrl: { type: string }
+        sourceType: { type: string }
+        title: { type: string }
+        author: { type: string }
+        sourceName: { type: string }
+        language: { type: string }
+        publishedAt: { type: string, format: date-time, nullable: true }
+        plainText: { type: string }
+        cleanHtml: { type: string }
+        status: { type: string }
+        duplicateOfId: { type: integer, format: int64, minimum: 1, nullable: true }
+        createdBy: { type: integer, format: int64, minimum: 0 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    AIJobEvent:
+      type: object
+      required: [id, jobId, status, message, createdAt]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        jobId: { type: integer, format: int64, minimum: 1 }
+        status: { type: string }
+        message: { type: string }
+        createdAt: { type: string, format: date-time }
+    AIJob:
+      allOf:
+        - { $ref: "#/components/schemas/TokenUsage" }
+        - type: object
+          required: [id, type, articleId, requestedBy, status, attempts, manualRetries, provider, model, promptVersion, retryable, createdAt, updatedAt]
+          properties:
+            id: { type: integer, format: int64, minimum: 1 }
+            type: { $ref: "#/components/schemas/AIJobType" }
+            articleId: { type: integer, format: int64, minimum: 1 }
+            parentJobId: { type: integer, format: int64, minimum: 1, nullable: true }
+            requestedBy: { type: integer, format: int64, minimum: 1 }
+            status: { $ref: "#/components/schemas/AIJobStatus" }
+            attempts: { type: integer, minimum: 0 }
+            manualRetries: { type: integer, minimum: 0 }
+            provider: { type: string }
+            model: { type: string }
+            promptVersion: { type: string }
+            errorCode: { type: string }
+            errorMessage: { type: string }
+            retryable: { type: boolean }
+            startedAt: { type: string, format: date-time, nullable: true }
+            finishedAt: { type: string, format: date-time, nullable: true }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+            article: { $ref: "#/components/schemas/AIJobArticle" }
+            events:
+              type: array
+              items: { $ref: "#/components/schemas/AIJobEvent" }
+    AIAnalysis:
+      type: object
+      required: [id, jobId, articleId, summary, facts, viewpoints, quotes, risks, angles, createdAt]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        jobId: { type: integer, format: int64, minimum: 1 }
+        articleId: { type: integer, format: int64, minimum: 1 }
+        summary: { type: string }
+        facts: { type: array, items: { $ref: "#/components/schemas/AIFact" } }
+        viewpoints: { type: array, items: { $ref: "#/components/schemas/AIViewpoint" } }
+        quotes: { type: array, items: { $ref: "#/components/schemas/AIQuote" } }
+        risks: { type: array, items: { $ref: "#/components/schemas/AIRisk" } }
+        angles: { type: array, minItems: 3, maxItems: 3, items: { $ref: "#/components/schemas/AIAngle" } }
+        createdAt: { type: string, format: date-time }
+        job: { $ref: "#/components/schemas/AIJob" }
+    AIGeneratedBlock:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, enum: [heading, paragraph, quote, list, image] }
+        level: { type: integer, minimum: 2, maximum: 4 }
+        text: { type: string }
+        items: { type: array, items: { type: string } }
+        factIds: { type: array, items: { type: string } }
+        quoteId: { type: string }
+        assetId: { type: integer, format: int64, minimum: 1 }
+        alt: { type: string }
+    AIGeneration:
+      type: object
+      required: [id, jobId, analysisId, angleId, audience, tone, targetWords, additionalInstructions, title, digest, blocks, createdAt, updatedAt]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        jobId: { type: integer, format: int64, minimum: 1 }
+        analysisId: { type: integer, format: int64, minimum: 1 }
+        angleId: { type: string }
+        audience: { type: string, minLength: 1, maxLength: 100 }
+        tone: { type: string, enum: [professional, plain, analytical, storytelling, warm] }
+        targetWords: { type: integer, minimum: 300, maximum: 5000 }
+        additionalInstructions: { type: string, maxLength: 500 }
+        title: { type: string }
+        digest: { type: string }
+        blocks:
+          type: array
+          nullable: true
+          items: { $ref: "#/components/schemas/AIGeneratedBlock" }
+        factMap:
+          type: object
+          additionalProperties: { type: array, items: { type: string } }
+        contentHtml: { type: string }
+        draftId: { type: integer, format: int64, minimum: 1, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        job: { $ref: "#/components/schemas/AIJob" }
+    AIAnalysisPage:
+      type: object
+      required: [items, total, page, pageSize]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/AIAnalysis" } }
+        total: { type: integer, format: int64, minimum: 0 }
+        page: { type: integer, minimum: 1 }
+        pageSize: { type: integer, minimum: 1, maximum: 100 }
+    AIJobPage:
+      type: object
+      required: [items, total, page, pageSize]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/AIJob" } }
+        total: { type: integer, format: int64, minimum: 0 }
+        page: { type: integer, minimum: 1 }
+        pageSize: { type: integer, minimum: 1, maximum: 100 }
+    StartAIAnalysisResult:
+      type: object
+      required: [job, reused]
+      properties:
+        job: { $ref: "#/components/schemas/AIJob" }
+        reused: { type: boolean }
+    StartAIGenerationResult:
+      type: object
+      required: [generation, job, reused]
+      properties:
+        generation: { $ref: "#/components/schemas/AIGeneration" }
+        job: { $ref: "#/components/schemas/AIJob" }
+        reused: { type: boolean }
+    AIStatusEnvelope:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: success }
+        data: { $ref: "#/components/schemas/AIStatus" }
+    StartAIAnalysisEnvelope:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: success }
+        data: { $ref: "#/components/schemas/StartAIAnalysisResult" }
+    StartAIGenerationEnvelope:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: success }
+        data: { $ref: "#/components/schemas/StartAIGenerationResult" }
+    AIAnalysisEnvelope:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: success }
+        data: { $ref: "#/components/schemas/AIAnalysis" }
+    AIGenerationEnvelope:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: success }
+        data: { $ref: "#/components/schemas/AIGeneration" }
+    AIJobEnvelope:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: success }
+        data: { $ref: "#/components/schemas/AIJob" }
+    AIAnalysisPageEnvelope:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: success }
+        data: { $ref: "#/components/schemas/AIAnalysisPage" }
+    AIJobPageEnvelope:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: success }
+        data: { $ref: "#/components/schemas/AIJobPage" }
     TokenEnvelope:
       type: object
       required: [code, message, data]

@@ -7,10 +7,12 @@ import (
 	"log/slog"
 
 	"github.com/chenbb0128/weavepress/server/internal/config"
+	"github.com/chenbb0128/weavepress/server/internal/modules/aiwriting"
 	"github.com/chenbb0128/weavepress/server/internal/modules/content"
 	"github.com/chenbb0128/weavepress/server/internal/modules/editorial"
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace/mysqlstore"
 	"github.com/chenbb0128/weavepress/server/internal/platform/database"
+	"github.com/chenbb0128/weavepress/server/internal/platform/llm"
 	"github.com/chenbb0128/weavepress/server/internal/platform/objectstore"
 	"github.com/chenbb0128/weavepress/server/internal/platform/queue"
 	redisclient "github.com/chenbb0128/weavepress/server/internal/platform/redis"
@@ -67,9 +69,11 @@ func (w *Worker) Run(ctx context.Context) (err error) {
 	contentService := content.New(store, queueClient, objects, w.cfg)
 	wechatPublisher := wechat.New(w.cfg.WeChat, objects)
 	editorialService := editorial.New(store, store, queueClient, wechatPublisher, w.cfg.WeChat.Enabled)
+	aiStore := mysqlstore.NewAIStore(db.SQL)
+	aiService := aiwriting.New(aiStore, store, queueClient, newAIProvider(w.cfg.AI), w.cfg.AI)
 
 	server := queue.NewServer(w.cfg.Redis, w.cfg.Worker, w.logger)
-	mux := workers.NewMux(contentService, editorialService, nil)
+	mux := workers.NewMux(contentService, editorialService, aiService)
 
 	w.logger.Info(
 		"worker starting",
@@ -86,4 +90,11 @@ func (w *Worker) Run(ctx context.Context) (err error) {
 	server.Shutdown()
 	w.logger.Info("worker stopped")
 	return nil
+}
+
+func newAIProvider(cfg config.AIConfig) llm.Provider {
+	if !cfg.Enabled {
+		return nil
+	}
+	return llm.NewOpenAICompatible(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.RequestTimeout)
 }

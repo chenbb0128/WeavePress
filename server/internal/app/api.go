@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chenbb0128/weavepress/server/internal/config"
+	"github.com/chenbb0128/weavepress/server/internal/modules/aiwriting"
 	"github.com/chenbb0128/weavepress/server/internal/modules/authn"
 	"github.com/chenbb0128/weavepress/server/internal/modules/content"
 	"github.com/chenbb0128/weavepress/server/internal/modules/editorial"
@@ -103,7 +104,9 @@ func NewAPI(cfg config.Config, logger *slog.Logger) (*API, error) {
 	authService := authn.New(store, redis, cfg.Auth)
 	contentService := content.New(store, queueClient, objects, cfg)
 	editorialService := editorial.New(store, store, queueClient, nil, cfg.WeChat.Enabled)
-	businessAPI := weaveapi.New(store, authService, contentService, editorialService, cfg)
+	aiStore := mysqlstore.NewAIStore(db.SQL)
+	aiService := aiwriting.New(aiStore, store, queueClient, nil, cfg.AI)
+	businessAPI := weaveapi.New(store, authService, contentService, editorialService, aiService, cfg)
 
 	router, err := httpapi.NewRouter(httpapi.RouterOptions{
 		App:             cfg.App,

@@ -68,6 +68,15 @@ services:
       WEAVEPRESS_WECHAT_ENABLED: "false"
       WEAVEPRESS_WECHAT_API_BASE: https://api.weixin.qq.com
       WEAVEPRESS_WECHAT_REQUEST_TIMEOUT: 30s
+      WEAVEPRESS_AI_ENABLED: "false"
+      WEAVEPRESS_AI_PROVIDER: openai-compatible
+      WEAVEPRESS_AI_BASE_URL: ""
+      WEAVEPRESS_AI_API_KEY: ""
+      WEAVEPRESS_AI_MODEL: ""
+      WEAVEPRESS_AI_REQUEST_TIMEOUT: 120s
+      WEAVEPRESS_AI_MAX_INPUT_CHARS: "60000"
+      WEAVEPRESS_AI_MAX_OUTPUT_TOKENS: "6000"
+      WEAVEPRESS_AI_TEMPERATURE: "0.4"
     ports:
       - "8080:8080"
     depends_on:
@@ -95,6 +104,15 @@ services:
       WEAVEPRESS_WECHAT_ENABLED: "false"
       WEAVEPRESS_WECHAT_API_BASE: https://api.weixin.qq.com
       WEAVEPRESS_WECHAT_REQUEST_TIMEOUT: 30s
+      WEAVEPRESS_AI_ENABLED: "false"
+      WEAVEPRESS_AI_PROVIDER: openai-compatible
+      WEAVEPRESS_AI_BASE_URL: ""
+      WEAVEPRESS_AI_API_KEY: ""
+      WEAVEPRESS_AI_MODEL: ""
+      WEAVEPRESS_AI_REQUEST_TIMEOUT: 120s
+      WEAVEPRESS_AI_MAX_INPUT_CHARS: "60000"
+      WEAVEPRESS_AI_MAX_OUTPUT_TOKENS: "6000"
+      WEAVEPRESS_AI_TEMPERATURE: "0.4"
     depends_on:
       redis:
         condition: service_healthy

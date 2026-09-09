@@ -139,6 +139,7 @@ func (s *Service) Permissions(role workspace.Role) []string {
 	base := []string{
 		"dashboard:view", "collection:create", "collection:view", "collection:retry", "article:view",
 		"draft:view", "draft:create", "draft:update", "draft:submit-review", "wechat-publish:view",
+		"ai:analysis:create", "ai:analysis:view", "ai:generation:create", "ai:generation:view", "ai:job:retry",
 	}
 	if role == workspace.RoleAdmin {
 		return append(base,

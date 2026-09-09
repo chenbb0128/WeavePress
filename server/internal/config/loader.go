@@ -175,7 +175,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("worker.enabled", false)
 	v.SetDefault("worker.concurrency", 4)
 	v.SetDefault("worker.shutdown_timeout", 10*time.Second)
-	v.SetDefault("worker.queues", map[string]int{"collection": 2, "publishing": 1, "default": 1})
+	v.SetDefault("worker.queues", map[string]int{"collection": 2, "ai": 1, "publishing": 1, "default": 1})
 	v.SetDefault("auth.jwt_secret", "local-development-jwt-secret-change-me")
 	v.SetDefault("auth.access_ttl", 15*time.Minute)
 	v.SetDefault("auth.refresh_ttl", 30*24*time.Hour)

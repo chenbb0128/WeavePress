@@ -36,6 +36,25 @@ func TestPermissionsSeparateAdministration(t *testing.T) {
 	}
 }
 
+func TestPermissionsIncludeAIWritingForAdminAndEditor(t *testing.T) {
+	service := New(nil, nil, config.AuthConfig{})
+	want := []string{
+		"ai:analysis:create",
+		"ai:analysis:view",
+		"ai:generation:create",
+		"ai:generation:view",
+		"ai:job:retry",
+	}
+	for _, role := range []workspace.Role{workspace.RoleAdmin, workspace.RoleEditor} {
+		permissions := service.Permissions(role)
+		for _, code := range want {
+			if !contains(permissions, code) {
+				t.Errorf("Permissions(%q) missing %q", role, code)
+			}
+		}
+	}
+}
+
 func contains(values []string, expected string) bool {
 	for _, value := range values {
 		if value == expected {

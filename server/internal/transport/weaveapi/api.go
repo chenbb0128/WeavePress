@@ -14,6 +14,7 @@ import (
 
 	"github.com/chenbb0128/weavepress/server/internal/collectors"
 	"github.com/chenbb0128/weavepress/server/internal/config"
+	"github.com/chenbb0128/weavepress/server/internal/modules/aiwriting"
 	"github.com/chenbb0128/weavepress/server/internal/modules/authn"
 	"github.com/chenbb0128/weavepress/server/internal/modules/content"
 	"github.com/chenbb0128/weavepress/server/internal/modules/editorial"
@@ -29,11 +30,12 @@ type API struct {
 	auth      *authn.Service
 	content   *content.Service
 	editorial *editorial.Service
+	ai        AIService
 	cfg       config.Config
 }
 
-func New(store workspace.Store, auth *authn.Service, contentService *content.Service, editorialService *editorial.Service, cfg config.Config) *API {
-	return &API{store: store, auth: auth, content: contentService, editorial: editorialService, cfg: cfg}
+func New(store workspace.Store, auth *authn.Service, contentService *content.Service, editorialService *editorial.Service, aiService AIService, cfg config.Config) *API {
+	return &API{store: store, auth: auth, content: contentService, editorial: editorialService, ai: aiService, cfg: cfg}
 }
 
 func (a *API) Register(router *gin.Engine) {
@@ -77,6 +79,16 @@ func (a *API) Register(router *gin.Engine) {
 	protected.GET("/wechat-publish-jobs", a.listPublishJobs)
 	protected.GET("/wechat-publish-jobs/:id", a.getPublishJob)
 	protected.POST("/wechat-publish-jobs/:id/retry", a.requireRole(workspace.RoleAdmin), a.retryPublishJob)
+
+	protected.GET("/ai/status", a.requireCode(codeAIAnalysisView), a.aiStatus)
+	protected.POST("/articles/:id/ai-analyses", a.requireCode(codeAIAnalysisCreate), a.startAIAnalysis)
+	protected.GET("/articles/:id/ai-analyses", a.requireCode(codeAIAnalysisView), a.listAIAnalyses)
+	protected.GET("/ai-analyses/:id", a.requireCode(codeAIAnalysisView), a.getAIAnalysis)
+	protected.POST("/ai-analyses/:id/generations", a.requireCode(codeAIGenerationCreate), a.startAIGeneration)
+	protected.GET("/ai-generations/:id", a.requireCode(codeAIGenerationView), a.getAIGeneration)
+	protected.GET("/ai-jobs", a.requireCode(codeAIAnalysisView), a.listAIJobs)
+	protected.GET("/ai-jobs/:id", a.requireCode(codeAIAnalysisView), a.getAIJob)
+	protected.POST("/ai-jobs/:id/retry", a.requireCode(codeAIJobRetry), a.retryAIJob)
 
 	router.GET("/media/assets/:id", a.media("assets"))
 	router.GET("/media/raw/:id", a.media("raw"))
@@ -742,6 +754,17 @@ func (a *API) requireRole(role workspace.Role) gin.HandlerFunc {
 		c.Next()
 	}
 }
+func (a *API) requireCode(code string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		for _, permission := range a.auth.Permissions(mustClaims(c).Role) {
+			if permission == code {
+				c.Next()
+				return
+			}
+		}
+		response.Error(c, response.Forbidden())
+	}
+}
 func mustClaims(c *gin.Context) authn.Claims {
 	value, _ := c.Get(claimsKey)
 	claims, _ := value.(authn.Claims)
@@ -801,6 +824,22 @@ func (a *API) writeError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, workspace.ErrNotFound):
 		response.Error(c, response.NotFound())
+	case errors.Is(err, aiwriting.ErrNotConfigured):
+		response.Error(c, response.DependencyUnavailable(err))
+	case errors.Is(err, aiwriting.ErrInputTooLarge):
+		response.Error(c, response.PayloadTooLarge(err))
+	case errors.Is(err, aiwriting.ErrInvalidParameters),
+		errors.Is(err, aiwriting.ErrOutputInvalid),
+		errors.Is(err, aiwriting.ErrSourceReferenceInvalid),
+		errors.Is(err, aiwriting.ErrQuoteMismatch),
+		errors.Is(err, aiwriting.ErrAssetInvalid),
+		errors.Is(err, aiwriting.ErrExcessiveSourceOverlap):
+		response.Error(c, response.BadRequest("AI 请求内容不合法", err))
+	case errors.Is(err, aiwriting.ErrArticleNotReady),
+		errors.Is(err, aiwriting.ErrAnalysisNotReady),
+		errors.Is(err, aiwriting.ErrJobNotRetryable),
+		errors.Is(err, workspace.ErrJobStateConflict):
+		response.Error(c, response.Conflict("AI 任务当前状态不允许此操作", err))
 	case errors.Is(err, workspace.ErrUsernameTaken):
 		response.Error(c, response.Conflict("用户名已存在", err))
 	case errors.Is(err, workspace.ErrJobNotRetryable):
