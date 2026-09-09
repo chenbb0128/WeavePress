@@ -553,7 +553,7 @@ def assert_direct_pipeline(component: str, path: Path) -> None:
         "booleanParam(name: 'PUSH_ACR', defaultValue: false",
         "booleanParam(name: 'DEPLOY', defaultValue: false",
         "ssh://chenhua@192.168.31.240/volume1/docker/weavepress-git/WeavePress.git",
-        "weavepress-tencent-prod-ssh",
+        "yy-edusystem-tencent-prod-ssh",
         "aliyun-acr-zdzq",
         "StrictHostKeyChecking=yes",
         "git clone --no-checkout --branch master --single-branch --no-tags",

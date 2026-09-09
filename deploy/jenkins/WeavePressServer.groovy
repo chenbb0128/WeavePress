@@ -24,7 +24,7 @@ pipeline {
     PROD_HOST = '124.220.53.160'
     PROD_PORT = '22'
     PROD_USER = 'weavepress-deploy'
-    PROD_SSH_CREDENTIALS_ID = 'weavepress-tencent-prod-ssh'
+    PROD_SSH_CREDENTIALS_ID = 'yy-edusystem-tencent-prod-ssh'
   }
 
   stages {
