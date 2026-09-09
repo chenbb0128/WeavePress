@@ -6,6 +6,7 @@ gateway="$repo_root/deploy/nginx.conf"
 dev_compose_file="$repo_root/deploy/compose.yaml"
 compose_file="$repo_root/deploy/production/compose.yaml"
 compose_contract="$repo_root/deploy/tests/production-compose-contract.py"
+ci_cd_contract="$repo_root/deploy/tests/ci-cd-contract.py"
 production_script_dir="$repo_root/deploy/production/scripts"
 production_scripts_behavior="$repo_root/deploy/tests/production-scripts-contract.sh"
 python_bin="${PYTHON_BIN:-python3}"
@@ -582,6 +583,7 @@ case "${1:-}" in
     fi
     compose_model="$contract_temp_dir/compose.json"
     dev_compose_model="$contract_temp_dir/dev-compose.json"
+    "$python_bin" -B "$ci_cd_contract"
     run_gateway_self_test
     run_production_script_self_test
     "$python_bin" -B "$compose_contract" --source-self-test
@@ -592,6 +594,7 @@ case "${1:-}" in
     "$python_bin" -B "$compose_contract" --dev-self-test "$dev_compose_model"
     ;;
   '')
+    "$python_bin" -B "$ci_cd_contract"
     assert_gateway_contract "$gateway"
     run_production_script_self_test
     compose_model="$contract_temp_dir/compose.json"

@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+set +x
+
+readonly MASTER_REF="refs/heads/master"
+readonly ZERO_SHA="0000000000000000000000000000000000000000"
+readonly JENKINS_URL="http://127.0.0.1:18080"
+readonly ENABLE_FILE="/volume1/docker/weavepress-git/.enable-auto-deploy"
+readonly SECRETS_DIR="/volume1/docker/weavepress-git/.secrets"
+readonly LOG_FILE="/volume1/docker/weavepress-git/post-receive.log"
+readonly SERVER_JOB="WeavePress/WeavePressServer"
+readonly GATEWAY_JOB="WeavePress/WeavePressGateway"
+
+log() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
+}
+
+die() {
+  log "ERROR: $1"
+  exit 1
+}
+
+read_secret() {
+  local path="$1"
+  local label="$2"
+  local value=""
+  local extra=""
+
+  [[ -f "$path" && -r "$path" ]] || die "$label credential file is not readable"
+  {
+    IFS= read -r value || [[ -n "$value" ]]
+    if IFS= read -r extra; then
+      die "$label credential file must contain exactly one line"
+    fi
+  } < "$path"
+  [[ -n "$value" ]] || die "$label credential is empty"
+  if LC_ALL=C grep -q '[[:cntrl:]]' < <(printf '%s' "$value"); then
+    die "$label credential contains a control character"
+  fi
+  printf '%s' "$value"
+}
+
+trigger_job() {
+  local job_path="$1"
+  local app_sha="$2"
+  local folder="${job_path%%/*}"
+  local job="${job_path#*/}"
+  local user token
+
+  user="$(read_secret "$SECRETS_DIR/zdzq-hook-user" 'Jenkins user')"
+  token="$(read_secret "$SECRETS_DIR/zdzq-hook-token" 'Jenkins token')"
+  curl --noproxy '*' --fail --silent --show-error \
+    --user "${user}:${token}" \
+    --request POST \
+    --data-urlencode "BRANCH=master" \
+    --data-urlencode "APP_SHA=${app_sha}" \
+    --data-urlencode "PUSH_ACR=true" \
+    --data-urlencode "DEPLOY=true" \
+    --data-urlencode "TRIGGER_REPO=nas-hook" \
+    "${JENKINS_URL}/job/${folder}/job/${job}/buildWithParameters" >/dev/null || \
+    die "Jenkins dispatch failed for ${job_path} at ${app_sha}"
+  user=""
+  token=""
+  log "Dispatched ${job_path} at ${app_sha}"
+}
+
+master_seen=false
+oldrev=""
+newrev=""
+
+while read -r received_old received_new received_ref extra; do
+  [[ "$received_ref" == "$MASTER_REF" ]] || continue
+  [[ -z "${extra:-}" ]] || die 'malformed receive record for master'
+  [[ "$master_seen" == false ]] || die 'duplicate master receive record'
+  master_seen=true
+  oldrev="$received_old"
+  newrev="$received_new"
+done
+
+[[ "$master_seen" == true ]] || exit 0
+[[ "$oldrev" == "$ZERO_SHA" || "$oldrev" =~ ^[0-9a-f]{40}$ ]] || \
+  die 'invalid old revision for master'
+[[ "$newrev" =~ ^[0-9a-f]{40}$ ]] || die 'master deletion or invalid new revision is not deployable'
+git cat-file -e "${newrev}^{commit}" 2>/dev/null || die 'new master revision is not a commit'
+if [[ "$oldrev" != "$ZERO_SHA" ]]; then
+  git cat-file -e "${oldrev}^{commit}" 2>/dev/null || die 'old master revision is not a commit'
+fi
+
+if [[ ! -f "$ENABLE_FILE" ]]; then
+  log "Mirrored master at ${newrev}; automatic deployment remains disabled"
+  exit 0
+fi
+
+if [[ "$oldrev" =~ ^0{40}$ ]]; then
+  changed_paths="$(git ls-tree -r --name-only "$newrev")" || die 'could not enumerate initial master tree'
+else
+  changed_paths="$(git diff --name-only "$oldrev" "$newrev")" || die 'could not derive changed paths'
+fi
+
+server_changed=false
+gateway_changed=false
+while IFS= read -r path; do
+  case "$path" in
+    server/*|deploy/production/*)
+      server_changed=true
+      ;;
+    admin/*|web/*|deploy/Dockerfile.gateway|deploy/nginx.conf)
+      gateway_changed=true
+      ;;
+  esac
+done <<< "$changed_paths"
+
+if [[ "$server_changed" == false && "$gateway_changed" == false ]]; then
+  log "Mirrored master at ${newrev}; no deployable component changed"
+  exit 0
+fi
+
+[[ "$server_changed" == false ]] || trigger_job "$SERVER_JOB" "$newrev"
+[[ "$gateway_changed" == false ]] || trigger_job "$GATEWAY_JOB" "$newrev"

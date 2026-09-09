@@ -1,0 +1,25 @@
+{
+  "folder": "WeavePress",
+  "jobs": [
+    {
+      "name": "WeavePressServer",
+      "displayName": "后端 发布 NAS 代码镜像",
+      "pipeline": "WeavePressServer.groovy"
+    },
+    {
+      "name": "ServerSyncGitHubAndDeploy",
+      "displayName": "后端 同步 GitHub 最新并发布",
+      "pipeline": "ServerSyncGitHubAndDeploy.groovy"
+    },
+    {
+      "name": "WeavePressGateway",
+      "displayName": "前台与管理端 发布 NAS 代码镜像",
+      "pipeline": "WeavePressGateway.groovy"
+    },
+    {
+      "name": "GatewaySyncGitHubAndDeploy",
+      "displayName": "前台与管理端 同步 GitHub 最新并发布",
+      "pipeline": "GatewaySyncGitHubAndDeploy.groovy"
+    }
+  ]
+}
