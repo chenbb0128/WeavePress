@@ -35,6 +35,10 @@ func New(store Store, articles ArticleStore, queue Enqueuer, provider llm.Provid
 	return &Service{store: store, articles: articles, queue: queue, provider: provider, cfg: cfg}
 }
 
+func shouldDispatchReusedJob(job Job) bool {
+	return job.Status == JobQueued && job.ErrorCode == ""
+}
+
 func (s *Service) StartAnalysis(ctx context.Context, articleID, userID uint64, force bool) (Job, bool, error) {
 	if !s.cfg.Enabled {
 		return Job{}, false, ErrNotConfigured
@@ -68,7 +72,7 @@ func (s *Service) StartAnalysis(ctx context.Context, articleID, userID uint64, f
 	if err != nil {
 		return Job{}, false, err
 	}
-	if reused && job.Status != JobQueued {
+	if reused && !shouldDispatchReusedJob(job) {
 		return job, true, nil
 	}
 	if err := s.enqueue(ctx, job); err != nil {
@@ -131,7 +135,7 @@ func (s *Service) StartGeneration(ctx context.Context, analysisID, userID uint64
 	if err != nil {
 		return Generation{}, Job{}, false, err
 	}
-	if reused && job.Status != JobQueued {
+	if reused && !shouldDispatchReusedJob(job) {
 		return generation, job, true, nil
 	}
 	if err := s.enqueue(ctx, job); err != nil {

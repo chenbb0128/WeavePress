@@ -189,6 +189,9 @@ func (q *fakeAIEnqueuer) EnqueueContext(_ context.Context, task *asynq.Task, opt
 type reusedJobEnqueueCase struct {
 	name        string
 	status      string
+	attempts    uint
+	retryable   bool
+	errorCode   string
 	queueErr    error
 	wantCalls   int
 	wantErr     error
@@ -201,6 +204,7 @@ func reusedJobEnqueueCases() []reusedJobEnqueueCase {
 		{name: "queued", status: JobQueued, wantCalls: 1},
 		{name: "queued task ID conflict", status: JobQueued, queueErr: asynq.ErrTaskIDConflict, wantCalls: 1},
 		{name: "queued enqueue failure", status: JobQueued, queueErr: queueErr, wantCalls: 1, wantErr: queueErr, wantFailure: true},
+		{name: "queued automatic retry pending", status: JobQueued, attempts: 1, retryable: true, errorCode: llm.ErrorCodeRateLimited},
 		{name: "running", status: JobRunning},
 		{name: "completed", status: JobCompleted},
 		{name: "failed", status: JobFailed},
@@ -313,7 +317,10 @@ func TestStartAnalysisEnqueuesWithDeterministicOptions(t *testing.T) {
 func TestStartAnalysisReusedJobReenqueuesOnlyWhenQueued(t *testing.T) {
 	for _, test := range reusedJobEnqueueCases() {
 		t.Run(test.name, func(t *testing.T) {
-			store := &fakeAIStore{job: Job{ID: 7, Type: JobTypeAnalysis, Status: test.status}, reuseAnalysis: true}
+			store := &fakeAIStore{job: Job{
+				ID: 7, Type: JobTypeAnalysis, Status: test.status, Attempts: test.attempts,
+				Retryable: test.retryable, ErrorCode: test.errorCode,
+			}, reuseAnalysis: true}
 			queue := &fakeAIEnqueuer{err: test.queueErr}
 			service := New(store, &fakeAIArticles{article: readyAIArticle()}, queue, &fakeAIProvider{}, testAIConfig())
 
@@ -440,9 +447,12 @@ func TestStartGenerationReusedJobReenqueuesOnlyWhenQueued(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			analysis := Analysis{ID: 3, ArticleID: 12, AnalysisOutput: validAnalysisOutput(), Job: &Job{Status: JobCompleted}}
 			store := &fakeAIStore{
-				analysis:        analysis,
-				generation:      Generation{ID: 4, JobID: 9},
-				job:             Job{ID: 9, Type: JobTypeGeneration, ArticleID: 12, Status: test.status},
+				analysis:   analysis,
+				generation: Generation{ID: 4, JobID: 9},
+				job: Job{
+					ID: 9, Type: JobTypeGeneration, ArticleID: 12, Status: test.status, Attempts: test.attempts,
+					Retryable: test.retryable, ErrorCode: test.errorCode,
+				},
 				reuseGeneration: true,
 			}
 			queue := &fakeAIEnqueuer{err: test.queueErr}
