@@ -8,7 +8,7 @@ import (
 	"github.com/chenbb0128/weavepress/server/internal/modules/editorial"
 )
 
-func NewMux(contentService *content.Service, editorialService *editorial.Service, aiServices ...*aiwriting.Service) *asynq.ServeMux {
+func NewMux(contentService *content.Service, editorialService *editorial.Service, aiService *aiwriting.Service) *asynq.ServeMux {
 	mux := asynq.NewServeMux()
 	if contentService != nil {
 		mux.HandleFunc(content.TaskCollectArticle, contentService.HandleTask)
@@ -16,9 +16,9 @@ func NewMux(contentService *content.Service, editorialService *editorial.Service
 	if editorialService != nil {
 		mux.HandleFunc(editorial.TaskPublishWeChat, editorialService.HandleTask)
 	}
-	if len(aiServices) > 0 && aiServices[0] != nil {
-		mux.HandleFunc(aiwriting.TaskAnalyze, aiServices[0].HandleAnalyzeTask)
-		mux.HandleFunc(aiwriting.TaskGenerate, aiServices[0].HandleGenerateTask)
+	if aiService != nil {
+		mux.HandleFunc(aiwriting.TaskAnalyze, aiService.HandleAnalyzeTask)
+		mux.HandleFunc(aiwriting.TaskGenerate, aiService.HandleGenerateTask)
 	}
 	return mux
 }

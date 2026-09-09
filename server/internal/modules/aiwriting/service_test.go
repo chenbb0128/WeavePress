@@ -368,6 +368,27 @@ func TestStartGenerationRequiresCompletedAnalysis(t *testing.T) {
 	}
 }
 
+func TestStartGenerationRejectsArticleThatIsNotReadyBeforeCreatingJob(t *testing.T) {
+	article := readyAIArticle()
+	article.Status = "collecting"
+	analysis := Analysis{ID: 3, ArticleID: article.ID, AnalysisOutput: validAnalysisOutput(), Job: &Job{Status: JobCompleted}}
+	store := &fakeAIStore{
+		analysis:   analysis,
+		generation: Generation{ID: 4, JobID: 9},
+		job:        Job{ID: 9, Type: JobTypeGeneration, ArticleID: article.ID},
+	}
+	queue := &fakeAIEnqueuer{}
+	service := New(store, &fakeAIArticles{article: article}, queue, &fakeAIProvider{}, testAIConfig())
+
+	_, _, _, err := service.StartGeneration(context.Background(), analysis.ID, 5, validGenerationParams())
+	if !errors.Is(err, ErrArticleNotReady) {
+		t.Fatalf("StartGeneration() error = %v, want %v", err, ErrArticleNotReady)
+	}
+	if store.createGenerationCalls != 0 || queue.calls != 0 {
+		t.Fatalf("CreateGenerationJob calls=%d enqueue calls=%d, want 0/0", store.createGenerationCalls, queue.calls)
+	}
+}
+
 func TestStartGenerationReusesIdempotentJobWithoutEnqueue(t *testing.T) {
 	analysis := Analysis{ID: 3, ArticleID: 12, AnalysisOutput: validAnalysisOutput(), Job: &Job{Status: JobCompleted}}
 	store := &fakeAIStore{
@@ -551,6 +572,51 @@ func TestHandleAnalyzeTaskFailsPermanentlyWhenRepairIsStillInvalid(t *testing.T)
 	failure := store.failures[0]
 	if failure.Code != "AI_OUTPUT_INVALID" || failure.Retryable || failure.Requeue || failure.Usage.TotalTokens != 14 {
 		t.Fatalf("failure = %#v", failure)
+	}
+}
+
+func TestHandleAnalyzeTaskPreservesProviderErrorsFromRepair(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		err       *llm.Error
+		retryable bool
+	}{
+		{
+			name:      "temporary",
+			err:       &llm.Error{Code: llm.ErrorCodeRateLimited, Message: "AI 模型请求受到限流", Retryable: true, Cause: ErrOutputInvalid},
+			retryable: true,
+		},
+		{
+			name: "permanent",
+			err:  &llm.Error{Code: llm.ErrorCodeAuthFailed, Message: "AI 模型认证失败", Retryable: false},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &fakeAIStore{job: Job{ID: 7, Type: JobTypeAnalysis, ArticleID: 12, Status: JobQueued}}
+			provider := &fakeAIProvider{
+				responses: []llm.Response{
+					{Content: "not-json", Usage: llm.Usage{InputTokens: 2, OutputTokens: 2, TotalTokens: 4}},
+					{Usage: llm.Usage{InputTokens: 3, OutputTokens: 3, TotalTokens: 6}},
+				},
+				errors: []error{nil, test.err},
+			}
+			service := New(store, &fakeAIArticles{article: readyAIArticle()}, nil, provider, testAIConfig())
+
+			err := service.HandleAnalyzeTask(context.Background(), jobTask(TaskAnalyze, 7))
+			if !errors.Is(err, asynq.SkipRetry) {
+				t.Fatalf("HandleAnalyzeTask() error = %v, want exhausted SkipRetry", err)
+			}
+			if len(provider.requests) != 2 || len(store.failures) != 1 {
+				t.Fatalf("provider calls=%d failures=%#v", len(provider.requests), store.failures)
+			}
+			failure := store.failures[0]
+			if failure.Code != test.err.Code || failure.Message != test.err.Message || failure.Retryable != test.retryable || failure.Requeue {
+				t.Fatalf("failure = %#v", failure)
+			}
+			if failure.Usage != (TokenUsage{InputTokens: 5, OutputTokens: 5, TotalTokens: 10}) {
+				t.Fatalf("usage = %#v", failure.Usage)
+			}
+		})
 	}
 }
 
@@ -898,6 +964,100 @@ func TestHandleGenerateTaskRepairsStructuralOutputOnlyOnce(t *testing.T) {
 	}
 	if len(provider.requests) != 2 || provider.requests[1].Temperature != 0 || len(store.events) != 1 || store.job.TotalTokens != 10 {
 		t.Fatalf("requests=%#v events=%#v usage=%#v", provider.requests, store.events, store.job.TokenUsage)
+	}
+}
+
+func TestHandleGenerateTaskPreservesAssetStoreErrorFromRepair(t *testing.T) {
+	article := readyAIArticle()
+	analysis := validAnalysis()
+	analysis.ID, analysis.ArticleID, analysis.Job = 3, article.ID, &Job{Status: JobCompleted}
+	store := &fakeAIStore{
+		job:        Job{ID: 9, Type: JobTypeGeneration, ArticleID: article.ID, RequestedBy: 5, Status: JobQueued},
+		generation: Generation{AnalysisID: 3, AngleID: "A1", Audience: "技术团队", Tone: "professional", TargetWords: 1000},
+		analysis:   analysis,
+	}
+	provider := &fakeAIProvider{responses: []llm.Response{
+		{Content: `{"title":"缺少字段"}`, Usage: llm.Usage{TotalTokens: 2}},
+		{Content: encodeJSONForTest(t, validGenerationOutput()), Usage: llm.Usage{TotalTokens: 3}},
+	}}
+	service := New(store, &fakeAIArticles{article: article, assetErr: errors.New("database unavailable")}, nil, provider, testAIConfig())
+
+	err := service.HandleGenerateTask(context.Background(), jobTask(TaskGenerate, 9))
+	if !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("HandleGenerateTask() error = %v, want exhausted SkipRetry", err)
+	}
+	if len(provider.requests) != 2 || len(store.failures) != 1 {
+		t.Fatalf("provider calls=%d failures=%#v", len(provider.requests), store.failures)
+	}
+	failure := store.failures[0]
+	if failure.Code != "AI_PROCESSING_FAILED" || !failure.Retryable || failure.Requeue || failure.Usage.TotalTokens != 5 {
+		t.Fatalf("failure = %#v", failure)
+	}
+}
+
+func TestHandleGenerateTaskPreservesDomainErrorsFromRepair(t *testing.T) {
+	baseArticle := readyAIArticle()
+	baseAnalysis := validAnalysis()
+	baseAnalysis.ID, baseAnalysis.ArticleID, baseAnalysis.Job = 3, baseArticle.ID, &Job{Status: JobCompleted}
+	assetID := uint64(7)
+	for _, test := range []struct {
+		name     string
+		article  workspace.Article
+		output   GenerationOutput
+		assets   map[uint64]workspace.Asset
+		wantCode string
+	}{
+		{
+			name:     "source reference",
+			article:  baseArticle,
+			output:   GenerationOutput{Title: "标题", Digest: "摘要", Blocks: []GeneratedBlock{{Type: "paragraph", Text: "重写正文", FactIDs: []string{"F999"}}}},
+			wantCode: "AI_SOURCE_REFERENCE_INVALID",
+		},
+		{
+			name:     "quote mismatch",
+			article:  baseArticle,
+			output:   GenerationOutput{Title: "标题", Digest: "摘要", Blocks: []GeneratedBlock{{Type: "quote", Text: "错误引文", QuoteID: "Q1"}}},
+			wantCode: "AI_QUOTE_MISMATCH",
+		},
+		{
+			name:     "asset invalid",
+			article:  baseArticle,
+			output:   GenerationOutput{Title: "标题", Digest: "摘要", Blocks: []GeneratedBlock{{Type: "image", AssetID: &assetID}}},
+			assets:   map[uint64]workspace.Asset{assetID: {ID: assetID, ArticleID: 999, DownloadStatus: "completed"}},
+			wantCode: "AI_ASSET_INVALID",
+		},
+		{
+			name: "source overlap",
+			article: workspace.Article{
+				ID: 12, Status: "ready", PlainText: strings.Repeat("重", 80),
+				Blocks: []workspace.Block{{Type: "paragraph", Text: strings.Repeat("重", 80)}},
+			},
+			output:   GenerationOutput{Title: "标题", Digest: "摘要", Blocks: []GeneratedBlock{{Type: "paragraph", Text: strings.Repeat("重", 80)}}},
+			wantCode: "AI_EXCESSIVE_SOURCE_OVERLAP",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			analysis := baseAnalysis
+			analysis.ArticleID = test.article.ID
+			store := &fakeAIStore{
+				job:        Job{ID: 9, Type: JobTypeGeneration, ArticleID: test.article.ID, RequestedBy: 5, Status: JobQueued},
+				generation: Generation{AnalysisID: 3, AngleID: "A1", Audience: "技术团队", Tone: "professional", TargetWords: 1000},
+				analysis:   analysis,
+			}
+			provider := &fakeAIProvider{responses: []llm.Response{
+				{Content: `{"title":"缺少字段"}`, Usage: llm.Usage{TotalTokens: 2}},
+				{Content: encodeJSONForTest(t, test.output), Usage: llm.Usage{TotalTokens: 3}},
+			}}
+			service := New(store, &fakeAIArticles{article: test.article, assets: test.assets}, nil, provider, testAIConfig())
+
+			err := service.HandleGenerateTask(context.Background(), jobTask(TaskGenerate, 9))
+			if !errors.Is(err, asynq.SkipRetry) {
+				t.Fatalf("HandleGenerateTask() error = %v, want SkipRetry", err)
+			}
+			if len(provider.requests) != 2 || len(store.failures) != 1 || store.failures[0].Code != test.wantCode || store.failures[0].Usage.TotalTokens != 5 {
+				t.Fatalf("provider calls=%d failures=%#v", len(provider.requests), store.failures)
+			}
+		})
 	}
 }
 

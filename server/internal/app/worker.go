@@ -69,7 +69,7 @@ func (w *Worker) Run(ctx context.Context) (err error) {
 	editorialService := editorial.New(store, store, queueClient, wechatPublisher, w.cfg.WeChat.Enabled)
 
 	server := queue.NewServer(w.cfg.Redis, w.cfg.Worker, w.logger)
-	mux := workers.NewMux(contentService, editorialService)
+	mux := workers.NewMux(contentService, editorialService, nil)
 
 	w.logger.Info(
 		"worker starting",

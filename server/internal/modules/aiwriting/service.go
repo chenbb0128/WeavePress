@@ -107,6 +107,9 @@ func (s *Service) StartGeneration(ctx context.Context, analysisID, userID uint64
 	if err != nil {
 		return Generation{}, Job{}, false, err
 	}
+	if article.Status != "ready" {
+		return Generation{}, Job{}, false, ErrArticleNotReady
+	}
 	source := BuildSourceDocument(article)
 	if utf8.RuneCountInString(source.PlainText) > s.cfg.MaxInputChars {
 		return Generation{}, Job{}, false, ErrInputTooLarge
@@ -269,7 +272,7 @@ func (s *Service) processAnalysis(ctx context.Context, job Job) error {
 		}
 		output, usage, validationErr = s.repairAnalysis(ctx, source, response.Content, usage)
 		if validationErr != nil {
-			return withUsage(ErrOutputInvalid, usage)
+			return withUsage(normalizeRepairError(validationErr), usage)
 		}
 	}
 	_, err = s.store.CompleteAnalysis(ctx, job.ID, output, usage)
@@ -288,14 +291,14 @@ func (s *Service) repairAnalysis(ctx context.Context, source SourceDocument, raw
 	})
 	usage = addUsage(usage, tokenUsage(response.Usage))
 	if err != nil {
-		return AnalysisOutput{}, usage, ErrOutputInvalid
+		return AnalysisOutput{}, usage, err
 	}
 	output, err := DecodeAnalysisOutput(response.Content)
 	if err != nil {
-		return AnalysisOutput{}, usage, ErrOutputInvalid
+		return AnalysisOutput{}, usage, err
 	}
 	if err := ValidateAnalysis(source, output); err != nil {
-		return AnalysisOutput{}, usage, ErrOutputInvalid
+		return AnalysisOutput{}, usage, err
 	}
 	return output, usage, nil
 }
@@ -376,7 +379,7 @@ func (s *Service) processGeneration(ctx context.Context, job Job) error {
 		}
 		output, usage, validationErr = s.repairGeneration(ctx, source, analysis, response.Content, usage)
 		if validationErr != nil {
-			return withUsage(ErrOutputInvalid, usage)
+			return withUsage(normalizeRepairError(validationErr), usage)
 		}
 	}
 	contentHTML := RenderGeneration(article, output.Blocks)
@@ -405,13 +408,24 @@ func (s *Service) repairGeneration(ctx context.Context, source SourceDocument, a
 	})
 	usage = addUsage(usage, tokenUsage(response.Usage))
 	if err != nil {
-		return GenerationOutput{}, usage, ErrOutputInvalid
+		return GenerationOutput{}, usage, err
 	}
 	output, err := s.decodeAndValidateGeneration(ctx, source, analysis, response.Content)
 	if err != nil {
-		return GenerationOutput{}, usage, ErrOutputInvalid
+		return GenerationOutput{}, usage, err
 	}
 	return output, usage, nil
+}
+
+func normalizeRepairError(err error) error {
+	var providerErr *llm.Error
+	if errors.As(err, &providerErr) {
+		return err
+	}
+	if errors.Is(err, ErrOutputInvalid) {
+		return ErrOutputInvalid
+	}
+	return err
 }
 
 func (s *Service) decodeAndValidateGeneration(ctx context.Context, source SourceDocument, analysis Analysis, raw string) (GenerationOutput, error) {
