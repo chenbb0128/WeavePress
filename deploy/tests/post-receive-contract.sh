@@ -445,7 +445,7 @@ if [[ -n "$real_flock" ]]; then
   wait "$stale_hook_pid" || fail 'waiting scheduled dispatcher did not recover after lock release'
   [[ "$(<"$state/curl-count")" == 2 ]] || fail 'lock-serialized recovery did not make exactly one later attempt'
   grep -aFq 'WeavePressGateway' "$state/curl-argv-2" || fail 'waiting dispatcher retried the wrong component'
-  assert_baselines "$newrev" "$newrev"
+  assert_baselines "$oldrev" "$newrev"
 else
   [[ "$require_real_flock" == false ]] || fail 'real flock is required but unavailable'
   printf 'Real flock concurrency case skipped: flock is unavailable in this shell.\n'
