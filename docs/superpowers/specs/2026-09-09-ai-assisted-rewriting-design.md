@@ -222,6 +222,7 @@ queued -> running -> completed | failed
 - `POST /api/ai-analyses/{id}/generations`：创建生成任务，请求包含角度、读者、语气、字数、补充要求和幂等键。
 - `GET /api/ai-generations/{id}`：返回生成状态、用量、错误和 `draftId`。
 - `GET /api/ai-jobs`：按任务类型、状态和文章筛选任务。
+- `GET /api/ai-jobs/{id}`：返回任务和状态事件；生成任务详情可返回可空、可选的 `draftId`，完成且稿件已创建后供后台跳转稿件。
 - `POST /api/ai-jobs/{id}/retry`：只重试最终失败且标记为 retryable 的任务。
 
 权限码为：
