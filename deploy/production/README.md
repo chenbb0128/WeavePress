@@ -22,11 +22,11 @@ Jenkins 使用专用 forced-command SSH key，远端命令只能是：
 <lowercase-40-char-commit-sha> --component=gateway
 ```
 
-标准输入必须恰好两行：ACR username、ACR password。两者都不得写入日志；受 Docker CLI 登录接口限制，username 会作为 `docker login --username` 参数短暂出现在本机进程参数中，password/token 则只能通过 `--password-stdin` 传入，绝不能进入 argv。发布脚本用临时 `DOCKER_CONFIG` 登录 ACR，完成后立即删除登录态。
+标准输入使用严格、有界、带超时的 framing。前两行固定为 ACR username、ACR password；Server 随后按 API、Worker、Migrate 顺序接收三个 `sha256:<64hex>` manifest digest，Gateway 随后接收一个 Gateway manifest digest，并要求输入在最后一个 digest 换行后立即 EOF。远端命令 argv 仍只有 `APP_SHA --component=server|gateway`，凭据和 digest 都不进入 SSH 命令参数。凭据不得写入日志；受 Docker CLI 登录接口限制，username 会作为 `docker login --username` 参数短暂出现在生产机本地进程参数中，password/token 则只能通过 `--password-stdin` 传入，绝不能进入 argv。发布脚本用临时 `DOCKER_CONFIG` 登录 ACR，按 Jenkins 提供的 manifest digest 拉取、核验 revision label/RepoDigest/image ID 后再绑定 Compose 使用的 SHA tag，完成后立即删除登录态。
 
 Server 发布拉取同一 SHA 的 API、Worker、Migrate 镜像；数据库已有表时先在 `/opt/apps/weavepress/backup/mysql` 生成并验证 UTC gzip dump，再执行向前 migration，最后只重建 API/Worker。禁止在自动回滚中运行数据库 down migration。
 
-Gateway 发布前要求现有 `weavepress-api` 为 healthy；切换 Gateway 时强制 `--no-deps`，避免 Gateway 的单一 `APP_SHA` 意外重建 API。切换后通过公共 Nginx 使用 `Host: wp.pdurl.cn` 验证首页。
+Gateway 发布前要求现有 `weavepress-api` 为 healthy；切换 Gateway 时强制 `--no-deps`，避免 Gateway 的单一 `APP_SHA` 意外重建 API。Gateway 镜像在响应中固定暴露 `X-WeavePress-Release: <APP_SHA>`；Jenkins 切换后对公网 `/ready` 与 `/` 同时要求精确 HTTP 200 且该 header 等于本次 APP_SHA，从而确认新版本已穿过两层 Nginx。
 
 成功发布的非敏感元数据原子写入 `/var/lib/zdzq-deploy/weavepress/server.env` 或 `gateway.env`。失败且存在完整旧版时只回滚本次请求组件，并复核恢复后的镜像与健康状态；首发没有完整旧版时会停止本次请求组件，明确报错，并保留数据库、素材目录和公共设施供排查。
 

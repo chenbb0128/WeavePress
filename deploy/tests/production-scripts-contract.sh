@@ -10,6 +10,11 @@ test_root="$(mktemp -d)"
 mock_bin="$test_root/bin"
 mkdir -p "$mock_bin"
 trap 'rm -rf "$test_root"' EXIT
+readonly APP_SHA='0123456789abcdef0123456789abcdef01234567'
+readonly API_DIGEST='sha256:1111111111111111111111111111111111111111111111111111111111111111'
+readonly WORKER_DIGEST='sha256:2222222222222222222222222222222222222222222222222222222222222222'
+readonly MIGRATE_DIGEST='sha256:3333333333333333333333333333333333333333333333333333333333333333'
+readonly GATEWAY_DIGEST='sha256:4444444444444444444444444444444444444444444444444444444444444444'
 
 fail() {
   printf 'Production script behavior violation: %s\n' "$1" >&2
@@ -32,8 +37,76 @@ log_command() {
 log_command "$@"
 joined=" $* "
 
+component_from_reference() {
+  case "$1" in
+    *weavepress-api*) printf api ;;
+    *weavepress-worker*) printf worker ;;
+    *weavepress-migrate*) printf migrate ;;
+    *weavepress-gateway*) printf gateway ;;
+    *) exit 95 ;;
+  esac
+}
+
+component_image_id() {
+  case "$1" in
+    api) printf 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
+    worker) printf 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' ;;
+    migrate) printf 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc' ;;
+    gateway) printf 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' ;;
+  esac
+}
+
+component_digest() {
+  case "$1" in
+    api) printf 'sha256:1111111111111111111111111111111111111111111111111111111111111111' ;;
+    worker) printf 'sha256:2222222222222222222222222222222222222222222222222222222222222222' ;;
+    migrate) printf 'sha256:3333333333333333333333333333333333333333333333333333333333333333' ;;
+    gateway) printf 'sha256:4444444444444444444444444444444444444444444444444444444444444444' ;;
+  esac
+}
+
 if [[ "${1:-}" == "login" ]]; then
   while IFS= read -r _; do :; done
+  exit 0
+fi
+
+if [[ "${1:-}" == "pull" ]]; then
+  exit 0
+fi
+
+if [[ "${1:-}" == "image" && "${2:-}" == "tag" ]]; then
+  exit 0
+fi
+
+if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
+  format="${4:-}"
+  reference="${5:-}"
+  component="$(component_from_reference "$reference")"
+  repository="${reference%%@*}"
+  repository="${repository%:*}"
+  case "$format" in
+    *org.opencontainers.image.revision*)
+      if [[ "${MOCK_BAD_REVISION_COMPONENT:-}" == "$component" ]]; then
+        printf 'ffffffffffffffffffffffffffffffffffffffff\n'
+      else
+        printf '0123456789abcdef0123456789abcdef01234567\n'
+      fi
+      ;;
+    *RepoDigests*)
+      digest="$(component_digest "$component")"
+      if [[ "${MOCK_BAD_REPODIGEST_COMPONENT:-}" == "$component" ]]; then
+        digest='sha256:9999999999999999999999999999999999999999999999999999999999999999'
+      fi
+      printf '%s@%s\n' "$repository" "$digest"
+      ;;
+    *'.Id'*)
+      image_id="$(component_image_id "$component")"
+      if [[ "${MOCK_BAD_TAG_ID_COMPONENT:-}" == "$component" && "$reference" == *:* && "$reference" != *@* ]]; then
+        image_id='sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+      fi
+      printf '%s\n' "$image_id"
+      ;;
+  esac
   exit 0
 fi
 
@@ -140,9 +213,36 @@ if [[ "${1:-}" == "inspect" ]]; then
       ;;
     *Image*)
       case "$container" in
-        weavepress-gateway) [[ "${MOCK_GATEWAY_OLD:-0}" == "1" ]] || exit 1; printf 'sha256:old-gateway\n' ;;
-        weavepress-api) [[ "${MOCK_SERVER_OLD:-0}" == "1" ]] || exit 1; printf 'sha256:old-api\n' ;;
-        weavepress-worker) [[ "${MOCK_SERVER_OLD:-0}" == "1" ]] || exit 1; printf 'sha256:old-worker\n' ;;
+        weavepress-gateway)
+          if [[ -f "$MOCK_STATE_DIR/gateway-image" ]]; then
+            if grep -Fq ':rollback-' "$MOCK_STATE_DIR/gateway-image"; then
+              printf 'sha256:old-gateway\n'
+            elif [[ "${MOCK_BAD_CONTAINER_ID_COMPONENT:-}" == gateway ]]; then
+              printf 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n'
+            else
+              component_image_id gateway; printf '\n'
+            fi
+          else
+            [[ "${MOCK_GATEWAY_OLD:-0}" == "1" ]] || exit 1
+            printf 'sha256:old-gateway\n'
+          fi
+          ;;
+        weavepress-api)
+          if [[ -f "$MOCK_STATE_DIR/api-image" ]]; then
+            if grep -Fq ':rollback-' "$MOCK_STATE_DIR/api-image"; then printf 'sha256:old-api\n'; else component_image_id api; printf '\n'; fi
+          else
+            [[ "${MOCK_SERVER_OLD:-0}" == "1" ]] || exit 1
+            printf 'sha256:old-api\n'
+          fi
+          ;;
+        weavepress-worker)
+          if [[ -f "$MOCK_STATE_DIR/worker-image" ]]; then
+            if grep -Fq ':rollback-' "$MOCK_STATE_DIR/worker-image"; then printf 'sha256:old-worker\n'; else component_image_id worker; printf '\n'; fi
+          else
+            [[ "${MOCK_SERVER_OLD:-0}" == "1" ]] || exit 1
+            printf 'sha256:old-worker\n'
+          fi
+          ;;
       esac
       exit 0
       ;;
@@ -371,6 +471,15 @@ write_runtime_env() {
   chmod 0600 "$APP_DIR/.env"
 }
 
+write_gateway_input() {
+  printf 'acr-user\nPasswordSafe_123\n%s\n' "$GATEWAY_DIGEST" > "$1"
+}
+
+write_server_input() {
+  printf 'acr-user\nPasswordSafe_123\n%s\n%s\n%s\n' \
+    "$API_DIGEST" "$WORKER_DIGEST" "$MIGRATE_DIGEST" > "$1"
+}
+
 run_deploy() {
   local stdin_file="$1"
   shift
@@ -381,7 +490,7 @@ run_deploy() {
     WEAVEPRESS_LOCK_FILE="$LOCK_FILE" \
     WEAVEPRESS_METADATA_DIR="$METADATA_DIR" \
     WEAVEPRESS_INPUT_TIMEOUT=1 \
-    "$@" "$deploy" 0123456789abcdef0123456789abcdef01234567 --component=gateway < "$stdin_file"
+    "$@" "$deploy" "$APP_SHA" --component=gateway < "$stdin_file"
 }
 
 run_server_deploy() {
@@ -396,7 +505,7 @@ run_server_deploy() {
     WEAVEPRESS_INPUT_TIMEOUT=1 \
     WEAVEPRESS_HEALTH_ATTEMPTS=1 \
     WEAVEPRESS_HEALTH_DELAY=1 \
-    "$@" "$deploy" 0123456789abcdef0123456789abcdef01234567 --component=server < "$stdin_file"
+    "$@" "$deploy" "$APP_SHA" --component=server < "$stdin_file"
 }
 
 test_deploy_framing_before_lock() {
@@ -411,23 +520,60 @@ test_deploy_framing_before_lock() {
   fi
   [[ ! -e "$LOCK_FILE" ]] || fail 'deploy acquired/opened its lock before timed input completed'
 
+  new_case deploy-digest-timeout
+  write_runtime_env
+  output="$CASE_DIR/output"
+  if PATH="$mock_bin:$PATH" MOCK_LOG="$LOG_FILE" MOCK_STATE_DIR="$STATE_DIR" WEAVEPRESS_APP_DIR="$APP_DIR" WEAVEPRESS_LOCK_FILE="$LOCK_FILE" WEAVEPRESS_METADATA_DIR="$METADATA_DIR" WEAVEPRESS_INPUT_TIMEOUT=1 \
+    "$deploy" "$APP_SHA" --component=gateway < <(printf 'acr-user\nPasswordSafe_123\n'; sleep 2) > "$output" 2>&1; then
+    fail 'deploy accepted a timed-out manifest digest frame'
+  fi
+  [[ ! -e "$LOCK_FILE" ]] || fail 'deploy acquired/opened its lock before digest input completed'
+
   new_case deploy-overlong
   write_runtime_env
   input="$CASE_DIR/input"
   printf -v long_user '%257s' ''
   long_user="${long_user// /u}"
-  printf '%s\nPasswordSafe_123\n' "$long_user" > "$input"
+  printf '%s\nPasswordSafe_123\n%s\n' "$long_user" "$GATEWAY_DIGEST" > "$input"
   if run_deploy "$input" env > "$CASE_DIR/output" 2>&1; then
     fail 'deploy accepted an overlong ACR username'
   fi
   [[ ! -e "$LOCK_FILE" ]] || fail 'deploy acquired/opened its lock before rejecting an overlong frame'
 
+  new_case deploy-invalid-digest
+  write_runtime_env
+  input="$CASE_DIR/input"
+  printf 'acr-user\nPasswordSafe_123\nsha256:short\n' > "$input"
+  if run_deploy "$input" env > "$CASE_DIR/output" 2>&1; then
+    fail 'deploy accepted an invalid manifest digest'
+  fi
+  [[ ! -e "$LOCK_FILE" ]] || fail 'deploy acquired/opened its lock before rejecting an invalid digest'
+
+  new_case deploy-overlong-digest
+  write_runtime_env
+  input="$CASE_DIR/input"
+  printf 'acr-user\nPasswordSafe_123\nsha256:%065d\n' 0 > "$input"
+  if run_deploy "$input" env > "$CASE_DIR/output" 2>&1; then
+    fail 'deploy accepted an overlong manifest digest'
+  fi
+  [[ ! -e "$LOCK_FILE" ]] || fail 'deploy acquired/opened its lock before rejecting an overlong digest'
+
+  new_case deploy-missing-digest
+  write_runtime_env
+  input="$CASE_DIR/input"
+  printf 'acr-user\nPasswordSafe_123\n' > "$input"
+  if run_deploy "$input" env > "$CASE_DIR/output" 2>&1; then
+    fail 'deploy accepted a missing Gateway manifest digest'
+  fi
+  [[ ! -e "$LOCK_FILE" ]] || fail 'deploy acquired/opened its lock before rejecting a missing digest'
+
   new_case deploy-extra
   write_runtime_env
   input="$CASE_DIR/input"
-  printf 'acr-user\nPasswordSafe_123\nextra\n' > "$input"
+  write_gateway_input "$input"
+  printf 'extra\n' >> "$input"
   if run_deploy "$input" env > "$CASE_DIR/output" 2>&1; then
-    fail 'deploy accepted extra stdin bytes'
+    fail 'deploy accepted stdin bytes after the component digest frame'
   fi
   [[ ! -e "$LOCK_FILE" ]] || fail 'deploy acquired/opened its lock before rejecting extra stdin bytes'
 }
@@ -436,22 +582,59 @@ test_deploy_happy_metadata_and_cleanup() {
   new_case deploy-happy
   write_runtime_env
   input="$CASE_DIR/input"
-  printf 'acr-user\nPasswordSafe_123\n' > "$input"
+  write_gateway_input "$input"
   run_deploy "$input" env > "$CASE_DIR/output" 2>&1 || fail 'gateway deploy happy path failed'
   metadata="$METADATA_DIR/gateway.env"
   [[ -f "$metadata" && "$(stat -c '%a' "$metadata")" == "600" ]] || fail 'gateway metadata missing or not 0600'
   grep -Fxq 'APP_SHA=0123456789abcdef0123456789abcdef01234567' "$metadata" || fail 'gateway metadata SHA is incorrect'
+  grep -Fxq "GATEWAY_IMAGE_DIGEST=$GATEWAY_DIGEST" "$metadata" || fail 'gateway metadata manifest digest is incorrect'
+  grep -Eq '^GATEWAY_IMAGE_ID=sha256:[0-9a-f]{64}$' "$metadata" || fail 'gateway metadata image ID is missing'
+  grep -Fq "docker pull registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-gateway@$GATEWAY_DIGEST" "$LOG_FILE" || fail 'gateway was not pulled by the expected manifest digest'
+  if grep -Fq "docker pull registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-gateway:$APP_SHA" "$LOG_FILE"; then fail 'gateway pulled a mutable tag'; fi
   docker_config="$(sed -n 's/^DOCKER_CONFIG=\([^ ]*\) CMD=docker login.*/\1/p' "$LOG_FILE" | head -n1)"
   [[ -n "$docker_config" && ! -e "$docker_config" ]] || fail 'temporary DOCKER_CONFIG was not removed'
   if grep -Fq 'PasswordSafe_123' "$LOG_FILE" "$CASE_DIR/output"; then fail 'ACR password appeared in logs'; fi
   if find "$METADATA_DIR" -maxdepth 1 -name '.*.env.*' -print -quit | grep -q .; then fail 'metadata temp file was left behind'; fi
 }
 
+test_server_digest_order_and_metadata() {
+  new_case deploy-server-happy
+  write_runtime_env
+  input="$CASE_DIR/input"
+  write_server_input "$input"
+  run_server_deploy "$input" env > "$CASE_DIR/output" 2>&1 || fail 'server digest-bound deploy happy path failed'
+  api_line="$(grep -nF "docker pull registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-api@$API_DIGEST" "$LOG_FILE" | cut -d: -f1)"
+  worker_line="$(grep -nF "docker pull registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-worker@$WORKER_DIGEST" "$LOG_FILE" | cut -d: -f1)"
+  migrate_line="$(grep -nF "docker pull registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-migrate@$MIGRATE_DIGEST" "$LOG_FILE" | cut -d: -f1)"
+  [[ -n "$api_line" && "$api_line" -lt "$worker_line" && "$worker_line" -lt "$migrate_line" ]] || \
+    fail 'server manifest digests were not consumed in API, Worker, Migrate order'
+  metadata="$METADATA_DIR/server.env"
+  grep -Fxq "API_IMAGE_DIGEST=$API_DIGEST" "$metadata" || fail 'server metadata API digest is incorrect'
+  grep -Fxq "WORKER_IMAGE_DIGEST=$WORKER_DIGEST" "$metadata" || fail 'server metadata Worker digest is incorrect'
+  grep -Fxq "MIGRATE_IMAGE_DIGEST=$MIGRATE_DIGEST" "$metadata" || fail 'server metadata Migrate digest is incorrect'
+  [[ "$(grep -Ec '^(API|WORKER|MIGRATE)_IMAGE_ID=sha256:[0-9a-f]{64}$' "$metadata")" == 3 ]] || \
+    fail 'server metadata image IDs are incomplete'
+}
+
+test_deploy_rejects_digest_or_runtime_identity_mismatch() {
+  local variable
+  for variable in MOCK_BAD_REVISION_COMPONENT MOCK_BAD_REPODIGEST_COMPONENT MOCK_BAD_TAG_ID_COMPONENT MOCK_BAD_CONTAINER_ID_COMPONENT; do
+    new_case "deploy-identity-$variable"
+    write_runtime_env
+    input="$CASE_DIR/input"
+    write_gateway_input "$input"
+    if run_deploy "$input" env "$variable=gateway" > "$CASE_DIR/output" 2>&1; then
+      fail "gateway deploy accepted image identity mismatch: $variable"
+    fi
+    [[ ! -e "$METADATA_DIR/gateway.env" ]] || fail "identity mismatch wrote release metadata: $variable"
+  done
+}
+
 test_gateway_first_deploy_failure_stops_component() {
   new_case gateway-first-failure
   write_runtime_env
   input="$CASE_DIR/input"
-  printf 'acr-user\nPasswordSafe_123\n' > "$input"
+  write_gateway_input "$input"
   if MOCK_CURL_FAILURES=1 run_deploy "$input" env > "$CASE_DIR/output" 2>&1; then
     fail 'gateway deploy reported success after smoke failure'
   fi
@@ -463,7 +646,7 @@ test_gateway_old_version_rollback_is_verified() {
   new_case gateway-rollback
   write_runtime_env
   input="$CASE_DIR/input"
-  printf 'acr-user\nPasswordSafe_123\n' > "$input"
+  write_gateway_input "$input"
   if MOCK_GATEWAY_OLD=1 MOCK_CURL_FAILURES=1 run_deploy "$input" env > "$CASE_DIR/output" 2>&1; then
     fail 'gateway deploy hid the original smoke failure'
   fi
@@ -477,7 +660,7 @@ test_gateway_failed_rollback_is_not_reported_as_restored() {
   new_case gateway-rollback-failure
   write_runtime_env
   input="$CASE_DIR/input"
-  printf 'acr-user\nPasswordSafe_123\n' > "$input"
+  write_gateway_input "$input"
   if MOCK_GATEWAY_OLD=1 MOCK_CURL_FAILURES=2 run_deploy "$input" env > "$CASE_DIR/output" 2>&1; then
     fail 'gateway deploy reported success after deployment and rollback smoke failures'
   fi
@@ -491,7 +674,7 @@ test_server_first_deploy_health_failure_stops_components() {
   new_case server-first-health-failure
   write_runtime_env
   input="$CASE_DIR/input"
-  printf 'acr-user\nPasswordSafe_123\n' > "$input"
+  write_server_input "$input"
   if MOCK_FAIL_NEW_SERVER_HEALTH=1 run_server_deploy "$input" env > "$CASE_DIR/output" 2>&1; then
     fail 'server first deploy reported success after API health failure'
   fi
@@ -503,7 +686,7 @@ test_server_old_version_health_failure_rolls_back_and_verifies() {
   new_case server-old-health-failure
   write_runtime_env
   input="$CASE_DIR/input"
-  printf 'acr-user\nPasswordSafe_123\n' > "$input"
+  write_server_input "$input"
   if MOCK_SERVER_OLD=1 MOCK_FAIL_NEW_SERVER_HEALTH=1 run_server_deploy "$input" env > "$CASE_DIR/output" 2>&1; then
     fail 'server deploy hid the requested version health failure'
   fi
@@ -531,7 +714,7 @@ test_deploy_rejects_invalid_health_bounds_before_lock() {
     new_case "deploy-invalid-$i"
     write_runtime_env
     input="$CASE_DIR/input"
-    printf 'acr-user\nPasswordSafe_123\n' > "$input"
+    write_gateway_input "$input"
     if run_deploy "$input" env "$variable=$value" > "$CASE_DIR/output" 2>&1; then
       fail "deploy accepted invalid health bound: $variable=$value"
     fi
@@ -604,6 +787,8 @@ test_initialize_rejects_extra_dotenv_assignment
 test_deploy_framing_before_lock
 test_deploy_rejects_invalid_health_bounds_before_lock
 test_deploy_happy_metadata_and_cleanup
+test_server_digest_order_and_metadata
+test_deploy_rejects_digest_or_runtime_identity_mismatch
 test_gateway_first_deploy_failure_stops_component
 test_gateway_old_version_rollback_is_verified
 test_gateway_failed_rollback_is_not_reported_as_restored

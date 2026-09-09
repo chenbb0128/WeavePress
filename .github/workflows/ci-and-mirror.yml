@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: weavepress-ci-and-mirror-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   server:
     runs-on: ubuntu-latest
@@ -87,10 +91,13 @@ jobs:
         run: |
           docker pull ubuntu@sha256:0e0a0fc6d18feda9db1590da249ac93e8d5abfea8f4c3c0c849ce512b5ef8982
           docker image inspect ubuntu@sha256:0e0a0fc6d18feda9db1590da249ac93e8d5abfea8f4c3c0c849ce512b5ef8982 >/dev/null
+          docker pull nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+          docker image inspect nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10 >/dev/null
       - name: Production contract
         run: bash deploy/tests/production-contract.sh
 
   mirror:
+    if: github.ref == 'refs/heads/master'
     needs: [server, admin, web, production-contract]
     runs-on: ubuntu-latest
     steps:
@@ -115,6 +122,16 @@ jobs:
           NAS_USER: ${{ secrets.NAS_USER }}
         run: |
           set -Eeuo pipefail
+          test "$GITHUB_REF" = 'refs/heads/master'
+          head_sha="$(git rev-parse HEAD)"
+          test "$head_sha" = "$GITHUB_SHA"
+          origin_sha="$(git ls-remote origin refs/heads/master | awk 'NR == 1 { print $1 } END { if (NR != 1) exit 1 }')"
+          printf '%s' "$origin_sha" | grep -Eq '^[0-9a-f]{40}$'
+          test "$origin_sha" = "$GITHUB_SHA"
           export GIT_SSH_COMMAND="ssh -i ~/.ssh/nas_mirror_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
           git remote add nas "ssh://${NAS_USER}@${NAS_HOST}:${NAS_PORT}/volume1/docker/weavepress-git/WeavePress.git"
-          git push --force nas HEAD:refs/heads/master
+          nas_sha="$(git ls-remote nas refs/heads/master | awk 'NR == 1 { print $1 } END { if (NR > 1) exit 1 }')"
+          if [ -n "$nas_sha" ]; then
+            printf '%s' "$nas_sha" | grep -Eq '^[0-9a-f]{40}$'
+          fi
+          git push --force-with-lease="refs/heads/master:$nas_sha" nas HEAD:refs/heads/master

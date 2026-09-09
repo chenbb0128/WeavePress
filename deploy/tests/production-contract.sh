@@ -194,6 +194,10 @@ assert_gateway_contract() {
     'set[[:space:]]+\$weavepress_api[[:space:]]+' \
     'set[[:space:]]+\$weavepress_api[[:space:]]+http://weavepress-api:8080;' \
     'set $weavepress_api http://weavepress-api:8080;' 'server' || return 1
+  require_only_directive_in_block "$server_directives" \
+    'add_header[[:space:]]+X-WeavePress-Release[[:space:]]+' \
+    'add_header[[:space:]]+X-WeavePress-Release[[:space:]]+__WEAVEPRESS_APP_SHA__[[:space:]]+always;' \
+    'add_header X-WeavePress-Release __WEAVEPRESS_APP_SHA__ always;' 'server' || return 1
 
   assert_proxy_location "$gateway_file" 'location /api/' api || return 1
   assert_proxy_location "$gateway_file" 'location /media/' media || return 1
@@ -267,6 +271,7 @@ run_gateway_self_test() {
   local missing_resolver_mutant="$contract_temp_dir/missing-resolver.conf"
   local static_upstream_mutant="$contract_temp_dir/static-upstream.conf"
   local wrong_alias_mutant="$contract_temp_dir/wrong-alias.conf"
+  local missing_release_header_mutant="$contract_temp_dir/missing-release-header.conf"
 
   assert_gateway_contract "$gateway"
 
@@ -290,6 +295,9 @@ run_gateway_self_test() {
   mutate_location_literal "$gateway" 'server' \
     'set $weavepress_api http://weavepress-api:8080;' \
     $'set $weavepress_api http://weavepress-api:8080;\n    set $weavepress_api http://api:8080;' "$wrong_alias_mutant"
+  mutate_location_literal "$gateway" 'server' \
+    'add_header X-WeavePress-Release __WEAVEPRESS_APP_SHA__ always;' \
+    '# add_header X-WeavePress-Release __WEAVEPRESS_APP_SHA__ always;' "$missing_release_header_mutant"
 
   expect_gateway_rejection 'health proxy commented and upstream changed' "$health_mutant"
   expect_gateway_rejection 'metrics return commented and endpoint proxied' "$metrics_mutant"
@@ -298,6 +306,7 @@ run_gateway_self_test() {
   expect_gateway_rejection 'Docker DNS resolver removed' "$missing_resolver_mutant"
   expect_gateway_rejection 'variable upstream changed to static upstream' "$static_upstream_mutant"
   expect_gateway_rejection 'upstream variable changed to generic service alias' "$wrong_alias_mutant"
+  expect_gateway_rejection 'release header removed' "$missing_release_header_mutant"
 }
 
 require_script_literal() {
@@ -469,9 +478,17 @@ assert_production_script_contract() {
   require_script_literal "$deploy" '{{.State.Health.Status}}'
   require_script_literal "$deploy" '{{.State.Status}}'
   require_script_literal "$deploy" '{{.Config.Image}}'
+  require_script_literal "$deploy" '{{.Image}}'
+  require_script_literal "$deploy" '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
+  require_script_literal "$deploy" '{{range .RepoDigests}}{{println .}}{{end}}'
+  require_script_literal "$deploy" 'docker pull "$api_digest_ref"'
+  require_script_literal "$deploy" 'docker pull "$gateway_digest_ref"'
+  require_script_literal "$deploy" 'docker image tag "$digest_ref" "$tag_ref"'
+  require_script_literal "$deploy" 'API_IMAGE_DIGEST=%s'
+  require_script_literal "$deploy" 'GATEWAY_IMAGE_DIGEST=%s'
   require_script_literal "$deploy" '/var/lib/zdzq-deploy/weavepress'
   require_script_literal "$deploy" 'rollback_tag='
-  assert_before "$deploy" 'Gateway deployment requires a healthy weavepress-api' 'docker pull "$gateway_image"'
+  assert_before "$deploy" 'Gateway deployment requires a healthy weavepress-api' 'docker pull "$gateway_digest_ref"'
 
   require_script_literal "$entrypoint" 'SSH_ORIGINAL_COMMAND'
   require_script_literal "$entrypoint" '^[0-9a-f]{40}$'
@@ -605,9 +622,9 @@ case "${1:-}" in
     render_dev_compose_model "$dev_compose_model"
     "$python_bin" -B "$compose_contract" --dev "$dev_compose_model"
 
-    docker run --rm --add-host weavepress-api:127.0.0.1 \
+    docker run --rm --pull never --network none --add-host weavepress-api:127.0.0.1 \
       -v "$gateway:/etc/nginx/conf.d/default.conf:ro" \
-      nginx:1.27-alpine nginx -t
+      nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10 nginx -t
     ;;
   *)
     printf 'Unknown option: %s\n' "$1" >&2

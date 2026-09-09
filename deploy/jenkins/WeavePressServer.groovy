@@ -3,6 +3,7 @@ pipeline {
 
   options {
     timestamps()
+    timeout(time: 45, unit: 'MINUTES')
     disableConcurrentBuilds()
     skipDefaultCheckout(true)
     buildDiscarder(logRotator(numToKeepStr: '20'))
@@ -45,6 +46,8 @@ pipeline {
           git clone --no-checkout --branch master --single-branch "$NAS_REPO" source
           git -C source cat-file -e "$APP_SHA^{commit}"
           git -C source merge-base --is-ancestor "$APP_SHA" origin/master
+          master_sha="$(git -C source rev-parse origin/master)"
+          test "$master_sha" = "$APP_SHA"
           git -C source checkout --detach "$APP_SHA"
           actual_sha="$(git -C source rev-parse HEAD)"
           test "$actual_sha" = "$APP_SHA"
@@ -66,9 +69,9 @@ pipeline {
       steps {
         sh '''#!/usr/bin/env bash
           set -Eeuo pipefail
-          docker build -f source/server/deployments/Dockerfile --build-arg TARGET=api -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-api:$APP_SHA source/server
-          docker build -f source/server/deployments/Dockerfile --build-arg TARGET=worker -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-worker:$APP_SHA source/server
-          docker build -f source/server/deployments/Dockerfile --build-arg TARGET=migrate -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-migrate:$APP_SHA source/server
+          docker build -f source/server/deployments/Dockerfile --build-arg APP_SHA=$APP_SHA --build-arg TARGET=api -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-api:$APP_SHA source/server
+          docker build -f source/server/deployments/Dockerfile --build-arg APP_SHA=$APP_SHA --build-arg TARGET=worker -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-worker:$APP_SHA source/server
+          docker build -f source/server/deployments/Dockerfile --build-arg APP_SHA=$APP_SHA --build-arg TARGET=migrate -t registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-migrate:$APP_SHA source/server
           docker image inspect \
             "registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-api:$APP_SHA" \
             "registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-worker:$APP_SHA" \
@@ -98,20 +101,19 @@ pipeline {
             trap cleanup EXIT
             printf '%s\n' "$ACR_PASSWORD" | docker login --username "$ACR_USER" --password-stdin registry.cn-hangzhou.aliyuncs.com >/dev/null
             ACR_PASSWORD=''
-            push_image() {
-              local image="$1"
-              local attempt=1
-              until docker push "$image"; do
-                [ "$attempt" -lt 3 ] || return 1
-                sleep $((attempt * 10))
-                attempt=$((attempt + 1))
-              done
-            }
-            push_image "registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-api:$APP_SHA"
-            push_image "registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-worker:$APP_SHA"
-            push_image "registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-migrate:$APP_SHA"
+            mkdir -p manifest-digests
+            bash source/deploy/jenkins/publish-immutable-image.sh \
+              "registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-api:$APP_SHA" \
+              "$APP_SHA" manifest-digests/api.digest
+            bash source/deploy/jenkins/publish-immutable-image.sh \
+              "registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-worker:$APP_SHA" \
+              "$APP_SHA" manifest-digests/worker.digest
+            bash source/deploy/jenkins/publish-immutable-image.sh \
+              "registry.cn-hangzhou.aliyuncs.com/zdzq/weavepress-migrate:$APP_SHA" \
+              "$APP_SHA" manifest-digests/migrate.digest
           ''')
         }
+        archiveArtifacts artifacts: 'manifest-digests/*.digest', fingerprint: true
       }
     }
 
@@ -125,7 +127,15 @@ pipeline {
             sh '''#!/usr/bin/env bash
               set -Eeuo pipefail
               set +x
-              printf '%s\n%s\n' "$ACR_USER" "$ACR_PASSWORD" | ssh \
+              api_digest="$(<manifest-digests/api.digest)"
+              worker_digest="$(<manifest-digests/worker.digest)"
+              migrate_digest="$(<manifest-digests/migrate.digest)"
+              for digest in "$api_digest" "$worker_digest" "$migrate_digest"; do
+                printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+              done
+              printf '%s\n%s\n%s\n%s\n%s\n' \
+                "$ACR_USER" "$ACR_PASSWORD" \
+                "$api_digest" "$worker_digest" "$migrate_digest" | ssh \
                 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
                 -o UserKnownHostsFile=/var/jenkins_home/.ssh/known_hosts \
                 -o ServerAliveInterval=30 -o ServerAliveCountMax=30 \

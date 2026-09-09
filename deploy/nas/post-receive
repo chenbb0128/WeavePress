@@ -9,6 +9,7 @@ readonly JENKINS_URL="http://127.0.0.1:18080"
 readonly ENABLE_FILE="/volume1/docker/weavepress-git/.enable-auto-deploy"
 readonly SECRETS_DIR="/volume1/docker/weavepress-git/.secrets"
 readonly LOG_FILE="/volume1/docker/weavepress-git/post-receive.log"
+readonly LOCK_FILE="/volume1/docker/weavepress-git/post-receive.lock"
 readonly SERVER_JOB="WeavePress/WeavePressServer"
 readonly GATEWAY_JOB="WeavePress/WeavePressGateway"
 
@@ -41,29 +42,90 @@ read_secret() {
   printf '%s' "$value"
 }
 
-trigger_job() {
+curl_config_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '%s' "$value"
+}
+
+trigger_job() (
   local job_path="$1"
   local app_sha="$2"
   local folder="${job_path%%/*}"
   local job="${job_path#*/}"
-  local user token
+  local user token escaped_user escaped_token http_code header_line header_name header_value location queue_path
+  local curl_config=""
+  local curl_headers=""
+  local -a locations=()
+
+  cleanup_trigger() {
+    user=""
+    token=""
+    escaped_user=""
+    escaped_token=""
+    [[ -z "$curl_config" ]] || rm -f -- "$curl_config"
+    [[ -z "$curl_headers" ]] || rm -f -- "$curl_headers"
+  }
+  trap cleanup_trigger EXIT
 
   user="$(read_secret "$SECRETS_DIR/zdzq-hook-user" 'Jenkins user')"
   token="$(read_secret "$SECRETS_DIR/zdzq-hook-token" 'Jenkins token')"
-  curl --noproxy '*' --fail --silent --show-error \
-    --user "${user}:${token}" \
+  curl_config="$(mktemp "${TMPDIR:-/tmp}/weavepress-hook-curl.config.XXXXXX")" || \
+    die 'could not allocate Jenkins curl config'
+  curl_headers="$(mktemp "${TMPDIR:-/tmp}/weavepress-hook-curl.headers.XXXXXX")" || \
+    die 'could not allocate Jenkins response headers'
+  chmod 0600 "$curl_config" "$curl_headers"
+  escaped_user="$(curl_config_escape "$user")"
+  escaped_token="$(curl_config_escape "$token")"
+  printf 'user = "%s:%s"\n' "$escaped_user" "$escaped_token" > "$curl_config"
+  user=""
+  token=""
+  escaped_user=""
+  escaped_token=""
+
+  if ! http_code="$(curl --config "$curl_config" \
+    --noproxy '*' --silent --show-error \
     --request POST \
+    --max-redirs 0 \
+    --connect-timeout 5 \
+    --max-time 20 \
+    --dump-header "$curl_headers" \
+    --output /dev/null \
+    --write-out '%{http_code}' \
     --data-urlencode "BRANCH=master" \
     --data-urlencode "APP_SHA=${app_sha}" \
     --data-urlencode "PUSH_ACR=true" \
     --data-urlencode "DEPLOY=true" \
     --data-urlencode "TRIGGER_REPO=nas-hook" \
-    "${JENKINS_URL}/job/${folder}/job/${job}/buildWithParameters" >/dev/null || \
+    "${JENKINS_URL}/job/${folder}/job/${job}/buildWithParameters")"; then
     die "Jenkins dispatch failed for ${job_path} at ${app_sha}"
-  user=""
-  token=""
+  fi
+  [[ "$http_code" == 201 ]] || \
+    die "Jenkins dispatch returned HTTP ${http_code} for ${job_path} at ${app_sha}"
+
+  while IFS= read -r header_line; do
+    header_line="${header_line%$'\r'}"
+    [[ "$header_line" == *:* ]] || continue
+    header_name="${header_line%%:*}"
+    [[ "${header_name,,}" == location ]] || continue
+    header_value="${header_line#*:}"
+    header_value="${header_value#"${header_value%%[![:space:]]*}"}"
+    header_value="${header_value%"${header_value##*[![:space:]]}"}"
+    locations+=("$header_value")
+  done < "$curl_headers"
+  [[ "${#locations[@]}" -eq 1 ]] || \
+    die "Jenkins response must contain exactly one Location header for ${job_path} at ${app_sha}"
+  location="${locations[0]}"
+  if [[ "$location" == "$JENKINS_URL/"* ]]; then
+    queue_path="/${location#"$JENKINS_URL/"}"
+  else
+    queue_path="$location"
+  fi
+  [[ "$queue_path" =~ ^/queue/item/[0-9]+/$ ]] || \
+    die "Jenkins response contained an invalid Location header for ${job_path} at ${app_sha}"
   log "Dispatched ${job_path} at ${app_sha}"
-}
+)
 
 master_seen=false
 oldrev=""
@@ -89,6 +151,16 @@ fi
 
 if [[ ! -f "$ENABLE_FILE" ]]; then
   log "Mirrored master at ${newrev}; automatic deployment remains disabled"
+  exit 0
+fi
+
+exec 9>>"$LOCK_FILE"
+flock -w 30 9 || die 'another WeavePress post-receive hook still holds the lock'
+live_master="$(git rev-parse --verify "$MASTER_REF" 2>/dev/null)" || \
+  die 'could not resolve live master revision'
+[[ "$live_master" =~ ^[0-9a-f]{40}$ ]] || die 'live master revision is invalid'
+if [[ "$live_master" != "$newrev" ]]; then
+  log "Skipped stale master receive at ${newrev}; live master is ${live_master}"
   exit 0
 fi
 
@@ -125,5 +197,18 @@ if [[ "$server_changed" == false && "$gateway_changed" == false ]]; then
   exit 0
 fi
 
+live_master="$(git rev-parse --verify "$MASTER_REF" 2>/dev/null)" || \
+  die 'could not recheck live master revision before dispatch'
+if [[ "$live_master" != "$newrev" ]]; then
+  log "Skipped stale master receive at ${newrev}; live master advanced before dispatch"
+  exit 0
+fi
+
 [[ "$server_changed" == false ]] || trigger_job "$SERVER_JOB" "$newrev"
-[[ "$gateway_changed" == false ]] || trigger_job "$GATEWAY_JOB" "$newrev"
+if [[ "$gateway_changed" == true ]]; then
+  live_master="$(git rev-parse --verify "$MASTER_REF" 2>/dev/null)" || \
+    die 'could not recheck live master revision before Gateway dispatch'
+  [[ "$live_master" == "$newrev" ]] || \
+    die 'live master advanced during Jenkins dispatch; Gateway was not enqueued'
+  trigger_job "$GATEWAY_JOB" "$newrev"
+fi

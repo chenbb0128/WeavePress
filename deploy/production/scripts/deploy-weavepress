@@ -58,28 +58,60 @@ read_bounded_line() {
 
 read_bounded_line acr_username 256 'ACR username on stdin line 1'
 read_bounded_line acr_password 4096 'ACR password on stdin line 2'
+case "$component" in
+  server)
+    read_bounded_line api_digest 71 'API manifest digest on stdin line 3'
+    read_bounded_line worker_digest 71 'Worker manifest digest on stdin line 4'
+    read_bounded_line migrate_digest 71 'Migrate manifest digest on stdin line 5'
+    expected_input_lines=5
+    ;;
+  gateway)
+    read_bounded_line gateway_digest 71 'Gateway manifest digest on stdin line 3'
+    expected_input_lines=3
+    ;;
+esac
 extra_line=""
 if IFS= read -r -t "$INPUT_TIMEOUT" -n 1 extra_line; then
-  die 'expected exactly two stdin lines'
+  die "expected exactly ${expected_input_lines} stdin lines"
 else
   extra_status=$?
 fi
-[[ "$extra_status" -le 128 ]] || die 'timed out waiting for stdin to close after line 2'
-[[ -z "$extra_line" ]] || die 'expected exactly two stdin lines'
+[[ "$extra_status" -le 128 ]] || \
+  die "timed out waiting for stdin to close after line ${expected_input_lines}"
+[[ -z "$extra_line" ]] || die "expected exactly ${expected_input_lines} stdin lines"
 [[ -n "$acr_username" && -n "$acr_password" ]] || die 'ACR credentials must not be empty'
 for credential in "$acr_username" "$acr_password"; do
   if LC_ALL=C grep -q '[[:cntrl:]]' < <(printf '%s' "$credential"); then
     die 'ACR credentials contain control characters'
   fi
 done
+case "$component" in
+  server) received_digests=("$api_digest" "$worker_digest" "$migrate_digest") ;;
+  gateway) received_digests=("$gateway_digest") ;;
+esac
+for digest in "${received_digests[@]}"; do
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die 'manifest digest must be sha256 followed by 64 lowercase hex characters'
+done
 
 exec 9>"$LOCK_FILE"
 flock -w 1800 9 || die 'another WeavePress deployment still holds the lock'
 
-api_image="$REPOSITORY/weavepress-api:$app_sha"
-worker_image="$REPOSITORY/weavepress-worker:$app_sha"
-migrate_image="$REPOSITORY/weavepress-migrate:$app_sha"
-gateway_image="$REPOSITORY/weavepress-gateway:$app_sha"
+api_repository="$REPOSITORY/weavepress-api"
+worker_repository="$REPOSITORY/weavepress-worker"
+migrate_repository="$REPOSITORY/weavepress-migrate"
+gateway_repository="$REPOSITORY/weavepress-gateway"
+api_image="$api_repository:$app_sha"
+worker_image="$worker_repository:$app_sha"
+migrate_image="$migrate_repository:$app_sha"
+gateway_image="$gateway_repository:$app_sha"
+api_digest_ref="${api_repository}@${api_digest:-sha256:unset}"
+worker_digest_ref="${worker_repository}@${worker_digest:-sha256:unset}"
+migrate_digest_ref="${migrate_repository}@${migrate_digest:-sha256:unset}"
+gateway_digest_ref="${gateway_repository}@${gateway_digest:-sha256:unset}"
+api_image_id=""
+worker_image_id=""
+migrate_image_id=""
+gateway_image_id=""
 old_api_id=""
 old_worker_id=""
 old_gateway_id=""
@@ -109,10 +141,46 @@ capture_previous_container() {
 
 container_image_matches() {
   local container="$1"
-  local expected="$2"
-  local actual
-  actual="$(docker inspect --format '{{.Config.Image}}' "$container" 2>/dev/null || true)"
-  [[ "$actual" == "$expected" ]]
+  local expected_reference="$2"
+  local expected_id="$3"
+  local actual_reference actual_id
+  actual_reference="$(docker inspect --format '{{.Config.Image}}' "$container" 2>/dev/null || true)"
+  actual_id="$(docker inspect --format '{{.Image}}' "$container" 2>/dev/null || true)"
+  [[ "$actual_reference" == "$expected_reference" && "$actual_id" == "$expected_id" ]]
+}
+
+pulled_repo_digest_matches() {
+  local reference="$1"
+  local repository="$2"
+  local expected_digest="$3"
+  local candidate=""
+  local matches=0
+  while IFS= read -r candidate; do
+    if [[ "$candidate" == "$repository@$expected_digest" ]]; then
+      matches=$((matches + 1))
+    fi
+  done < <(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$reference")
+  [[ "$matches" -eq 1 ]]
+}
+
+bind_pulled_image() {
+  local digest_ref="$1"
+  local repository="$2"
+  local expected_digest="$3"
+  local tag_ref="$4"
+  local id_variable="$5"
+  local revision image_id tagged_id
+  revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$digest_ref")" || \
+    die 'could not inspect pulled image revision label'
+  [[ "$revision" == "$app_sha" ]] || die 'pulled image revision label does not match APP_SHA'
+  pulled_repo_digest_matches "$digest_ref" "$repository" "$expected_digest" || \
+    die 'pulled image RepoDigest does not match the Jenkins manifest digest'
+  image_id="$(docker image inspect --format '{{.Id}}' "$digest_ref")" || die 'could not inspect pulled image ID'
+  [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die 'pulled image ID is invalid'
+  docker image tag "$digest_ref" "$tag_ref"
+  tagged_id="$(docker image inspect --format '{{.Id}}' "$tag_ref")" || die 'could not inspect tagged image ID'
+  [[ "$tagged_id" == "$image_id" ]] || die 'SHA tag does not reference the pulled manifest image'
+  printf -v "$id_variable" '%s' "$image_id"
 }
 
 smoke_gateway() {
@@ -143,8 +211,8 @@ rollback_application() {
       APP_SHA="$rollback_tag" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
         up -d --no-build --force-recreate --no-deps api worker || return 1
       wait_for_server || return 1
-      container_image_matches weavepress-api "$REPOSITORY/weavepress-api:$rollback_tag" || return 1
-      container_image_matches weavepress-worker "$REPOSITORY/weavepress-worker:$rollback_tag" || return 1
+      container_image_matches weavepress-api "$REPOSITORY/weavepress-api:$rollback_tag" "$old_api_id" || return 1
+      container_image_matches weavepress-worker "$REPOSITORY/weavepress-worker:$rollback_tag" "$old_worker_id" || return 1
       ;;
     gateway)
       if [[ "$gateway_existed" -ne 1 || -z "$old_gateway_id" ]]; then
@@ -154,7 +222,7 @@ rollback_application() {
       docker image tag "$old_gateway_id" "$REPOSITORY/weavepress-gateway:$rollback_tag" || return 1
       APP_SHA="$rollback_tag" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
         up -d --no-build --force-recreate --no-deps gateway || return 1
-      container_image_matches weavepress-gateway "$REPOSITORY/weavepress-gateway:$rollback_tag" || return 1
+      container_image_matches weavepress-gateway "$REPOSITORY/weavepress-gateway:$rollback_tag" "$old_gateway_id" || return 1
       smoke_gateway || return 1
       ;;
   esac
@@ -232,8 +300,13 @@ write_metadata() {
     printf 'APP_SHA=%s\n' "$app_sha"
     if [[ "$component" == "server" ]]; then
       printf 'API_IMAGE=%s\nWORKER_IMAGE=%s\nMIGRATE_IMAGE=%s\n' "$api_image" "$worker_image" "$migrate_image"
+      printf 'API_IMAGE_DIGEST=%s\nWORKER_IMAGE_DIGEST=%s\nMIGRATE_IMAGE_DIGEST=%s\n' \
+        "$api_digest" "$worker_digest" "$migrate_digest"
+      printf 'API_IMAGE_ID=%s\nWORKER_IMAGE_ID=%s\nMIGRATE_IMAGE_ID=%s\n' \
+        "$api_image_id" "$worker_image_id" "$migrate_image_id"
     else
       printf 'GATEWAY_IMAGE=%s\n' "$gateway_image"
+      printf 'GATEWAY_IMAGE_DIGEST=%s\nGATEWAY_IMAGE_ID=%s\n' "$gateway_digest" "$gateway_image_id"
     fi
     printf 'DEPLOYED_AT=%s\n' "$deployed_at"
   } > "$metadata_temp"
@@ -247,25 +320,29 @@ case "$component" in
   server)
     capture_previous_container weavepress-api old_api_id api_existed
     capture_previous_container weavepress-worker old_worker_id worker_existed
-    docker pull "$api_image"
-    docker pull "$worker_image"
-    docker pull "$migrate_image"
+    docker pull "$api_digest_ref" >/dev/null 2>&1 || die 'could not pull API manifest digest'
+    bind_pulled_image "$api_digest_ref" "$api_repository" "$api_digest" "$api_image" api_image_id
+    docker pull "$worker_digest_ref" >/dev/null 2>&1 || die 'could not pull Worker manifest digest'
+    bind_pulled_image "$worker_digest_ref" "$worker_repository" "$worker_digest" "$worker_image" worker_image_id
+    docker pull "$migrate_digest_ref" >/dev/null 2>&1 || die 'could not pull Migrate manifest digest'
+    bind_pulled_image "$migrate_digest_ref" "$migrate_repository" "$migrate_digest" "$migrate_image" migrate_image_id
     backup_database_if_populated
     compose --profile migrate run --rm migrate
     switched=1
     compose up -d --no-build --force-recreate --no-deps api worker
     wait_for_server || die 'API did not become healthy with a running Worker before the deadline'
-    container_image_matches weavepress-api "$api_image" || die 'weavepress-api is not running the requested immutable image'
-    container_image_matches weavepress-worker "$worker_image" || die 'weavepress-worker is not running the requested immutable image'
+    container_image_matches weavepress-api "$api_image" "$api_image_id" || die 'weavepress-api is not running the requested immutable image'
+    container_image_matches weavepress-worker "$worker_image" "$worker_image_id" || die 'weavepress-worker is not running the requested immutable image'
     ;;
   gateway)
     require_api_healthy
     capture_previous_container weavepress-gateway old_gateway_id gateway_existed
-    docker pull "$gateway_image"
+    docker pull "$gateway_digest_ref" >/dev/null 2>&1 || die 'could not pull Gateway manifest digest'
+    bind_pulled_image "$gateway_digest_ref" "$gateway_repository" "$gateway_digest" "$gateway_image" gateway_image_id
     switched=1
     compose up -d --no-build --force-recreate --no-deps gateway
     smoke_gateway
-    container_image_matches weavepress-gateway "$gateway_image" || die 'weavepress-gateway is not running the requested immutable image'
+    container_image_matches weavepress-gateway "$gateway_image" "$gateway_image_id" || die 'weavepress-gateway is not running the requested immutable image'
     ;;
 esac
 
