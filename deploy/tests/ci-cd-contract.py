@@ -746,6 +746,14 @@ def assert_jobs() -> None:
         fail(f"{JOBS.relative_to(ROOT)} does not match the exact Jenkins job catalog")
 
 
+def assert_declarative_linter() -> None:
+    text = read_required(DECLARATIVE_LINTER)
+    context = str(DECLARATIVE_LINTER.relative_to(ROOT))
+    require(text, "--noproxy '*'", context)
+    require(text, '--form "jenkinsfile=<', context)
+    reject(text, r'--form\s+["\']jenkinsfile=@', context)
+
+
 def assert_groovy_structure(path: Path) -> None:
     text = read_required(path)
     context = str(path.relative_to(ROOT))
@@ -841,6 +849,7 @@ def main() -> int:
         assert_sync_pipeline(component, path)
     assert_image_release_contract()
     assert_jobs()
+    assert_declarative_linter()
     assert_no_placeholders_or_secret_literals()
     assert_comment_bypass_mutations()
     print("CI/CD structural contract passed.")

@@ -40,9 +40,9 @@ for pipeline in \
   GatewaySyncGitHubAndDeploy.groovy
 do
   : > "$response"
-  http_code="$(curl --config "$curl_config" --silent --show-error --max-redirs 0 \
+  http_code="$(curl --config "$curl_config" --noproxy '*' --silent --show-error --max-redirs 0 \
     --connect-timeout 5 --max-time 30 --output "$response" --write-out '%{http_code}' \
-    --form "jenkinsfile=@$script_dir/$pipeline;type=text/plain" \
+    --form "jenkinsfile=<$script_dir/$pipeline;type=text/plain" \
     "$jenkins_url/pipeline-model-converter/validate")" || die "Jenkins linter request failed for ${pipeline}"
   [[ "$http_code" == 200 ]] || die "Jenkins linter returned HTTP ${http_code} for ${pipeline}"
   [[ "$(<"$response")" == 'Jenkinsfile successfully validated.' ]] || \
