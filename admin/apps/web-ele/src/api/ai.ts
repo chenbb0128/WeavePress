@@ -82,6 +82,7 @@ export interface AIJob {
   articleId: number;
   attempts: number;
   createdAt: string;
+  draftId?: null | number;
   errorCode?: string;
   errorMessage?: string;
   events?: AIJobEvent[];

@@ -176,6 +176,20 @@ func (s *AIStore) GetJob(ctx context.Context, id uint64, withDetails bool) (aiwr
 	if !withDetails {
 		return job, nil
 	}
+	if job.Type == aiwriting.JobTypeGeneration {
+		var draftID sql.NullInt64
+		err = s.db.QueryRowContext(ctx, `SELECT draft_id FROM ai_generations WHERE job_id = ?`, job.ID).Scan(&draftID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return job, workspace.ErrNotFound
+		}
+		if err != nil {
+			return job, err
+		}
+		if draftID.Valid {
+			value := uint64(draftID.Int64)
+			job.DraftID = &value
+		}
+	}
 	article, err := New(s.db).GetArticle(ctx, job.ArticleID)
 	if err != nil {
 		return job, err

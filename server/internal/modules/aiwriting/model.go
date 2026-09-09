@@ -146,6 +146,7 @@ type Job struct {
 	Type             string   `json:"type"`
 	ArticleID        uint64   `json:"articleId"`
 	ParentJobID      *uint64  `json:"parentJobId,omitempty"`
+	DraftID          *uint64  `json:"draftId,omitempty"`
 	RequestedBy      uint64   `json:"requestedBy"`
 	Status           string   `json:"status"`
 	Attempts         uint     `json:"attempts"`

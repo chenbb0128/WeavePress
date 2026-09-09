@@ -390,6 +390,63 @@ func TestAIGetAndRetryRoutes(t *testing.T) {
 	}
 }
 
+func TestGetAIJobDraftIDContract(t *testing.T) {
+	draftID := uint64(77)
+	tests := []struct {
+		name        string
+		job         aiwriting.Job
+		wantDraftID bool
+	}{
+		{
+			name: "completed generation includes draft ID",
+			job: aiwriting.Job{
+				ID:               23,
+				Type:             aiwriting.JobTypeGeneration,
+				Status:           aiwriting.JobCompleted,
+				DraftID:          &draftID,
+				InputFingerprint: [32]byte{1},
+			},
+			wantDraftID: true,
+		},
+		{
+			name: "queued generation omits draft ID",
+			job: aiwriting.Job{
+				ID:               23,
+				Type:             aiwriting.JobTypeGeneration,
+				Status:           aiwriting.JobQueued,
+				InputFingerprint: [32]byte{1},
+			},
+		},
+		{
+			name: "analysis omits draft ID",
+			job: aiwriting.Job{
+				ID:               23,
+				Type:             aiwriting.JobTypeAnalysis,
+				Status:           aiwriting.JobCompleted,
+				InputFingerprint: [32]byte{1},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeAIService{job: tt.job}
+			api, token := newAITestAPI(t, fake, workspace.RoleEditor)
+			recorder := performRequest(t, api, http.MethodGet, "/api/ai-jobs/23", "", token)
+			assertStatus(t, recorder, http.StatusOK)
+			body := recorder.Body.String()
+			if got := strings.Contains(body, `"draftId"`); got != tt.wantDraftID {
+				t.Fatalf("draftId presence = %v, want %v; body=%s", got, tt.wantDraftID, body)
+			}
+			if tt.wantDraftID && !strings.Contains(body, `"draftId":77`) {
+				t.Fatalf("response missing expected draft ID: %s", body)
+			}
+			if strings.Contains(body, "inputFingerprint") {
+				t.Fatalf("response leaked input fingerprint: %s", body)
+			}
+		})
+	}
+}
+
 func TestRetryAIJobDisabledReturnsSafe503(t *testing.T) {
 	fake := &fakeAIService{err: aiwriting.ErrNotConfigured}
 	api, token := newAITestAPI(t, fake, workspace.RoleEditor)

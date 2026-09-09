@@ -501,7 +501,7 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if completedAnalysisJob.Status != aiwriting.JobCompleted || completedAnalysisJob.Attempts != 2 || completedAnalysisJob.TotalTokens != 130 || completedAnalysisJob.Article == nil || len(completedAnalysisJob.Events) != 4 {
+	if completedAnalysisJob.Status != aiwriting.JobCompleted || completedAnalysisJob.Attempts != 2 || completedAnalysisJob.TotalTokens != 130 || completedAnalysisJob.DraftID != nil || completedAnalysisJob.Article == nil || len(completedAnalysisJob.Events) != 4 {
 		t.Fatalf("completed analysis job = %#v", completedAnalysisJob)
 	}
 	if err := aiStore.SetJobRunning(ctx, analysisJob.ID); err != nil {
@@ -528,6 +528,10 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 	generation, generationJob, reused, err := aiStore.CreateGenerationJob(ctx, generationInput)
 	if err != nil || reused {
 		t.Fatalf("create generation=%#v job=%#v reused=%v err=%v", generation, generationJob, reused, err)
+	}
+	pendingGenerationJob, err := aiStore.GetJob(ctx, generationJob.ID, true)
+	if err != nil || pendingGenerationJob.DraftID != nil {
+		t.Fatalf("pending generation job=%#v err=%v", pendingGenerationJob, err)
 	}
 	sameGeneration, sameGenerationJob, reused, err := aiStore.CreateGenerationJob(ctx, generationInput)
 	if err != nil || !reused || sameGeneration.ID != generation.ID || sameGenerationJob.ID != generationJob.ID {
@@ -579,6 +583,12 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 	if err != nil || reused || otherGeneration.ID == generation.ID || otherJob.ID == generationJob.ID {
 		t.Fatalf("other user generation=%#v job=%#v reused=%v err=%v", otherGeneration, otherJob, reused, err)
 	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM ai_generations WHERE id = ?`, otherGeneration.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := aiStore.GetJob(ctx, otherJob.ID, true); !errors.Is(err, workspace.ErrNotFound) {
+		t.Fatalf("generation job without placeholder error=%v", err)
+	}
 
 	if err := aiStore.SetJobRunning(ctx, generationJob.ID); err != nil {
 		t.Fatal(err)
@@ -602,6 +612,10 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 		t.Fatalf("completed generation roundtrip = %#v", completedGeneration)
 	}
 	draftID := *completedGeneration.DraftID
+	completedGenerationJob, err := aiStore.GetJob(ctx, generationJob.ID, true)
+	if err != nil || completedGenerationJob.DraftID == nil || *completedGenerationJob.DraftID != draftID {
+		t.Fatalf("completed generation job=%#v err=%v", completedGenerationJob, err)
+	}
 	var draftStatus, draftAuthor string
 	var draftCover sql.NullInt64
 	if err := db.QueryRowContext(ctx, `SELECT status, author, cover_asset_id FROM drafts WHERE id = ?`, draftID).Scan(&draftStatus, &draftAuthor, &draftCover); err != nil {

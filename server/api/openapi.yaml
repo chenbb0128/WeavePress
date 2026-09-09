@@ -564,6 +564,7 @@ components:
             type: { $ref: "#/components/schemas/AIJobType" }
             articleId: { type: integer, format: int64, minimum: 1 }
             parentJobId: { type: integer, format: int64, minimum: 1, nullable: true }
+            draftId: { type: integer, format: int64, minimum: 1, nullable: true }
             requestedBy: { type: integer, format: int64, minimum: 1 }
             status: { $ref: "#/components/schemas/AIJobStatus" }
             attempts: { type: integer, minimum: 0 }
