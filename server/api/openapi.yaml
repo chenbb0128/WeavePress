@@ -223,6 +223,7 @@ paths:
   /api/ai/status:
     get:
       summary: AI 采编配置状态
+      operationId: getAIStatus
       security: [ { bearerAuth: [] } ]
       responses:
         "200":
@@ -235,6 +236,7 @@ paths:
     parameters: [ { $ref: "#/components/parameters/ID" } ]
     post:
       summary: 为来源文章创建 AI 分析任务
+      operationId: startAIAnalysis
       security: [ { bearerAuth: [] } ]
       requestBody:
         required: true
@@ -254,6 +256,7 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
     get:
       summary: 来源文章的 AI 分析列表
+      operationId: listAIAnalyses
       security: [ { bearerAuth: [] } ]
       parameters: [ { $ref: "#/components/parameters/Page" }, { $ref: "#/components/parameters/PageSize" } ]
       responses:
@@ -269,6 +272,7 @@ paths:
   /api/ai-analyses/{id}:
     get:
       summary: AI 分析详情
+      operationId: getAIAnalysis
       security: [ { bearerAuth: [] } ]
       parameters: [ { $ref: "#/components/parameters/ID" } ]
       responses:
@@ -283,6 +287,7 @@ paths:
   /api/ai-analyses/{id}/generations:
     post:
       summary: 基于 AI 分析创建采编稿件生成任务
+      operationId: startAIGeneration
       security: [ { bearerAuth: [] } ]
       parameters: [ { $ref: "#/components/parameters/ID" } ]
       requestBody:
@@ -304,6 +309,7 @@ paths:
   /api/ai-generations/{id}:
     get:
       summary: AI 生成结果详情
+      operationId: getAIGeneration
       security: [ { bearerAuth: [] } ]
       parameters: [ { $ref: "#/components/parameters/ID" } ]
       responses:
@@ -318,6 +324,7 @@ paths:
   /api/ai-jobs:
     get:
       summary: AI 任务列表
+      operationId: listAIJobs
       security: [ { bearerAuth: [] } ]
       parameters:
         - { $ref: "#/components/parameters/Page" }
@@ -337,6 +344,7 @@ paths:
   /api/ai-jobs/{id}:
     get:
       summary: AI 任务详情（含来源文章和状态事件）
+      operationId: getAIJob
       security: [ { bearerAuth: [] } ]
       parameters: [ { $ref: "#/components/parameters/ID" } ]
       responses:
@@ -351,6 +359,7 @@ paths:
   /api/ai-jobs/{id}/retry:
     post:
       summary: 手动重试失败的 AI 任务
+      operationId: retryAIJob
       security: [ { bearerAuth: [] } ]
       parameters: [ { $ref: "#/components/parameters/ID" } ]
       responses:

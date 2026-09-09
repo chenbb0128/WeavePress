@@ -89,6 +89,9 @@ func (s *Service) Status() Status {
 }
 
 func (s *Service) Analyses(ctx context.Context, articleID uint64, page, pageSize int) (Page[Analysis], error) {
+	if _, err := s.articles.GetArticle(ctx, articleID); err != nil {
+		return Page[Analysis]{}, err
+	}
 	return s.store.ListAnalyses(ctx, articleID, page, pageSize)
 }
 
@@ -163,6 +166,9 @@ func (s *Service) Jobs(ctx context.Context, filter JobFilter, page, pageSize int
 }
 
 func (s *Service) Retry(ctx context.Context, jobID, userID uint64) (Job, error) {
+	if !s.cfg.Enabled {
+		return Job{}, ErrNotConfigured
+	}
 	job, err := s.store.RetryJob(ctx, jobID, userID)
 	if err != nil {
 		return Job{}, err

@@ -30,6 +30,7 @@ type fakeAIStore struct {
 	setRunningCalls         int
 	analysis                Analysis
 	analysesPage            Page[Analysis]
+	listAnalysesCalls       int
 	generation              Generation
 	jobsPage                Page[Job]
 	createGenerationCalls   int
@@ -39,6 +40,7 @@ type fakeAIStore struct {
 	failureErr              error
 	retryJob                Job
 	retryErr                error
+	retryCalls              int
 	setRunningErr           error
 	completeAnalysisCalls   int
 	completedAnalysis       AnalysisOutput
@@ -79,6 +81,7 @@ func (s *fakeAIStore) ListJobs(context.Context, JobFilter, int, int) (Page[Job],
 }
 func (s *fakeAIStore) GetAnalysis(context.Context, uint64) (Analysis, error) { return s.analysis, nil }
 func (s *fakeAIStore) ListAnalyses(context.Context, uint64, int, int) (Page[Analysis], error) {
+	s.listAnalysesCalls++
 	return s.analysesPage, nil
 }
 func (s *fakeAIStore) GetGeneration(context.Context, uint64) (Generation, error) {
@@ -123,18 +126,21 @@ func (s *fakeAIStore) AddJobEvent(_ context.Context, jobID uint64, status, messa
 	return nil
 }
 func (s *fakeAIStore) RetryJob(context.Context, uint64, uint64) (Job, error) {
+	s.retryCalls++
 	return s.retryJob, s.retryErr
 }
 
 type fakeAIArticles struct {
 	article  workspace.Article
 	err      error
+	calls    int
 	assets   map[uint64]workspace.Asset
 	assetIDs []uint64
 	assetErr error
 }
 
 func (s *fakeAIArticles) GetArticle(context.Context, uint64) (workspace.Article, error) {
+	s.calls++
 	return s.article, s.err
 }
 
@@ -566,6 +572,22 @@ func TestRetryOnlyRequeuesRetryableFailedJob(t *testing.T) {
 	}
 }
 
+func TestRetryDisabledDoesNotUseStoreOrQueue(t *testing.T) {
+	store := &fakeAIStore{}
+	queue := &fakeAIEnqueuer{}
+	cfg := testAIConfig()
+	cfg.Enabled = false
+	service := New(store, &fakeAIArticles{}, queue, nil, cfg)
+
+	_, err := service.Retry(context.Background(), 7, 5)
+	if !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("Retry() error = %v, want %v", err, ErrNotConfigured)
+	}
+	if store.retryCalls != 0 || queue.calls != 0 {
+		t.Fatalf("RetryJob calls=%d enqueue calls=%d, want both 0", store.retryCalls, queue.calls)
+	}
+}
+
 func TestServiceReadMethodsDelegateToStore(t *testing.T) {
 	store := &fakeAIStore{
 		analysis:     Analysis{ID: 3},
@@ -593,6 +615,36 @@ func TestServiceReadMethodsDelegateToStore(t *testing.T) {
 	if got, _ := service.Jobs(context.Background(), JobFilter{}, 1, 20); got.Total != 2 {
 		t.Fatalf("Jobs() = %#v", got)
 	}
+}
+
+func TestAnalysesRequiresExistingArticle(t *testing.T) {
+	t.Run("missing article", func(t *testing.T) {
+		store := &fakeAIStore{}
+		articles := &fakeAIArticles{err: workspace.ErrNotFound}
+		service := New(store, articles, nil, nil, testAIConfig())
+
+		_, err := service.Analyses(context.Background(), 12, 1, 20)
+		if !errors.Is(err, workspace.ErrNotFound) {
+			t.Fatalf("Analyses() error = %v, want %v", err, workspace.ErrNotFound)
+		}
+		if articles.calls != 1 || store.listAnalysesCalls != 0 {
+			t.Fatalf("GetArticle calls=%d ListAnalyses calls=%d, want 1 and 0", articles.calls, store.listAnalysesCalls)
+		}
+	})
+
+	t.Run("existing article with empty page", func(t *testing.T) {
+		store := &fakeAIStore{analysesPage: Page[Analysis]{Items: []Analysis{}, Page: 1, PageSize: 20}}
+		articles := &fakeAIArticles{article: workspace.Article{ID: 12}}
+		service := New(store, articles, nil, nil, testAIConfig())
+
+		page, err := service.Analyses(context.Background(), 12, 1, 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if articles.calls != 1 || store.listAnalysesCalls != 1 || len(page.Items) != 0 {
+			t.Fatalf("GetArticle calls=%d ListAnalyses calls=%d page=%#v", articles.calls, store.listAnalysesCalls, page)
+		}
+	})
 }
 
 func TestHandleAnalyzeTaskRepairsInvalidJSONOnceAndAccumulatesUsage(t *testing.T) {

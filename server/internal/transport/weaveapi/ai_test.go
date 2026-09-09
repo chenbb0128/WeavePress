@@ -346,6 +346,26 @@ func TestAIGetAndRetryRoutes(t *testing.T) {
 	}
 }
 
+func TestRetryAIJobDisabledReturnsSafe503(t *testing.T) {
+	fake := &fakeAIService{err: aiwriting.ErrNotConfigured}
+	api, token := newAITestAPI(t, fake, workspace.RoleEditor)
+	recorder := performRequest(t, api, http.MethodPost, "/api/ai-jobs/24/retry", "", token)
+	assertStatus(t, recorder, http.StatusServiceUnavailable)
+	if fake.call != "retry" || strings.Contains(recorder.Body.String(), aiwriting.ErrNotConfigured.Error()) {
+		t.Fatalf("call=%q unsafe body=%s", fake.call, recorder.Body.String())
+	}
+}
+
+func TestListAIAnalysesMissingArticleReturns404(t *testing.T) {
+	fake := &fakeAIService{err: workspace.ErrNotFound}
+	api, token := newAITestAPI(t, fake, workspace.RoleEditor)
+	recorder := performRequest(t, api, http.MethodGet, "/api/articles/99/ai-analyses", "", token)
+	assertStatus(t, recorder, http.StatusNotFound)
+	if fake.call != "analyses" || fake.articleID != 99 {
+		t.Fatalf("captured fake = %#v", fake)
+	}
+}
+
 func TestAIErrorMappingIsSafe(t *testing.T) {
 	tests := []struct {
 		name   string

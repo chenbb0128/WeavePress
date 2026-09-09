@@ -94,7 +94,8 @@ services:
       args:
         TARGET: worker
     environment:
-      WEAVEPRESS_DATABASE_ENABLED: "false"
+      WEAVEPRESS_DATABASE_ENABLED: "true"
+      WEAVEPRESS_DATABASE_DSN: weavepress:weavepress_pass@tcp(mysql:3306)/weavepress
       WEAVEPRESS_REDIS_ENABLED: "true"
       WEAVEPRESS_REDIS_ADDR: redis:6379
       WEAVEPRESS_REDIS_KEY_PREFIX: weavepress:compose
@@ -114,8 +115,12 @@ services:
       WEAVEPRESS_AI_MAX_OUTPUT_TOKENS: "6000"
       WEAVEPRESS_AI_TEMPERATURE: "0.4"
     depends_on:
+      mysql:
+        condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   mysql_data:
