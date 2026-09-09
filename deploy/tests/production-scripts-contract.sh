@@ -114,7 +114,15 @@ if [[ "${1:-}" == "inspect" ]]; then
   format="${3:-}"
   container="${4:-}"
   case "$format" in
-    *State.Health.Status*) printf 'healthy\n'; exit 0 ;;
+    *State.Health.Status*)
+      if [[ "$container" == "weavepress-api" && "${MOCK_FAIL_NEW_SERVER_HEALTH:-0}" == "1" && -f "$MOCK_STATE_DIR/api-image" ]] && \
+        grep -Fq ':0123456789abcdef0123456789abcdef01234567' "$MOCK_STATE_DIR/api-image"; then
+        printf 'unhealthy\n'
+      else
+        printf 'healthy\n'
+      fi
+      exit 0
+      ;;
     *State.Status*) printf 'running\n'; exit 0 ;;
     *Config.Image*)
       case "$container" in
@@ -172,7 +180,33 @@ if (( count <= ${MOCK_CURL_FAILURES:-0} )); then
 fi
 MOCK_CURL
 
-  chmod +x "$mock_bin/docker" "$mock_bin/openssl" "$mock_bin/curl"
+  cat > "$mock_bin/rm" <<'MOCK_RM'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+if [[ "${MOCK_FAIL_ENV_STAGE_REMOVE:-0}" == "1" && "$*" == *".env.initialize."* ]]; then
+  marker="$MOCK_STATE_DIR/env-stage-remove-failed"
+  if [[ ! -e "$marker" ]]; then
+    : > "$marker"
+    exit 1
+  fi
+fi
+exec /usr/bin/rm "$@"
+MOCK_RM
+
+  cat > "$mock_bin/ln" <<'MOCK_LN'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+if [[ "${MOCK_SIGNAL_AFTER_ENV_LINK:-0}" == "1" && "${*: -1}" == "$WEAVEPRESS_APP_DIR/.env" ]]; then
+  /usr/bin/ln "$@"
+  kill -TERM "$PPID"
+  exit 0
+fi
+exec /usr/bin/ln "$@"
+MOCK_LN
+
+  chmod +x "$mock_bin/docker" "$mock_bin/openssl" "$mock_bin/curl" "$mock_bin/rm" "$mock_bin/ln"
 }
 
 new_case() {
@@ -247,6 +281,30 @@ test_initialize_no_replace() {
   grep -Fq 'SQL_OP=DROP_SCHEMA' "$LOG_FILE" || fail 'initialize did not compensate after atomic no-replace failure'
 }
 
+test_initialize_commit_survives_staging_cleanup_failure() {
+  new_case initialize-commit-cleanup-failure
+  if ! MOCK_FAIL_ENV_STAGE_REMOVE=1 run_initialize > "$CASE_DIR/output" 2>&1; then
+    fail 'initialize reported failure after .env had been atomically committed'
+  fi
+  [[ -f "$APP_DIR/.env" ]] || fail 'initialize removed the committed .env after staging cleanup failed'
+  assert_env_contract "$APP_DIR/.env"
+  if grep -Eq '^SQL_OP=DROP_' "$LOG_FILE"; then
+    fail 'initialize compensated committed database objects after staging cleanup failed'
+  fi
+}
+
+test_initialize_commit_survives_signal_after_link() {
+  new_case initialize-commit-signal
+  if MOCK_SIGNAL_AFTER_ENV_LINK=1 run_initialize > "$CASE_DIR/output" 2>&1; then
+    fail 'initialize ignored SIGTERM after committing .env'
+  fi
+  [[ -f "$APP_DIR/.env" ]] || fail 'initialize removed the committed .env after SIGTERM'
+  assert_env_contract "$APP_DIR/.env"
+  if grep -Eq '^SQL_OP=DROP_' "$LOG_FILE"; then
+    fail 'initialize compensated committed database objects after SIGTERM'
+  fi
+}
+
 test_initialize_rejects_preexisting_database_objects() {
   local name variable
   local fixtures=(
@@ -298,6 +356,16 @@ test_initialize_rejects_invalid_staging_and_redis_secret() {
   done
 }
 
+test_initialize_rejects_extra_dotenv_assignment() {
+  new_case initialize-extra-dotenv-assignment
+  printf 'lowercase_extra=must-be-rejected\n' >> "$APP_DIR/.env.example"
+  if run_initialize > "$CASE_DIR/output" 2>&1; then
+    fail 'initialize accepted an extra lowercase dotenv assignment'
+  fi
+  [[ ! -e "$APP_DIR/.env" ]] || fail 'initialize wrote .env after accepting an extra dotenv assignment'
+  if grep -q '^SQL_OP=' "$LOG_FILE"; then fail 'initialize wrote database objects before rejecting an extra dotenv assignment'; fi
+}
+
 write_runtime_env() {
   cp "$APP_DIR/.env.example" "$APP_DIR/.env"
   chmod 0600 "$APP_DIR/.env"
@@ -314,6 +382,21 @@ run_deploy() {
     WEAVEPRESS_METADATA_DIR="$METADATA_DIR" \
     WEAVEPRESS_INPUT_TIMEOUT=1 \
     "$@" "$deploy" 0123456789abcdef0123456789abcdef01234567 --component=gateway < "$stdin_file"
+}
+
+run_server_deploy() {
+  local stdin_file="$1"
+  shift
+  PATH="$mock_bin:$PATH" \
+    MOCK_LOG="$LOG_FILE" \
+    MOCK_STATE_DIR="$STATE_DIR" \
+    WEAVEPRESS_APP_DIR="$APP_DIR" \
+    WEAVEPRESS_LOCK_FILE="$LOCK_FILE" \
+    WEAVEPRESS_METADATA_DIR="$METADATA_DIR" \
+    WEAVEPRESS_INPUT_TIMEOUT=1 \
+    WEAVEPRESS_HEALTH_ATTEMPTS=1 \
+    WEAVEPRESS_HEALTH_DELAY=1 \
+    "$@" "$deploy" 0123456789abcdef0123456789abcdef01234567 --component=server < "$stdin_file"
 }
 
 test_deploy_framing_before_lock() {
@@ -404,6 +487,33 @@ test_gateway_failed_rollback_is_not_reported_as_restored() {
   grep -Fq 'Automatic application rollback failed' "$CASE_DIR/output" || fail 'failed gateway rollback did not require manual recovery'
 }
 
+test_server_first_deploy_health_failure_stops_components() {
+  new_case server-first-health-failure
+  write_runtime_env
+  input="$CASE_DIR/input"
+  printf 'acr-user\nPasswordSafe_123\n' > "$input"
+  if MOCK_FAIL_NEW_SERVER_HEALTH=1 run_server_deploy "$input" env > "$CASE_DIR/output" 2>&1; then
+    fail 'server first deploy reported success after API health failure'
+  fi
+  grep -Eq ' compose .* stop api worker' "$LOG_FILE" || fail 'server first deploy failure did not stop API and Worker'
+  [[ ! -e "$METADATA_DIR/server.env" ]] || fail 'failed server first deploy wrote release metadata'
+}
+
+test_server_old_version_health_failure_rolls_back_and_verifies() {
+  new_case server-old-health-failure
+  write_runtime_env
+  input="$CASE_DIR/input"
+  printf 'acr-user\nPasswordSafe_123\n' > "$input"
+  if MOCK_SERVER_OLD=1 MOCK_FAIL_NEW_SERVER_HEALTH=1 run_server_deploy "$input" env > "$CASE_DIR/output" 2>&1; then
+    fail 'server deploy hid the requested version health failure'
+  fi
+  grep -Eq 'docker image tag sha256:old-api .*weavepress-api:rollback-' "$LOG_FILE" || fail 'server rollback did not tag the old API image'
+  grep -Eq 'docker image tag sha256:old-worker .*weavepress-worker:rollback-' "$LOG_FILE" || fail 'server rollback did not tag the old Worker image'
+  [[ "$(grep -c 'Config.Image' "$LOG_FILE")" -ge 2 ]] || fail 'server rollback did not verify both restored image references'
+  grep -Fq 'Application containers restored' "$CASE_DIR/output" || fail 'verified server rollback was not reported'
+  [[ ! -e "$METADATA_DIR/server.env" ]] || fail 'failed server deploy wrote release metadata'
+}
+
 test_deploy_rejects_invalid_health_bounds_before_lock() {
   local variable value
   local fixtures=(
@@ -445,43 +555,59 @@ test_external_validators_and_lock() {
     fail 'external dotenv validators accepted unsafe quote/backslash/control/domain input'
   fi
 
-  if command -v script >/dev/null 2>&1; then
-    new_case external-happy
-    write_runtime_env
-    command_line="env PATH='$mock_bin:$PATH' MOCK_LOG='$LOG_FILE' MOCK_STATE_DIR='$STATE_DIR' WEAVEPRESS_APP_DIR='$APP_DIR' WEAVEPRESS_LOCK_FILE='$LOCK_FILE' WEAVEPRESS_METADATA_DIR='$METADATA_DIR' '$external'"
-    printf '%s\n' QiniuAK_123 QiniuSK_123 bucket-1 https://cdn.example.invalid '' '' \
-      | script -qec "$command_line" /dev/null > "$CASE_DIR/output" 2>&1 || fail 'external installer happy path failed under a TTY'
-    [[ -e "$LOCK_FILE" ]] || fail 'external installer did not acquire the shared deploy lock'
-    grep -Fxq 'WEAVEPRESS_APP_ENV=production' "$APP_DIR/.env" || fail 'external installer did not set production mode'
-    if grep -Eq ' compose .* (up|run|restart|start) ' "$LOG_FILE"; then fail 'external installer started a service'; fi
+  command -v script >/dev/null 2>&1 || fail 'script(1) is required for external installer TTY behavior tests'
 
-    new_case external-compose-failure
-    write_runtime_env
-    cp "$APP_DIR/.env" "$CASE_DIR/env-before"
-    command_line="env PATH='$mock_bin:$PATH' MOCK_LOG='$LOG_FILE' MOCK_STATE_DIR='$STATE_DIR' MOCK_COMPOSE_CONFIG_FAIL=1 WEAVEPRESS_APP_DIR='$APP_DIR' WEAVEPRESS_LOCK_FILE='$LOCK_FILE' WEAVEPRESS_METADATA_DIR='$METADATA_DIR' '$external'"
-    if printf '%s\n' QiniuAK_123 QiniuSK_123 bucket-1 https://cdn.example.invalid '' '' \
-      | script -qec "$command_line" /dev/null > "$CASE_DIR/output" 2>&1; then
-      fail 'external installer accepted a staged environment that failed Compose validation'
-    fi
-    cmp -s "$CASE_DIR/env-before" "$APP_DIR/.env" || fail 'external installer replaced .env after Compose validation failed'
-    if grep -Fq 'SENSITIVE_COMPOSE_DIAGNOSTIC' "$CASE_DIR/output"; then fail 'external installer exposed Compose diagnostics'; fi
-    if find "$APP_DIR" -maxdepth 1 \( -name '.env.external.*' -o -name '.compose-external-error.*' \) -print -quit | grep -q .; then
-      fail 'external installer left a staging or diagnostic temp file after failure'
-    fi
+  new_case external-happy
+  write_runtime_env
+  command_line="env PATH='$mock_bin:$PATH' MOCK_LOG='$LOG_FILE' MOCK_STATE_DIR='$STATE_DIR' WEAVEPRESS_APP_DIR='$APP_DIR' WEAVEPRESS_LOCK_FILE='$LOCK_FILE' WEAVEPRESS_METADATA_DIR='$METADATA_DIR' '$external'"
+  printf '%s\n' QiniuAK_123 QiniuSK_123 bucket-1 https://cdn.example.invalid '' '' \
+    | script -qec "$command_line" /dev/null > "$CASE_DIR/output" 2>&1 || fail 'external installer happy path failed under a TTY'
+  [[ -e "$LOCK_FILE" ]] || fail 'external installer did not acquire the shared deploy lock'
+  grep -Fxq 'WEAVEPRESS_APP_ENV=production' "$APP_DIR/.env" || fail 'external installer did not set production mode'
+  if grep -Eq ' compose .* (up|run|restart|start) ' "$LOG_FILE"; then fail 'external installer started a service'; fi
+
+  new_case external-compose-failure
+  write_runtime_env
+  cp "$APP_DIR/.env" "$CASE_DIR/env-before"
+  command_line="env PATH='$mock_bin:$PATH' MOCK_LOG='$LOG_FILE' MOCK_STATE_DIR='$STATE_DIR' MOCK_COMPOSE_CONFIG_FAIL=1 WEAVEPRESS_APP_DIR='$APP_DIR' WEAVEPRESS_LOCK_FILE='$LOCK_FILE' WEAVEPRESS_METADATA_DIR='$METADATA_DIR' '$external'"
+  if printf '%s\n' QiniuAK_123 QiniuSK_123 bucket-1 https://cdn.example.invalid '' '' \
+    | script -qec "$command_line" /dev/null > "$CASE_DIR/output" 2>&1; then
+    fail 'external installer accepted a staged environment that failed Compose validation'
   fi
+  cmp -s "$CASE_DIR/env-before" "$APP_DIR/.env" || fail 'external installer replaced .env after Compose validation failed'
+  if grep -Fq 'SENSITIVE_COMPOSE_DIAGNOSTIC' "$CASE_DIR/output"; then fail 'external installer exposed Compose diagnostics'; fi
+  if find "$APP_DIR" -maxdepth 1 \( -name '.env.external.*' -o -name '.compose-external-error.*' \) -print -quit | grep -q .; then
+    fail 'external installer left a staging or diagnostic temp file after failure'
+  fi
+
+  new_case external-extra-dotenv-assignment
+  write_runtime_env
+  printf 'lowercase_extra=must-be-rejected\n' >> "$APP_DIR/.env"
+  cp "$APP_DIR/.env" "$CASE_DIR/env-before"
+  command_line="env PATH='$mock_bin:$PATH' MOCK_LOG='$LOG_FILE' MOCK_STATE_DIR='$STATE_DIR' WEAVEPRESS_APP_DIR='$APP_DIR' WEAVEPRESS_LOCK_FILE='$LOCK_FILE' WEAVEPRESS_METADATA_DIR='$METADATA_DIR' '$external'"
+  if printf '%s\n' QiniuAK_123 QiniuSK_123 bucket-1 https://cdn.example.invalid '' '' \
+    | script -qec "$command_line" /dev/null > "$CASE_DIR/output" 2>&1; then
+    fail 'external installer accepted an extra lowercase dotenv assignment'
+  fi
+  cmp -s "$CASE_DIR/env-before" "$APP_DIR/.env" || fail 'external installer replaced .env after an extra dotenv assignment'
 }
 
 write_mocks
 test_initialize_happy_path
 test_initialize_compensates_partial_ddl
 test_initialize_no_replace
+test_initialize_commit_survives_staging_cleanup_failure
+test_initialize_commit_survives_signal_after_link
 test_initialize_rejects_preexisting_database_objects
 test_initialize_rejects_invalid_staging_and_redis_secret
+test_initialize_rejects_extra_dotenv_assignment
 test_deploy_framing_before_lock
 test_deploy_rejects_invalid_health_bounds_before_lock
 test_deploy_happy_metadata_and_cleanup
 test_gateway_first_deploy_failure_stops_component
 test_gateway_old_version_rollback_is_verified
 test_gateway_failed_rollback_is_not_reported_as_restored
+test_server_first_deploy_health_failure_stops_components
+test_server_old_version_health_failure_rolls_back_and_verifies
 test_external_validators_and_lock
 printf 'Production script behavior tests passed.\n'

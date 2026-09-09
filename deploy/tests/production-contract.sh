@@ -323,6 +323,20 @@ assert_before() {
   fi
 }
 
+assert_last_before() {
+  local script_file="$1"
+  local first="$2"
+  local second="$3"
+  local first_line second_line
+
+  first_line="$(grep -nF -- "$first" "$script_file" | tail -n 1 | cut -d: -f1)"
+  second_line="$(grep -nF -- "$second" "$script_file" | tail -n 1 | cut -d: -f1)"
+  if [[ -z "$first_line" || -z "$second_line" || "$first_line" -ge "$second_line" ]]; then
+    printf '%s must place the final %s before the final %s\n' "$script_file" "$first" "$second" >&2
+    return 1
+  fi
+}
+
 assert_control_character_matcher_semantics() {
   local i name value
   local samples=(
@@ -348,6 +362,7 @@ assert_control_character_matcher_semantics() {
 
 assert_production_script_contract() {
   local script script_file
+  local behavior_runner="$contract_temp_dir/production-scripts-behavior.function"
   local initialize="$production_script_dir/initialize-weavepress"
   local deploy="$production_script_dir/deploy-weavepress"
   local entrypoint="$production_script_dir/weavepress-deploy-entrypoint"
@@ -383,6 +398,24 @@ assert_production_script_contract() {
     return 1
   fi
   bash -n "$production_scripts_behavior"
+  require_script_literal "$production_scripts_behavior" "command -v script >/dev/null 2>&1 || fail"
+  if grep -Fq 'if command -v script' "$production_scripts_behavior"; then
+    printf 'Production behavior tests must not silently skip TTY coverage.\n' >&2
+    return 1
+  fi
+
+  declare -f run_production_scripts_behavior > "$behavior_runner"
+  require_script_literal "$behavior_runner" '--pull never'
+  require_script_literal "$behavior_runner" '--network none'
+  require_script_literal "$behavior_runner" '-v "$docker_repo_root:/repo:ro"'
+  if ! grep -Eq 'ubuntu@sha256:[0-9a-f]{64}' "$behavior_runner"; then
+    printf 'Production behavior runner must use an immutable Ubuntu image digest.\n' >&2
+    return 1
+  fi
+  if grep -Eq 'ubuntu:[0-9]' "$behavior_runner"; then
+    printf 'Production behavior runner must not use a mutable Ubuntu tag.\n' >&2
+    return 1
+  fi
 
   require_script_literal "$initialize" 'set -Eeuo pipefail'
   require_script_literal "$initialize" 'umask 077'
@@ -406,6 +439,7 @@ assert_production_script_contract() {
   require_script_literal "$initialize" 'created_schema=0'
   require_script_literal "$initialize" 'compensate_database_objects'
   require_script_literal "$initialize" 'ln "$env_stage" "$ENV_FILE"'
+  require_script_literal "$initialize" '"$ENV_FILE" -ef "$env_stage"'
   require_script_literal "$initialize" 'config --quiet'
   if grep -Eq 'redis-cli([^[:alnum:]_-]|$).*((^|[[:space:]])-a|--pass)' "$initialize"; then
     printf '%s must use REDISCLI_AUTH instead of a Redis password argument.\n' "$initialize" >&2
@@ -414,6 +448,8 @@ assert_production_script_contract() {
   assert_before "$initialize" 'Redis DB 7 is not empty' 'CREATE DATABASE'
   assert_before "$initialize" 'already exists in MySQL' 'CREATE DATABASE'
   assert_before "$initialize" 'config --quiet' 'CREATE DATABASE'
+  assert_last_before "$initialize" 'ln "$env_stage" "$ENV_FILE"' 'initialization_complete=1'
+  assert_last_before "$initialize" 'initialization_complete=1' 'if rm -f -- "$env_stage"'
 
   require_script_literal "$deploy" 'set +x'
   require_script_literal "$deploy" '[[ "${EUID:-$(id -u)}" -eq 0 ]] || die '\''must run as root'\'''
@@ -483,10 +519,10 @@ run_production_scripts_behavior() {
   case "$(uname -s)" in
     CYGWIN*|MINGW*|MSYS*) docker_repo_root="$(cygpath -w "$repo_root")" ;;
   esac
-  MSYS_NO_PATHCONV=1 docker run --rm --user 0:0 \
+  MSYS_NO_PATHCONV=1 docker run --rm --user 0:0 --pull never --network none \
     -v "$docker_repo_root:/repo:ro" \
     -w /repo \
-    ubuntu:22.04 \
+    ubuntu@sha256:0e0a0fc6d18feda9db1590da249ac93e8d5abfea8f4c3c0c849ce512b5ef8982 \
     bash deploy/tests/production-scripts-contract.sh
 }
 

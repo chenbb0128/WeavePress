@@ -63,7 +63,7 @@ expected_keys=(
   WEAVEPRESS_WECHAT_APP_ID
   WEAVEPRESS_WECHAT_APP_SECRET
 )
-mapfile -t example_keys < <(awk -F= '/^[A-Z0-9_]+=/ { print $1 }' "$ENV_EXAMPLE")
+mapfile -t example_keys < <(awk -F= '/^[A-Za-z_][A-Za-z0-9_]*=/ { print $1 }' "$ENV_EXAMPLE")
 [[ "${example_keys[*]}" == "${expected_keys[*]}" ]] || die '.env.example keys do not match the production contract'
 
 env_stage=""
@@ -104,8 +104,15 @@ compensate_database_objects() {
 cleanup() {
   local status=$?
   trap - EXIT
-  [[ -z "$compose_error" ]] || rm -f -- "$compose_error"
-  [[ -z "$env_stage" ]] || rm -f -- "$env_stage"
+  if [[ "$initialization_complete" -eq 0 && -n "$env_stage" && -e "$ENV_FILE" && "$ENV_FILE" -ef "$env_stage" ]]; then
+    initialization_complete=1
+  fi
+  if [[ -n "$compose_error" ]]; then
+    rm -f -- "$compose_error" || printf 'initialize-weavepress: WARNING: failed to remove Compose diagnostic temp file\n' >&2
+  fi
+  if [[ -n "$env_stage" ]]; then
+    rm -f -- "$env_stage" || printf 'initialize-weavepress: WARNING: failed to remove environment staging link\n' >&2
+  fi
   if [[ "$status" -ne 0 && "$initialization_complete" -eq 0 ]]; then
     compensate_database_objects
   fi
@@ -145,7 +152,7 @@ env_stage="$(mktemp "$APP_DIR/.env.initialize.XXXXXX")"
 chown root:root "$env_stage"
 chmod 0600 "$env_stage"
 
-mapfile -t generated_keys < <(awk -F= '/^[A-Z0-9_]+=/ { print $1 }' "$env_stage")
+mapfile -t generated_keys < <(awk -F= '/^[A-Za-z_][A-Za-z0-9_]*=/ { print $1 }' "$env_stage")
 [[ "${generated_keys[*]}" == "${expected_keys[*]}" ]] || die 'generated .env keys are incomplete'
 
 compose_error="$(mktemp "$APP_DIR/.compose-initialize-error.XXXXXX")"
@@ -176,8 +183,11 @@ mkdir -p "$APP_DIR/data/media" "$APP_DIR/backup/mysql" "$APP_DIR/backup/env"
 chown 65532:65532 "$APP_DIR/data/media"
 
 ln "$env_stage" "$ENV_FILE" || die "$ENV_FILE appeared during initialization; refusing to overwrite it"
-rm -f -- "$env_stage"
-env_stage=""
 initialization_complete=1
+if rm -f -- "$env_stage"; then
+  env_stage=""
+else
+  printf 'initialize-weavepress: WARNING: failed to remove environment staging link\n' >&2
+fi
 
 printf 'WeavePress initialization completed. Secrets were written to %s and were not displayed.\n' "$ENV_FILE"
