@@ -208,11 +208,13 @@ function generation(draftId?: number): AIGeneration {
 }
 
 function deferred<T>() {
+  let reject!: (reason?: unknown) => void;
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((promiseResolve) => {
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    reject = promiseReject;
     resolve = promiseResolve;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 function mountComponent(component: Parameters<typeof createApp>[0]) {
@@ -406,6 +408,74 @@ describe('ai workbench', () => {
     await settle();
     expect(host.textContent).not.toContain('生成标题');
     expect(host.textContent).toContain('旧分析摘要');
+  });
+
+  it('cancels a pending generation before analysis selection settles', async () => {
+    const latest = analysis();
+    const olderJob = job('completed', { id: 20 });
+    const older = analysis(olderJob, {
+      createdAt: '2026-09-08T00:00:03Z',
+      id: 30,
+      jobId: olderJob.id,
+      summary: '旧分析摘要',
+    });
+    const selection = deferred<AIAnalysis>();
+    mocks.getAIAnalysesApi.mockResolvedValue({
+      items: [latest, older],
+      page: 1,
+      pageSize: 20,
+      total: 2,
+    });
+    mocks.getAIAnalysisApi.mockImplementation((id: number) =>
+      id === older.id ? selection.promise : Promise.resolve(latest),
+    );
+    const submission = deferred<{
+      generation: AIGeneration;
+      job: AIJob;
+      reused: boolean;
+    }>();
+    mocks.startAIGenerationApi.mockReturnValue(submission.promise);
+
+    const { host } = mountComponent(AIWorkbench);
+    await settle();
+    const audienceInput = host.querySelector<HTMLInputElement>(
+      'input[placeholder="例如：产品经理"]',
+    );
+    expect(audienceInput).toBeTruthy();
+    if (!audienceInput) return;
+    audienceInput.value = '产品团队';
+    audienceInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    buttonByText(host, '生成稿件')?.click();
+    await settle();
+
+    host.querySelector<HTMLElement>('.w-72 .el-select__wrapper')?.click();
+    await settle();
+    const olderOption = [
+      ...document.querySelectorAll<HTMLElement>('.el-select-dropdown__item'),
+    ].find((option) => option.textContent?.includes('分析 #30'));
+    expect(olderOption).toBeTruthy();
+    olderOption?.click();
+    await settle();
+
+    expect(mocks.getAIAnalysisApi).toHaveBeenLastCalledWith(30);
+    expect(buttonByText(host, '生成稿件')?.disabled).toBe(false);
+
+    const staleGeneration = generation(61);
+    submission.resolve({
+      generation: staleGeneration,
+      job: staleGeneration.job as AIJob,
+      reused: false,
+    });
+    await settle();
+    expect(host.textContent).not.toContain('生成标题');
+    expect(buttonByText(host, '生成稿件')?.disabled).toBe(false);
+
+    selection.reject(new Error('analysis unavailable'));
+    await settle();
+    expect(host.textContent).toContain('分析资料加载失败，请稍后重试');
+    expect(host.textContent).not.toContain('生成标题');
+    expect(buttonByText(host, '生成稿件')?.disabled).toBe(false);
   });
 
   afterEach(() => {

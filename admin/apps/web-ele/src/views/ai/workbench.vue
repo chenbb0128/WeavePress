@@ -216,21 +216,25 @@ function stopGenerationPolling() {
   generationTimer = undefined;
 }
 
-function applyAnalysis(value: AIAnalysis) {
+function cancelGenerationState() {
   stopGenerationPolling();
   generationActionEpoch += 1;
   generationSubmitting.value = false;
-  selectedAnalysis.value = value;
-  selectedAnalysisId.value = value.id;
   generation.value = undefined;
   generationRequestError.value = '';
   pendingGenerationKey = '';
   pendingGenerationFingerprint = '';
+}
+
+function applyAnalysis(value: AIAnalysis) {
+  selectedAnalysis.value = value;
+  selectedAnalysisId.value = value.id;
   generationForm.angleId = value.angles[0]?.id ?? '';
 }
 
 async function loadAnalysis(id: number) {
   const epoch = ++selectionEpoch;
+  cancelGenerationState();
   analysisSelecting.value = true;
   try {
     const data = await getAIAnalysisApi(id);
@@ -238,6 +242,7 @@ async function loadAnalysis(id: number) {
     applyAnalysis(data);
   } catch {
     if (!destroyed && epoch === selectionEpoch) {
+      selectedAnalysisId.value = selectedAnalysis.value?.id;
       analysisRequestError.value = '分析资料加载失败，请稍后重试';
     }
   } finally {
