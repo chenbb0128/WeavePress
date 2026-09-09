@@ -366,7 +366,9 @@ onBeforeUnmount(() => {
           </template>
         </ElTableColumn>
         <ElTableColumn label="耗时" width="100">
-          <template #default="{ row }">{{ formatDuration(row) }}</template>
+          <template #default="{ row }">
+            {{ formatDuration(row as AIJob) }}
+          </template>
         </ElTableColumn>
         <ElTableColumn label="创建时间" width="180">
           <template #default="{ row }">
