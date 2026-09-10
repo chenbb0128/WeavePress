@@ -32,8 +32,10 @@ timeout "$HELPER_TIMEOUT_SECONDS" git -C "$repository" show \
 chmod 0700 "$helper_temp"
 timeout "$HELPER_TIMEOUT_SECONDS" bash "$helper_temp" "$repository" "$component" "$app_sha" || \
   die 'component freshness check failed'
-timeout "$CHECKOUT_TIMEOUT_SECONDS" git -C "$repository" checkout --detach "$app_sha" >/dev/null || \
-  die 'could not checkout requested APP_SHA'
+(
+  umask 022
+  timeout "$CHECKOUT_TIMEOUT_SECONDS" git -C "$repository" checkout --detach "$app_sha" >/dev/null
+) || die 'could not checkout requested APP_SHA'
 actual_sha="$(git -C "$repository" rev-parse --verify HEAD)" || die 'could not resolve checked-out HEAD'
 [[ "$actual_sha" == "$app_sha" ]] || die 'checked-out HEAD does not match APP_SHA'
 mv -f -- "$helper_temp" "$helper_output"

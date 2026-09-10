@@ -170,6 +170,10 @@ bash "$bootstrap_runner" "$bootstrap_checkout" server "$bootstrap_sha" "$bootstr
   fail 'origin/master bootstrap helper did not prepare the requested Server checkout'
 [[ "$(git -C "$bootstrap_checkout" rev-parse HEAD)" == "$bootstrap_sha" ]] || \
   fail 'bootstrap helper did not detach at the requested APP_SHA'
+tracked_mode="$(stat -c '%a' "$bootstrap_checkout/server/value.txt")" || \
+  fail 'could not inspect bootstrap checkout file permissions'
+(( (8#$tracked_mode & 0044) == 0044 )) || \
+  fail "bootstrap helper checkout left tracked source unreadable by group/other (mode $tracked_mode)"
 cmp -s "$freshness" "$bootstrap_current" || \
   fail 'bootstrap helper did not preserve the trusted origin/master freshness helper'
 
