@@ -489,7 +489,6 @@ def assert_hook() -> None:
         'DISPATCHER="/volume1/docker/weavepress-git/bin/dispatch-pending"',
         "JENKINS_REQUEST_MAX_SECONDS=20",
         "LOCK_WAIT_SECONDS=180",
-        "HEARTBEAT_MAX_AGE_SECONDS=180",
         'ENABLE_FILE="/volume1/docker/weavepress-git/.enable-auto-deploy"',
         'SECRETS_DIR="/volume1/docker/weavepress-git/.secrets"',
         'LOG_FILE="/volume1/docker/weavepress-git/post-receive.log"',
@@ -502,7 +501,6 @@ def assert_hook() -> None:
         'component_has_changes "$component" "$baseline" "$live_master"',
         'write_state_sha "$STATE_FILE" "$target"',
         "component baseline changed before compare-and-swap",
-        "dispatcher.heartbeat",
         "while IFS= read -r -d '' path",
         "server:server/*|server:deploy/production/*|server:deploy/jenkins/assert-component-current.sh|server:deploy/jenkins/checkout-component-source.sh|server:deploy/jenkins/publish-immutable-image.sh|server:deploy/jenkins/verify-acr-immutable-policy.sh)",
         "gateway:admin/*|gateway:web/*|gateway:.dockerignore|gateway:deploy/Dockerfile.gateway|gateway:deploy/Dockerfile.gateway.dockerignore|gateway:deploy/nginx.conf|gateway:deploy/jenkins/assert-component-current.sh|gateway:deploy/jenkins/checkout-component-source.sh|gateway:deploy/jenkins/publish-immutable-image.sh|gateway:deploy/jenkins/verify-acr-immutable-policy.sh|gateway:deploy/jenkins/verify-gateway-release.sh)",
@@ -535,6 +533,7 @@ def assert_hook() -> None:
         fail(f"{context} must queue each component once per receive")
     reject(text, r"last-processed-master", context)
     reject(text, r"refs/weavepress/", context)
+    reject(text, r"heartbeat", context)
     reject(text, r"trigger_job_with_retry", context)
     reject(text, r"set\s+-x", context)
     reject(text, r"curl[^\n]*--user", context)

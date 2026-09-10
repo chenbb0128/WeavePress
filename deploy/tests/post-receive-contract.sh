@@ -168,8 +168,6 @@ prepare_case() {
   else
     rm -f -- "$gateway_baseline_file"
   fi
-  printf 'scheduled\n' > "$release_state/dispatcher.heartbeat"
-  chmod 0600 "$release_state/dispatcher.heartbeat"
   reset_case
 }
 
@@ -400,16 +398,10 @@ grep -Fq "UNCERTAIN: WeavePress/WeavePressGateway at $newestrev" "$hook_log" || 
 
 prepare_case "$newrev" "$oldrev"
 rm -f -- "$release_state/dispatcher.heartbeat"
-if run_hook "$oldrev $newrev refs/heads/master" env \
-  MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/799/ >/dev/null 2>&1; then
-  fail 'hook dispatched while the periodic dispatcher heartbeat was missing'
-fi
-[[ ! -e "$state/curl-count" ]] || fail 'missing scheduler heartbeat reached Jenkins'
-assert_state_sha gateway.desired "$newrev"
-assert_baselines "$newrev" "$oldrev"
-run_dispatcher --scheduled env MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/800/ >/dev/null 2>&1 || \
-  fail 'first scheduled pass did not recover persisted desired state'
-[[ "$(<"$state/curl-count")" == 1 ]] || fail 'scheduled recovery did not enqueue exactly once'
+run_hook "$oldrev $newrev refs/heads/master" env \
+  MOCK_HTTP_CODE=201 MOCK_LOCATION=/queue/item/799/ >/dev/null 2>&1 || \
+  fail 'direct hook required a periodic dispatcher heartbeat'
+[[ "$(<"$state/curl-count")" == 1 ]] || fail 'direct hook did not enqueue exactly once without heartbeat'
 assert_baselines "$newrev" "$newrev"
 
 if [[ -n "$real_flock" ]]; then

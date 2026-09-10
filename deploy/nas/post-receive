@@ -7,7 +7,6 @@ readonly MASTER_REF="refs/heads/master"
 readonly ZERO_SHA="0000000000000000000000000000000000000000"
 readonly JENKINS_REQUEST_MAX_SECONDS=20
 readonly LOCK_WAIT_SECONDS=180
-readonly HEARTBEAT_MAX_AGE_SECONDS=180
 readonly DISPATCH_NOT_SENT=10
 readonly DISPATCH_UNCERTAIN=11
 readonly DISPATCH_LOCAL_FAILURE=12
@@ -227,23 +226,6 @@ trigger_job() (
   log "Dispatched ${job_path} at ${app_sha}"
 )
 
-heartbeat_is_fresh() {
-  local heartbeat="$STATE_DIR/dispatcher.heartbeat"
-  local mode modified now age
-  [[ -f "$heartbeat" && ! -L "$heartbeat" ]] || return 1
-  mode="$(stat -c '%a' -- "$heartbeat")" || return 1
-  [[ "$mode" == 600 ]] || return 1
-  modified="$(stat -c '%Y' -- "$heartbeat")" || return 1
-  now="$(date '+%s')"
-  [[ "$modified" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 1
-  age=$((now - modified))
-  [[ "$age" -ge 0 && "$age" -le "$HEARTBEAT_MAX_AGE_SECONDS" ]]
-}
-
-record_heartbeat() {
-  write_state_sha "$STATE_DIR/dispatcher.heartbeat" "$(printf '%040d' "$(date '+%s')")"
-}
-
 process_pending_component() {
   local component="$1"
   local job_path="$2"
@@ -283,7 +265,7 @@ process_pending_component() {
   fi
   case "$dispatch_status" in
     "$DISPATCH_NOT_SENT"|"$DISPATCH_LOCAL_FAILURE")
-      log "PENDING: ${job_path} at ${desired}; scheduled dispatcher will retry"
+      log "PENDING: ${job_path} at ${desired}; retry requires a later push or operator dispatch"
       return 1
       ;;
     "$DISPATCH_UNCERTAIN")
@@ -303,16 +285,7 @@ run_dispatcher() {
   local mode="$1"
   local failed=false
   require_state_dir
-  if [[ "$mode" == scheduled ]]; then
-    record_heartbeat
-  elif [[ "$mode" == hook ]]; then
-    heartbeat_is_fresh || {
-      log 'PENDING: scheduled dispatcher heartbeat is missing or stale; automatic dispatch is blocked'
-      return 1
-    }
-  else
-    die 'dispatcher mode must be hook or scheduled'
-  fi
+  [[ "$mode" == hook || "$mode" == scheduled ]] || die 'dispatcher mode must be hook or scheduled'
 
   exec 9>>"$LOCK_FILE"
   flock -w "$LOCK_WAIT_SECONDS" 9 || die 'another WeavePress release state process still holds the lock'

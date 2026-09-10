@@ -7,7 +7,7 @@
 - `/usr/local/sbin/weavepress-deploy-entrypoint`
 - `/usr/local/sbin/weavepress-external-secrets-install`
 
-## NAS 自动调度安装
+## NAS 自动触发安装
 
 创建并核验 bare mirror、准备好 hook 使用的凭据后，在 NAS 上从已检出的 WeavePress 仓库执行一次：
 
@@ -15,7 +15,7 @@
 bash deploy/nas/install-dispatch-pending /path/to/checked-out/WeavePress
 ```
 
-该命令会一次安装并验证 `post-receive`、0700 state/bin 目录、`dispatch-pending`、每分钟唯一 crontab 条目和新鲜 heartbeat；它不会创建 `.enable-auto-deploy`，自动发布仍需在其他生产前置条件验收后显式启用。
+该命令会安装并验证 `post-receive`、0700 state/bin 目录和 `dispatch-pending`。启用门禁后，`master` push 会由 NAS hook 直接请求 Jenkins，与其他项目保持一致；不依赖 cron 或 heartbeat。连接 Jenkins 明确失败时会保留 pending 状态和日志，等待后续 push 或操作员手动执行 `dispatch-pending --scheduled` 重试。安装器不会创建 `.enable-auto-deploy`，自动发布仍需在其他生产前置条件验收后显式启用。
 
 ## 首次初始化
 

@@ -7,25 +7,13 @@ readonly BARE_REPO="$INSTALL_ROOT/WeavePress.git"
 readonly STATE_DIR="$INSTALL_ROOT/release-state"
 readonly BIN_DIR="$INSTALL_ROOT/bin"
 readonly DISPATCHER="$BIN_DIR/dispatch-pending"
-readonly HEARTBEAT="$STATE_DIR/dispatcher.heartbeat"
-readonly CRON_BEGIN='# BEGIN WEAVEPRESS DISPATCH PENDING'
-readonly CRON_END='# END WEAVEPRESS DISPATCH PENDING'
-readonly CRON_ENTRY='* * * * * /volume1/docker/weavepress-git/bin/dispatch-pending --scheduled >/dev/null 2>&1'
 
 hook_temp=""
 dispatcher_temp=""
-cron_current=""
-cron_error=""
-cron_new=""
-cron_verify=""
 
 cleanup() {
   [[ -z "$hook_temp" ]] || rm -f -- "$hook_temp"
   [[ -z "$dispatcher_temp" ]] || rm -f -- "$dispatcher_temp"
-  [[ -z "$cron_current" ]] || rm -f -- "$cron_current"
-  [[ -z "$cron_error" ]] || rm -f -- "$cron_error"
-  [[ -z "$cron_new" ]] || rm -f -- "$cron_new"
-  [[ -z "$cron_verify" ]] || rm -f -- "$cron_verify"
 }
 trap cleanup EXIT
 
@@ -36,7 +24,7 @@ die() {
 
 [[ $# -eq 1 ]] || die 'expected checked-out WeavePress repository root'
 source_root="$1"
-for command in awk crontab date git grep install mktemp stat; do
+for command in git install mktemp stat; do
   command -v "$command" >/dev/null 2>&1 || die "required command is missing: ${command}"
 done
 [[ -d "$source_root" && ! -L "$source_root" ]] || die 'checked-out repository root is missing or unsafe'
@@ -49,30 +37,6 @@ done
 [[ -f "$source_root/deploy/nas/dispatch-pending" && ! -L "$source_root/deploy/nas/dispatch-pending" ]] || \
   die 'source pending dispatcher is missing or unsafe'
 
-cron_current="$(mktemp)" || die 'could not allocate current crontab buffer'
-cron_error="$(mktemp)" || die 'could not allocate crontab error buffer'
-cron_new="$(mktemp)" || die 'could not allocate new crontab buffer'
-cron_verify="$(mktemp)" || die 'could not allocate crontab verification buffer'
-if crontab -l > "$cron_current" 2> "$cron_error"; then
-  :
-elif grep -Eqi 'no crontab' "$cron_error"; then
-  : > "$cron_current"
-else
-  die 'could not read the current crontab'
-fi
-awk -v begin="$CRON_BEGIN" -v end="$CRON_END" -v entry="$CRON_ENTRY" '
-  $0 == begin { managed = 1; next }
-  $0 == end { managed = 0; next }
-  managed { next }
-  $0 == entry { next }
-  { print }
-  END {
-    print begin
-    print entry
-    print end
-  }
-' "$cron_current" > "$cron_new"
-
 install -d -m 0700 "$STATE_DIR" "$BIN_DIR"
 hook_temp="$(mktemp "$BARE_REPO/hooks/.post-receive.XXXXXX")" || die 'could not stage post-receive hook'
 dispatcher_temp="$(mktemp "$BIN_DIR/.dispatch-pending.XXXXXX")" || die 'could not stage pending dispatcher'
@@ -82,8 +46,6 @@ mv -f -- "$hook_temp" "$BARE_REPO/hooks/post-receive"
 hook_temp=""
 mv -f -- "$dispatcher_temp" "$DISPATCHER"
 dispatcher_temp=""
-crontab "$cron_new" || die 'could not install the scheduled dispatcher crontab'
-"$DISPATCHER" --scheduled || die 'scheduled dispatcher initialization failed'
 
 for directory in "$STATE_DIR" "$BIN_DIR"; do
   [[ -d "$directory" && ! -L "$directory" ]] || die 'installed directory is missing or unsafe'
@@ -93,16 +55,5 @@ for program in "$BARE_REPO/hooks/post-receive" "$DISPATCHER"; do
   [[ -f "$program" && ! -L "$program" && -x "$program" ]] || die 'installed program is missing or unsafe'
   [[ "$(stat -c '%a' -- "$program")" == 700 ]] || die 'installed program mode must be 0700'
 done
-crontab -l > "$cron_verify" 2>/dev/null || die 'could not verify the installed crontab'
-[[ "$(grep -Fxc -- "$CRON_BEGIN" "$cron_verify" || true)" == 1 ]] || die 'scheduled dispatcher crontab marker is not unique'
-[[ "$(grep -Fxc -- "$CRON_ENTRY" "$cron_verify" || true)" == 1 ]] || die 'scheduled dispatcher crontab entry is not unique'
-[[ "$(grep -Fxc -- "$CRON_END" "$cron_verify" || true)" == 1 ]] || die 'scheduled dispatcher crontab marker is not unique'
-[[ -f "$HEARTBEAT" && ! -L "$HEARTBEAT" ]] || die 'dispatcher heartbeat is missing or unsafe'
-[[ "$(stat -c '%a' -- "$HEARTBEAT")" == 600 ]] || die 'dispatcher heartbeat mode must be 0600'
-heartbeat_modified="$(stat -c '%Y' -- "$HEARTBEAT")" || die 'could not inspect dispatcher heartbeat age'
-now="$(date '+%s')"
-[[ "$heartbeat_modified" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || die 'dispatcher heartbeat timestamp is invalid'
-heartbeat_age=$((now - heartbeat_modified))
-[[ "$heartbeat_age" -ge 0 && "$heartbeat_age" -le 180 ]] || die 'dispatcher heartbeat is stale'
 
-printf '%s\n' 'Installed and verified WeavePress hook, state, dispatcher, one-minute crontab, and fresh heartbeat.'
+printf '%s\n' 'Installed and verified WeavePress direct-dispatch hook, state, and dispatcher.'
