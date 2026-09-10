@@ -132,8 +132,4 @@ jobs:
           test "$origin_sha" = "$GITHUB_SHA"
           export GIT_SSH_COMMAND="ssh -i ~/.ssh/nas_mirror_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
           git remote add nas "ssh://${NAS_USER}@${NAS_HOST}:${NAS_PORT}/volume1/docker/weavepress-git/WeavePress.git"
-          nas_sha="$(git ls-remote nas refs/heads/master | awk 'NR == 1 { print $1 } END { if (NR > 1) exit 1 }')"
-          if [ -n "$nas_sha" ]; then
-            printf '%s' "$nas_sha" | grep -Eq '^[0-9a-f]{40}$'
-          fi
-          git push --force-with-lease="refs/heads/master:$nas_sha" nas HEAD:refs/heads/master
+          git push nas HEAD:refs/heads/master

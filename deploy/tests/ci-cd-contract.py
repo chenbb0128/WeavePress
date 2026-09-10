@@ -444,10 +444,11 @@ def assert_workflow() -> None:
         'test "$head_sha" = "$GITHUB_SHA"',
         "git ls-remote origin refs/heads/master",
         'test "$origin_sha" = "$GITHUB_SHA"',
-        "git ls-remote nas refs/heads/master",
-        'git push --force-with-lease="refs/heads/master:$nas_sha" nas HEAD:refs/heads/master',
+        "git push nas HEAD:refs/heads/master",
     ):
         require(text, literal, context)
+    reject(text, r"git ls-remote\s+nas\b", context)
+    reject(text, r"git push[^\n]*(?:--force|--force-with-lease)", context)
 
     pull = f"docker pull {PINNED_UBUNTU}"
     inspect = f"docker image inspect {PINNED_UBUNTU}"
