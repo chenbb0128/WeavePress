@@ -187,6 +187,19 @@ smoke_gateway() {
   curl --fail --silent --show-error --max-time 15 -H 'Host: wp.pdurl.cn' http://127.0.0.1/ >/dev/null
 }
 
+wait_for_gateway() {
+  local i
+  for ((i = 1; i <= health_attempts; i++)); do
+    if smoke_gateway; then
+      return 0
+    fi
+    if [[ "$i" -lt "$health_attempts" ]]; then
+      sleep "$health_delay"
+    fi
+  done
+  return 1
+}
+
 stop_requested_components() {
   case "$component" in
     server)
@@ -223,7 +236,7 @@ rollback_application() {
       APP_SHA="$rollback_tag" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
         up -d --no-build --force-recreate --no-deps gateway || return 1
       container_image_matches weavepress-gateway "$REPOSITORY/weavepress-gateway:$rollback_tag" "$old_gateway_id" || return 1
-      smoke_gateway || return 1
+      wait_for_gateway || return 1
       ;;
   esac
   printf 'Application containers restored with bounded rollback tag %s. Database migrations were not reversed.\n' "$rollback_tag" >&2
@@ -341,7 +354,7 @@ case "$component" in
     bind_pulled_image "$gateway_digest_ref" "$gateway_repository" "$gateway_digest" "$gateway_image" gateway_image_id
     switched=1
     compose up -d --no-build --force-recreate --no-deps gateway
-    smoke_gateway
+    wait_for_gateway || die 'Gateway did not pass smoke checks before the deadline'
     container_image_matches weavepress-gateway "$gateway_image" "$gateway_image_id" || die 'weavepress-gateway is not running the requested immutable image'
     ;;
 esac

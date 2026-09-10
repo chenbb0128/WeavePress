@@ -597,6 +597,18 @@ test_deploy_happy_metadata_and_cleanup() {
   if find "$METADATA_DIR" -maxdepth 1 -name '.*.env.*' -print -quit | grep -q .; then fail 'metadata temp file was left behind'; fi
 }
 
+test_gateway_waits_for_transient_smoke_failure() {
+  new_case gateway-transient-smoke-failure
+  write_runtime_env
+  input="$CASE_DIR/input"
+  write_gateway_input "$input"
+  MOCK_CURL_FAILURES=1 run_deploy "$input" env \
+    WEAVEPRESS_HEALTH_ATTEMPTS=2 WEAVEPRESS_HEALTH_DELAY=1 \
+    > "$CASE_DIR/output" 2>&1 || fail 'gateway deploy did not retry a transient smoke failure'
+  [[ "$(grep -c '^CMD=curl' "$LOG_FILE")" -eq 2 ]] || fail 'gateway deploy did not stop retrying after smoke succeeded'
+  [[ -f "$METADATA_DIR/gateway.env" ]] || fail 'gateway deploy did not record metadata after transient smoke recovery'
+}
+
 test_server_digest_order_and_metadata() {
   new_case deploy-server-happy
   write_runtime_env
@@ -635,7 +647,9 @@ test_gateway_first_deploy_failure_stops_component() {
   write_runtime_env
   input="$CASE_DIR/input"
   write_gateway_input "$input"
-  if MOCK_CURL_FAILURES=1 run_deploy "$input" env > "$CASE_DIR/output" 2>&1; then
+  if MOCK_CURL_FAILURES=2 run_deploy "$input" env \
+    WEAVEPRESS_HEALTH_ATTEMPTS=2 WEAVEPRESS_HEALTH_DELAY=1 \
+    > "$CASE_DIR/output" 2>&1; then
     fail 'gateway deploy reported success after smoke failure'
   fi
   grep -Eq ' compose .* stop gateway' "$LOG_FILE" || fail 'first gateway failure did not stop the requested component'
@@ -647,12 +661,14 @@ test_gateway_old_version_rollback_is_verified() {
   write_runtime_env
   input="$CASE_DIR/input"
   write_gateway_input "$input"
-  if MOCK_GATEWAY_OLD=1 MOCK_CURL_FAILURES=1 run_deploy "$input" env > "$CASE_DIR/output" 2>&1; then
+  if MOCK_GATEWAY_OLD=1 MOCK_CURL_FAILURES=3 run_deploy "$input" env \
+    WEAVEPRESS_HEALTH_ATTEMPTS=2 WEAVEPRESS_HEALTH_DELAY=1 \
+    > "$CASE_DIR/output" 2>&1; then
     fail 'gateway deploy hid the original smoke failure'
   fi
   grep -Eq 'docker image tag sha256:old-gateway .*weavepress-gateway:rollback-' "$LOG_FILE" || fail 'gateway rollback did not tag the old image'
   [[ "$(grep -c 'Config.Image' "$LOG_FILE")" -ge 1 ]] || fail 'gateway rollback did not verify the restored image reference'
-  [[ "$(grep -c '^CMD=curl' "$LOG_FILE")" -ge 2 ]] || fail 'gateway rollback did not rerun the smoke check'
+  [[ "$(grep -c '^CMD=curl' "$LOG_FILE")" -eq 4 ]] || fail 'gateway rollback did not wait through a transient smoke failure'
   grep -Fq 'Application containers restored' "$CASE_DIR/output" || fail 'verified gateway rollback was not reported'
 }
 
@@ -661,7 +677,9 @@ test_gateway_failed_rollback_is_not_reported_as_restored() {
   write_runtime_env
   input="$CASE_DIR/input"
   write_gateway_input "$input"
-  if MOCK_GATEWAY_OLD=1 MOCK_CURL_FAILURES=2 run_deploy "$input" env > "$CASE_DIR/output" 2>&1; then
+  if MOCK_GATEWAY_OLD=1 MOCK_CURL_FAILURES=4 run_deploy "$input" env \
+    WEAVEPRESS_HEALTH_ATTEMPTS=2 WEAVEPRESS_HEALTH_DELAY=1 \
+    > "$CASE_DIR/output" 2>&1; then
     fail 'gateway deploy reported success after deployment and rollback smoke failures'
   fi
   if grep -Fq 'Application containers restored' "$CASE_DIR/output"; then
@@ -787,6 +805,7 @@ test_initialize_rejects_extra_dotenv_assignment
 test_deploy_framing_before_lock
 test_deploy_rejects_invalid_health_bounds_before_lock
 test_deploy_happy_metadata_and_cleanup
+test_gateway_waits_for_transient_smoke_failure
 test_server_digest_order_and_metadata
 test_deploy_rejects_digest_or_runtime_identity_mismatch
 test_gateway_first_deploy_failure_stops_component
