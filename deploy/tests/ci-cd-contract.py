@@ -547,6 +547,32 @@ def assert_hook() -> None:
 def assert_direct_pipeline(component: str, path: Path) -> None:
     text = read_required(path)
     context = str(path.relative_to(ROOT))
+    require(
+        text,
+        "NAS_GIT_SSH_COMMAND = 'ssh -i /var/jenkins_home/.ssh/nas_classmate_git_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes",
+        context,
+    )
+    production_ssh_blocks = re.findall(
+        r"(?ms)printf .*? \| ssh \\\n(?P<block>.*?^\s+\"\$APP_SHA --component="
+        + re.escape(component)
+        + r"\"$)",
+        text,
+    )
+    if len(production_ssh_blocks) != 1:
+        fail(f"{context} must contain exactly one production release SSH block")
+    for option in (
+        "-o BatchMode=yes",
+        "-o StrictHostKeyChecking=yes",
+        "-o UserKnownHostsFile=/var/jenkins_home/.ssh/known_hosts",
+        "-o ServerAliveInterval=30",
+        "-o ServerAliveCountMax=30",
+    ):
+        require(production_ssh_blocks[0], option, f"{context} production release SSH block")
+    reject(
+        production_ssh_blocks[0],
+        r"-o\s+IdentitiesOnly=yes",
+        f"{context} production release SSH block",
+    )
     build_stage_name = (
         "stage('构建 Server 三个不可变镜像')"
         if component == "server"

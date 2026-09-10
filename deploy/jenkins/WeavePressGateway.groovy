@@ -129,7 +129,7 @@ pipeline {
               gateway_digest="$(<manifest-digests/gateway.digest)"
               printf '%s' "$gateway_digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
               printf '%s\n%s\n%s\n' "$ACR_USER" "$ACR_PASSWORD" "$gateway_digest" | ssh \
-                -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+                -o BatchMode=yes -o StrictHostKeyChecking=yes \
                 -o UserKnownHostsFile=/var/jenkins_home/.ssh/known_hosts \
                 -o ServerAliveInterval=30 -o ServerAliveCountMax=30 \
                 -p "$PROD_PORT" "$PROD_USER@$PROD_HOST" \

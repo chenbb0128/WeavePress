@@ -148,7 +148,7 @@ pipeline {
               printf '%s\n%s\n%s\n%s\n%s\n' \
                 "$ACR_USER" "$ACR_PASSWORD" \
                 "$api_digest" "$worker_digest" "$migrate_digest" | ssh \
-                -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+                -o BatchMode=yes -o StrictHostKeyChecking=yes \
                 -o UserKnownHostsFile=/var/jenkins_home/.ssh/known_hosts \
                 -o ServerAliveInterval=30 -o ServerAliveCountMax=30 \
                 -p "$PROD_PORT" "$PROD_USER@$PROD_HOST" \
