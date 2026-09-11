@@ -1,5 +1,4 @@
 <script lang="ts" setup>
-/* eslint-disable vue/html-closing-bracket-newline */
 import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 

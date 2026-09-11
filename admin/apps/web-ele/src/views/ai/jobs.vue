@@ -1,5 +1,4 @@
 <script lang="ts" setup>
-/* eslint-disable vue/html-closing-bracket-newline, vue/multiline-html-element-content-newline */
 import type { AIJob, AIJobStatus, AIJobType } from '#/api';
 
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue';
