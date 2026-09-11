@@ -110,43 +110,64 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="space-y-4 p-5">
-    <ElCard shadow="never">
-      <div
-        class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
-      >
+  <div class="wp-page">
+    <ElCard class="wp-page-hero" shadow="never">
+      <div class="wp-page-hero__content">
         <div>
-          <h1 class="text-2xl font-semibold">采集任务</h1>
-          <p class="text-muted-foreground mt-2">
+          <p class="wp-page-eyebrow">COLLECTION PIPELINE</p>
+          <h1 class="wp-page-title">采集任务</h1>
+          <p class="wp-page-description">
             查看每篇文章的采集阶段、告警和失败原因。
           </p>
         </div>
-        <ElButton type="primary" @click="router.push('/collection/new')">
+        <ElButton
+          class="wp-page-action"
+          size="large"
+          type="primary"
+          @click="router.push('/collection/new')"
+        >
           提交新链接
         </ElButton>
       </div>
     </ElCard>
-    <ElCard shadow="never">
-      <ElSelect
-        v-model="query.status"
-        clearable
-        placeholder="全部状态"
-        class="w-52"
-        @change="
-          pagination.page = 1;
-          load();
-        "
-      >
-        <ElOption
-          v-for="(label, value) in labels"
-          :key="value"
-          :label="label"
-          :value="value"
-        />
-      </ElSelect>
+    <ElCard class="wp-panel wp-filter-panel" shadow="never">
+      <div class="wp-filter-bar">
+        <span class="wp-filter-bar__label">筛选条件</span>
+        <div class="wp-filter-bar__controls">
+          <ElSelect
+            v-model="query.status"
+            clearable
+            placeholder="全部状态"
+            class="w-52"
+            @change="
+              pagination.page = 1;
+              load();
+            "
+          >
+            <ElOption
+              v-for="(label, value) in labels"
+              :key="value"
+              :label="label"
+              :value="value"
+            />
+          </ElSelect>
+        </div>
+      </div>
     </ElCard>
-    <ElCard shadow="never">
-      <ElTable v-loading="loading" :data="jobs" row-key="id">
+    <ElCard class="wp-panel wp-table-panel" shadow="never">
+      <div class="wp-table-panel__header">
+        <div>
+          <p class="wp-panel-title">任务列表</p>
+          <p class="wp-panel-description">跟踪采集任务的当前状态与执行记录</p>
+        </div>
+        <span class="wp-record-count">共 {{ pagination.total }} 条记录</span>
+      </div>
+      <ElTable
+        v-loading="loading"
+        class="wp-data-table"
+        :data="jobs"
+        row-key="id"
+      >
         <ElTableColumn label="任务" width="100" prop="id" /><ElTableColumn
           label="文章"
           min-width="260"
@@ -191,7 +212,7 @@ onBeforeUnmount(() => {
         </ElTableColumn>
         <template #empty><ElEmpty description="暂无采集任务" /></template>
       </ElTable>
-      <div class="mt-4 flex justify-end">
+      <div class="wp-table-panel__footer">
         <ElPagination
           background
           :current-page="pagination.page"
@@ -202,7 +223,12 @@ onBeforeUnmount(() => {
         />
       </div>
     </ElCard>
-    <ElDrawer v-model="drawer" size="min(560px, 92vw)" title="任务详情">
+    <ElDrawer
+      v-model="drawer"
+      class="wp-detail-drawer"
+      size="min(560px, 92vw)"
+      title="任务详情"
+    >
       <template v-if="selected">
         <div class="mb-5 flex items-center gap-3">
           <ElTag :type="tagType(selected.status)">

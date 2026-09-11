@@ -271,56 +271,75 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="space-y-4 p-5">
-    <ElCard shadow="never">
-      <div>
-        <h1 class="text-2xl font-semibold">AI 任务</h1>
-        <p class="text-muted-foreground mt-2">
-          查看文章分析与稿件生成任务的执行状态、用量和失败原因。
-        </p>
+  <div class="wp-page">
+    <ElCard class="wp-page-hero" shadow="never">
+      <div class="wp-page-hero__content">
+        <div>
+          <p class="wp-page-eyebrow">AI PROCESSING</p>
+          <h1 class="wp-page-title">AI 任务</h1>
+          <p class="wp-page-description">
+            查看文章分析与稿件生成任务的执行状态、用量和失败原因。
+          </p>
+        </div>
+        <ElTag effect="light" size="large" type="success">异步队列</ElTag>
       </div>
     </ElCard>
-    <ElCard shadow="never">
-      <div class="flex flex-wrap gap-3">
-        <ElSelect
-          v-model="query.type"
-          clearable
-          class="w-48"
-          placeholder="全部任务类型"
-        >
-          <ElOption
-            v-for="(label, value) in AI_JOB_TYPE_LABELS"
-            :key="value"
-            :label="label"
-            :value="value"
+    <ElCard class="wp-panel wp-filter-panel" shadow="never">
+      <div class="wp-filter-bar">
+        <span class="wp-filter-bar__label">筛选条件</span>
+        <div class="wp-filter-bar__controls">
+          <ElSelect
+            v-model="query.type"
+            clearable
+            class="w-48"
+            placeholder="全部任务类型"
+          >
+            <ElOption
+              v-for="(label, value) in AI_JOB_TYPE_LABELS"
+              :key="value"
+              :label="label"
+              :value="value"
+            />
+          </ElSelect>
+          <ElSelect
+            v-model="query.status"
+            clearable
+            class="w-48"
+            placeholder="全部状态"
+          >
+            <ElOption
+              v-for="(label, value) in AI_JOB_STATUS_LABELS"
+              :key="value"
+              :label="label"
+              :value="value"
+            />
+          </ElSelect>
+          <ElInput
+            v-model="query.articleId"
+            clearable
+            class="w-48"
+            placeholder="文章 ID"
+            @keyup.enter="search"
           />
-        </ElSelect>
-        <ElSelect
-          v-model="query.status"
-          clearable
-          class="w-48"
-          placeholder="全部状态"
-        >
-          <ElOption
-            v-for="(label, value) in AI_JOB_STATUS_LABELS"
-            :key="value"
-            :label="label"
-            :value="value"
-          />
-        </ElSelect>
-        <ElInput
-          v-model="query.articleId"
-          clearable
-          class="w-48"
-          placeholder="文章 ID"
-          @keyup.enter="search"
-        />
-        <ElButton type="primary" @click="search">查询</ElButton>
-        <ElButton @click="reset">重置</ElButton>
+          <ElButton type="primary" @click="search">查询</ElButton>
+          <ElButton @click="reset">重置</ElButton>
+        </div>
       </div>
     </ElCard>
-    <ElCard shadow="never">
-      <ElTable v-loading="loading" :data="jobs" row-key="id">
+    <ElCard class="wp-panel wp-table-panel" shadow="never">
+      <div class="wp-table-panel__header">
+        <div>
+          <p class="wp-panel-title">任务列表</p>
+          <p class="wp-panel-description">跟踪模型、Token 用量和任务执行结果</p>
+        </div>
+        <span class="wp-record-count">共 {{ pagination.total }} 条记录</span>
+      </div>
+      <ElTable
+        v-loading="loading"
+        class="wp-data-table"
+        :data="jobs"
+        row-key="id"
+      >
         <ElTableColumn label="Job ID" width="90" prop="id" />
         <ElTableColumn label="来源文章" min-width="220">
           <template #default="{ row }">
@@ -405,7 +424,7 @@ onBeforeUnmount(() => {
         </ElTableColumn>
         <template #empty><ElEmpty description="暂无 AI 任务" /></template>
       </ElTable>
-      <div class="mt-4 flex justify-end">
+      <div class="wp-table-panel__footer">
         <ElPagination
           background
           :current-page="pagination.page"
@@ -416,7 +435,12 @@ onBeforeUnmount(() => {
         />
       </div>
     </ElCard>
-    <ElDrawer v-model="drawer" size="min(640px, 92vw)" title="AI 任务详情">
+    <ElDrawer
+      v-model="drawer"
+      class="wp-detail-drawer"
+      size="min(640px, 92vw)"
+      title="AI 任务详情"
+    >
       <template v-if="selected">
         <div class="mb-5 flex items-center gap-3">
           <ElTag :type="jobTagType(selected.status)">

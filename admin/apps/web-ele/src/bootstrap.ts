@@ -14,6 +14,7 @@ import { $t, setupI18n } from '#/locales';
 
 import App from './app.vue';
 import { router } from './router';
+import './styles/content-pages.css';
 
 async function bootstrap(namespace: string) {
   const app = createApp(App);

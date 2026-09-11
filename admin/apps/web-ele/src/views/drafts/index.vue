@@ -74,49 +74,64 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="space-y-4 p-5">
-    <ElCard shadow="never">
-      <div
-        class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
-      >
+  <div class="wp-page">
+    <ElCard class="wp-page-hero" shadow="never">
+      <div class="wp-page-hero__content">
         <div>
-          <h1 class="text-2xl font-semibold">微信稿件</h1>
-          <p class="text-muted-foreground mt-2">
+          <p class="wp-page-eyebrow">WECHAT DRAFTS</p>
+          <h1 class="wp-page-title">微信稿件</h1>
+          <p class="wp-page-description">
             从采集文章生成母稿，经过编辑与人工审核后写入公众号草稿箱。
           </p>
         </div>
-        <ElButton type="primary" @click="router.push('/articles')">
+        <ElButton
+          class="wp-page-action"
+          size="large"
+          type="primary"
+          @click="router.push('/articles')"
+        >
           从内容库创建
         </ElButton>
       </div>
     </ElCard>
-    <ElCard shadow="never">
-      <div class="flex flex-wrap gap-3">
-        <ElInput
-          v-model="query.keyword"
-          clearable
-          class="w-72"
-          placeholder="搜索标题或作者"
-          @keyup.enter="search"
-        /><ElSelect
-          v-model="query.status"
-          clearable
-          class="w-48"
-          placeholder="全部状态"
-        >
-          <ElOption
-            v-for="(label, value) in labels"
-            :key="value"
-            :label="label"
-            :value="value"
-          /> </ElSelect
-        ><ElButton type="primary" @click="search">查询</ElButton
-        ><ElButton @click="reset">重置</ElButton>
+    <ElCard class="wp-panel wp-filter-panel" shadow="never">
+      <div class="wp-filter-bar">
+        <span class="wp-filter-bar__label">筛选条件</span>
+        <div class="wp-filter-bar__controls">
+          <ElInput
+            v-model="query.keyword"
+            clearable
+            class="w-72"
+            placeholder="搜索标题或作者"
+            @keyup.enter="search"
+          /><ElSelect
+            v-model="query.status"
+            clearable
+            class="w-48"
+            placeholder="全部状态"
+          >
+            <ElOption
+              v-for="(label, value) in labels"
+              :key="value"
+              :label="label"
+              :value="value"
+            /> </ElSelect
+          ><ElButton type="primary" @click="search">查询</ElButton
+          ><ElButton @click="reset">重置</ElButton>
+        </div>
       </div>
     </ElCard>
-    <ElCard shadow="never">
+    <ElCard class="wp-panel wp-table-panel" shadow="never">
+      <div class="wp-table-panel__header">
+        <div>
+          <p class="wp-panel-title">稿件列表</p>
+          <p class="wp-panel-description">管理编辑、审核和发布状态</p>
+        </div>
+        <span class="wp-record-count">共 {{ pagination.total }} 篇稿件</span>
+      </div>
       <ElTable
         v-loading="loading"
+        class="wp-data-table"
         :data="drafts"
         row-key="id"
         @row-click="(row) => router.push(`/drafts/${row.id}`)"
@@ -155,7 +170,7 @@ onMounted(load);
         </ElTableColumn>
         <template #empty><ElEmpty description="暂无微信稿件" /></template>
       </ElTable>
-      <div class="mt-4 flex justify-end">
+      <div class="wp-table-panel__footer">
         <ElPagination
           background
           :current-page="pagination.page"

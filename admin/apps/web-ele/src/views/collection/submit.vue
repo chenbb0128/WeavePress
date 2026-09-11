@@ -55,18 +55,25 @@ async function submit() {
 </script>
 
 <template>
-  <div class="space-y-4 p-5">
-    <ElCard shadow="never">
-      <h1 class="text-2xl font-semibold">提交文章链接</h1>
-      <p class="text-muted-foreground mt-2">
-        支持微信公众号公开文章和普通静态网页，采集任务会在后台异步执行。
-      </p>
+  <div class="wp-page">
+    <ElCard class="wp-page-hero" shadow="never">
+      <div class="wp-page-hero__content">
+        <div>
+          <p class="wp-page-eyebrow">CONTENT COLLECTION</p>
+          <h1 class="wp-page-title">提交文章链接</h1>
+          <p class="wp-page-description">
+            支持微信公众号公开文章和普通静态网页，采集任务会在后台异步执行。
+          </p>
+        </div>
+        <ElTag effect="light" size="large" type="success">
+          {{ sourceType }}
+        </ElTag>
+      </div>
     </ElCard>
-    <ElCard shadow="never">
-      <div class="mx-auto max-w-3xl py-8">
-        <div class="mb-4 flex items-center gap-2">
-          <span class="text-sm font-medium">识别来源</span
-          ><ElTag effect="plain">{{ sourceType }}</ElTag>
+    <ElCard class="wp-panel wp-submit-panel" shadow="never">
+      <div class="wp-submit-box">
+        <div class="wp-submit-label">
+          <span>文章地址</span><ElTag effect="plain">{{ sourceType }}</ElTag>
         </div>
         <ElInput
           v-model="articleUrl"
@@ -75,6 +82,9 @@ async function submit() {
           size="large"
           @keyup.enter="submit"
         />
+        <p class="wp-submit-help">
+          粘贴公开文章链接，系统会自动识别来源、抽取正文并归档图片。
+        </p>
         <ElButton
           class="mt-4 w-full"
           :loading="submitting"
@@ -84,8 +94,22 @@ async function submit() {
         >
           开始采集
         </ElButton>
+        <div class="wp-submit-features">
+          <div class="wp-submit-feature">
+            <strong>自动识别来源</strong>
+            <span>识别微信公众号文章与普通静态网页。</span>
+          </div>
+          <div class="wp-submit-feature">
+            <strong>后台异步处理</strong>
+            <span>提交后可离开页面，任务进度会持续更新。</span>
+          </div>
+          <div class="wp-submit-feature">
+            <strong>统一内容归档</strong>
+            <span>正文、来源信息和图片会集中进入内容库。</span>
+          </div>
+        </div>
         <ElAlert
-          class="mt-6"
+          class="wp-inline-alert mt-6"
           :closable="false"
           description="系统不会绕过登录、验证码或平台风控。仅提交公开、自产或已获授权的内容。"
           show-icon

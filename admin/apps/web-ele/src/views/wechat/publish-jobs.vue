@@ -104,49 +104,70 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="space-y-4 p-5">
-    <ElCard shadow="never">
-      <div
-        class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
-      >
+  <div class="wp-page">
+    <ElCard class="wp-page-hero" shadow="never">
+      <div class="wp-page-hero__content">
         <div>
-          <h1 class="text-2xl font-semibold">微信发布任务</h1>
-          <p class="text-muted-foreground mt-2">
+          <p class="wp-page-eyebrow">WECHAT PUBLISHING</p>
+          <h1 class="wp-page-title">微信发布任务</h1>
+          <p class="wp-page-description">
             查看素材上传和写入微信公众号草稿箱的执行结果；系统不会自动群发。
           </p>
         </div>
-        <ElButton type="primary" @click="router.push('/drafts')"
+        <ElButton
+          class="wp-page-action"
+          size="large"
+          type="primary"
+          @click="router.push('/drafts')"
           >查看稿件</ElButton
         >
       </div>
     </ElCard>
     <ElAlert
       v-if="!wechat.enabled"
+      class="wp-inline-alert"
       :closable="false"
       title="微信公众号发布未启用，请在服务端配置 AppID 和 AppSecret。"
       type="warning"
     />
-    <ElCard shadow="never">
-      <ElSelect
-        v-model="query.status"
-        clearable
-        class="w-56"
-        placeholder="全部状态"
-        @change="
-          pagination.page = 1;
-          load();
-        "
-      >
-        <ElOption
-          v-for="(label, value) in labels"
-          :key="value"
-          :label="label"
-          :value="value"
-        />
-      </ElSelect>
+    <ElCard class="wp-panel wp-filter-panel" shadow="never">
+      <div class="wp-filter-bar">
+        <span class="wp-filter-bar__label">筛选条件</span>
+        <div class="wp-filter-bar__controls">
+          <ElSelect
+            v-model="query.status"
+            clearable
+            class="w-56"
+            placeholder="全部状态"
+            @change="
+              pagination.page = 1;
+              load();
+            "
+          >
+            <ElOption
+              v-for="(label, value) in labels"
+              :key="value"
+              :label="label"
+              :value="value"
+            />
+          </ElSelect>
+        </div>
+      </div>
     </ElCard>
-    <ElCard shadow="never">
-      <ElTable v-loading="loading" :data="jobs" row-key="id">
+    <ElCard class="wp-panel wp-table-panel" shadow="never">
+      <div class="wp-table-panel__header">
+        <div>
+          <p class="wp-panel-title">发布记录</p>
+          <p class="wp-panel-description">查看草稿写入状态与公众号返回结果</p>
+        </div>
+        <span class="wp-record-count">共 {{ pagination.total }} 条记录</span>
+      </div>
+      <ElTable
+        v-loading="loading"
+        class="wp-data-table"
+        :data="jobs"
+        row-key="id"
+      >
         <ElTableColumn label="任务" width="90" prop="id" />
         <ElTableColumn label="稿件" min-width="280">
           <template #default="{ row }">
@@ -183,7 +204,7 @@ onBeforeUnmount(() => {
         </ElTableColumn>
         <template #empty><ElEmpty description="暂无微信发布任务" /></template>
       </ElTable>
-      <div class="mt-4 flex justify-end">
+      <div class="wp-table-panel__footer">
         <ElPagination
           background
           :current-page="pagination.page"
@@ -194,7 +215,12 @@ onBeforeUnmount(() => {
         />
       </div>
     </ElCard>
-    <ElDrawer v-model="drawer" size="min(560px, 92vw)" title="微信发布任务详情">
+    <ElDrawer
+      v-model="drawer"
+      class="wp-detail-drawer"
+      size="min(560px, 92vw)"
+      title="微信发布任务详情"
+    >
       <template v-if="selected">
         <div class="mb-5 flex items-center gap-3">
           <ElTag :type="tagType(selected.status)">{{

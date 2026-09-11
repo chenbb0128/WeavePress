@@ -137,17 +137,20 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="space-y-4 p-5">
-    <ElCard shadow="never">
-      <div class="flex justify-between">
+  <div class="wp-page">
+    <ElCard class="wp-page-hero" shadow="never">
+      <div class="wp-page-hero__content">
         <div>
-          <h1 class="text-2xl font-semibold">用户管理</h1>
-          <p class="text-muted-foreground mt-2">
+          <p class="wp-page-eyebrow">TEAM MEMBERS</p>
+          <h1 class="wp-page-title">用户管理</h1>
+          <p class="wp-page-description">
             创建内部成员，并分配管理员或编辑角色。
           </p>
         </div>
         <ElButton
           v-access:code="'user:create'"
+          class="wp-page-action"
+          size="large"
           type="primary"
           @click="openCreate"
         >
@@ -155,29 +158,44 @@ onMounted(load);
         </ElButton>
       </div>
     </ElCard>
-    <ElCard shadow="never">
-      <div class="flex flex-wrap gap-3">
-        <ElInput
-          v-model="query.keyword"
-          clearable
-          class="w-72"
-          placeholder="搜索用户名或姓名"
-          @keyup.enter="search"
-        /><ElSelect
-          v-model="query.status"
-          clearable
-          class="w-40"
-          placeholder="全部状态"
-        >
-          <ElOption label="启用" value="active" /><ElOption
-            label="停用"
-            value="disabled"
-          /> </ElSelect
-        ><ElButton type="primary" @click="search">查询</ElButton>
+    <ElCard class="wp-panel wp-filter-panel" shadow="never">
+      <div class="wp-filter-bar">
+        <span class="wp-filter-bar__label">筛选条件</span>
+        <div class="wp-filter-bar__controls">
+          <ElInput
+            v-model="query.keyword"
+            clearable
+            class="w-72"
+            placeholder="搜索用户名或姓名"
+            @keyup.enter="search"
+          /><ElSelect
+            v-model="query.status"
+            clearable
+            class="w-40"
+            placeholder="全部状态"
+          >
+            <ElOption label="启用" value="active" /><ElOption
+              label="停用"
+              value="disabled"
+            /> </ElSelect
+          ><ElButton type="primary" @click="search">查询</ElButton>
+        </div>
       </div>
     </ElCard>
-    <ElCard shadow="never">
-      <ElTable v-loading="loading" :data="users" row-key="id">
+    <ElCard class="wp-panel wp-table-panel" shadow="never">
+      <div class="wp-table-panel__header">
+        <div>
+          <p class="wp-panel-title">成员列表</p>
+          <p class="wp-panel-description">管理团队账号、角色和启用状态</p>
+        </div>
+        <span class="wp-record-count">共 {{ pagination.total }} 位成员</span>
+      </div>
+      <ElTable
+        v-loading="loading"
+        class="wp-data-table"
+        :data="users"
+        row-key="id"
+      >
         <ElTableColumn
           label="用户名"
           min-width="150"
@@ -220,7 +238,7 @@ onMounted(load);
           </template> </ElTableColumn
         ><template #empty><ElEmpty description="暂无用户" /></template>
       </ElTable>
-      <div class="mt-4 flex justify-end">
+      <div class="wp-table-panel__footer">
         <ElPagination
           background
           :current-page="pagination.page"
