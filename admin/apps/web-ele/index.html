@@ -2,6 +2,14 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <script data-css-layer-order>
+      document.head.appendChild(
+        Object.assign(document.createElement('style'), {
+          textContent:
+            '@layer theme, base, ant, antd, el, td, components, utilities;',
+        }),
+      );
+    </script>
     <meta name="renderer" content="webkit" />
     <meta
       name="viewport"
