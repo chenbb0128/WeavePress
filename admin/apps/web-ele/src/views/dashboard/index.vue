@@ -1,5 +1,4 @@
 <script lang="ts" setup>
-/* eslint-disable vue/html-closing-bracket-newline */
 import type { DashboardData } from '#/api';
 
 import { onMounted, ref } from 'vue';
@@ -180,12 +179,12 @@ onMounted(async () => {
 .hero-card {
   position: relative;
   overflow: hidden;
-  border: 1px solid rgb(16 185 129 / 16%);
   background: linear-gradient(
     120deg,
     rgb(16 185 129 / 12%),
     rgb(255 255 255 / 78%) 58%
   );
+  border: 1px solid rgb(16 185 129 / 16%);
 }
 
 :global(.dark) .hero-card {
@@ -212,9 +211,9 @@ onMounted(async () => {
 }
 
 .hero-eyebrow {
-  color: rgb(5 150 105);
   font-size: 11px;
   font-weight: 700;
+  color: rgb(5 150 105);
   letter-spacing: 0.16em;
 }
 
@@ -283,13 +282,13 @@ onMounted(async () => {
 
 .stat-card__mark {
   display: inline-flex;
-  width: 34px;
-  height: 34px;
   align-items: center;
   justify-content: center;
-  color: var(--stat-color);
+  width: 34px;
+  height: 34px;
   font-size: 13px;
   font-weight: 700;
+  color: var(--stat-color);
   background: var(--stat-soft);
   border-radius: 10px;
 }
@@ -345,11 +344,11 @@ onMounted(async () => {
 
 .source-item__icon {
   display: inline-flex;
-  width: 38px;
-  height: 38px;
   flex: none;
   align-items: center;
   justify-content: center;
+  width: 38px;
+  height: 38px;
   font-size: 13px;
   font-weight: 700;
   border-radius: 12px;
