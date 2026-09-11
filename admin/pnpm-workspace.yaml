@@ -23,6 +23,7 @@ autoInstallPeers: true
 dedupePeerDependents: true
 verifyDepsBeforeRun: false
 minimumReleaseAge: 0
+fetchTimeout: 600000
 
 overrides:
   '@ast-grep/napi': 'catalog:'
