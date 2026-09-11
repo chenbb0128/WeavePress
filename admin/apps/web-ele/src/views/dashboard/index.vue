@@ -172,7 +172,11 @@ onMounted(async () => {
 .dashboard-page {
   min-height: 100%;
   background:
-    radial-gradient(circle at 95% 0%, rgb(16 185 129 / 7%), transparent 24rem),
+    radial-gradient(
+      circle at 95% 0%,
+      hsl(var(--primary) / 7%),
+      transparent 24rem
+    ),
     transparent;
 }
 
@@ -181,16 +185,16 @@ onMounted(async () => {
   overflow: hidden;
   background: linear-gradient(
     120deg,
-    rgb(16 185 129 / 12%),
-    rgb(255 255 255 / 78%) 58%
+    hsl(var(--primary) / 12%),
+    hsl(var(--card) / 78%) 58%
   );
-  border: 1px solid rgb(16 185 129 / 16%);
+  border: 1px solid hsl(var(--primary) / 16%);
 }
 
 :global(.dark) .hero-card {
   background: linear-gradient(
     120deg,
-    rgb(16 185 129 / 14%),
+    hsl(var(--primary) / 14%),
     hsl(var(--card)) 58%
   );
 }
@@ -202,7 +206,7 @@ onMounted(async () => {
   width: 15rem;
   height: 15rem;
   content: '';
-  border: 2rem solid rgb(16 185 129 / 8%);
+  border: 2rem solid hsl(var(--primary) / 8%);
   border-radius: 9999px;
 }
 
@@ -213,7 +217,7 @@ onMounted(async () => {
 .hero-eyebrow {
   font-size: 11px;
   font-weight: 700;
-  color: rgb(5 150 105);
+  color: hsl(var(--primary));
   letter-spacing: 0.16em;
 }
 
@@ -227,7 +231,7 @@ onMounted(async () => {
 
 .hero-action {
   min-width: 112px;
-  box-shadow: 0 8px 20px rgb(16 185 129 / 20%);
+  box-shadow: 0 8px 20px hsl(var(--primary) / 20%);
 }
 
 .stat-card {
@@ -245,8 +249,8 @@ onMounted(async () => {
 }
 
 .stat-card--primary {
-  --stat-color: rgb(59 130 246);
-  --stat-soft: rgb(59 130 246 / 10%);
+  --stat-color: hsl(var(--primary));
+  --stat-soft: hsl(var(--primary) / 10%);
 }
 
 .stat-card--success {
