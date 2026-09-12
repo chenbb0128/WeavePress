@@ -88,7 +88,9 @@ func (s *weChatLayoutEditorialStore) CreateUploadedDraftAsset(_ context.Context,
 }
 
 type weChatLayoutObjects struct {
-	objects map[string][]byte
+	objects         map[string][]byte
+	privateURL      string
+	privateURLCalls int
 }
 
 func (s *weChatLayoutObjects) Put(_ context.Context, key string, body []byte, _ string) error {
@@ -107,7 +109,10 @@ func (s *weChatLayoutObjects) Open(_ context.Context, key string) (io.ReadCloser
 	return io.NopCloser(bytes.NewReader(body)), nil
 }
 
-func (*weChatLayoutObjects) PrivateURL(string, time.Duration) (string, error) { return "", nil }
+func (s *weChatLayoutObjects) PrivateURL(string, time.Duration) (string, error) {
+	s.privateURLCalls++
+	return s.privateURL, nil
+}
 
 func TestDraftAssetUploadHTTPBoundaries(t *testing.T) {
 	validPNG := validHTTPDraftPNG(t)
@@ -192,12 +197,24 @@ func TestDraftAssetPrivateMediaAccess(t *testing.T) {
 	const key = "drafts/2026/09/private.png"
 	store.assets = []editorial.DraftAsset{{ID: 6, DraftID: 7, ObjectKey: key, MediaType: "image/png"}}
 	objects.objects[key] = body
+	objects.privateURL = "https://private-storage.example/" + key
 	mediaURL := api.content.SignMedia("draft-assets", 6)
 
 	recorder := performRawRequest(api, http.MethodGet, mediaURL, "")
 	assertStatus(t, recorder, http.StatusOK)
 	if recorder.Header().Get("Content-Type") != "image/png" || !bytes.Equal(recorder.Body.Bytes(), body) {
 		t.Fatalf("media response type=%q bytes=%d", recorder.Header().Get("Content-Type"), recorder.Body.Len())
+	}
+	for name, values := range recorder.Header() {
+		if strings.Contains(strings.Join(values, "\n"), key) {
+			t.Fatalf("response header %q leaked object key %q: %q", name, key, values)
+		}
+	}
+	if strings.Contains(recorder.Body.String(), key) {
+		t.Fatalf("response body leaked object key %q", key)
+	}
+	if objects.privateURLCalls != 0 {
+		t.Fatalf("PrivateURL calls = %d, want 0", objects.privateURLCalls)
 	}
 
 	recorder = performRawRequest(api, http.MethodGet, "/media/draft-assets/6?expires=1&signature=bad", "")

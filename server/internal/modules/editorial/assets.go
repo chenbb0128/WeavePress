@@ -3,6 +3,7 @@ package editorial
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
@@ -75,29 +76,108 @@ func draftImageDimensions(body []byte, mediaType string) (uint, uint) {
 }
 
 func draftWebPDimensions(body []byte) (uint, uint) {
-	if len(body) < 30 || string(body[:4]) != "RIFF" || string(body[8:12]) != "WEBP" {
+	if len(body) < 20 || string(body[:4]) != "RIFF" || string(body[8:12]) != "WEBP" {
 		return 0, 0
 	}
-	chunk, payload := string(body[12:16]), body[20:]
-	read24 := func(value []byte) uint {
-		return uint(value[0]) | uint(value[1])<<8 | uint(value[2])<<16
+	if uint64(binary.LittleEndian.Uint32(body[4:8]))+8 != uint64(len(body)) {
+		return 0, 0
 	}
-	switch chunk {
-	case "VP8X":
-		if len(payload) >= 10 {
-			return read24(payload[4:7]) + 1, read24(payload[7:10]) + 1
+
+	var canvasWidth, canvasHeight uint
+	var imageWidth, imageHeight uint
+	seenVP8X, seenImage, seenAlpha := false, false, false
+	for offset := 12; offset < len(body); {
+		if len(body)-offset < 8 {
+			return 0, 0
 		}
-	case "VP8L":
-		if len(payload) >= 5 && payload[0] == 0x2f {
-			bits := uint(payload[1]) | uint(payload[2])<<8 | uint(payload[3])<<16 | uint(payload[4])<<24
-			return (bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1
+		chunkID := string(body[offset : offset+4])
+		chunkSize := uint64(binary.LittleEndian.Uint32(body[offset+4 : offset+8]))
+		offset += 8
+		if chunkSize > uint64(len(body)-offset) {
+			return 0, 0
 		}
-	case "VP8 ":
-		if len(payload) >= 10 && payload[3] == 0x9d && payload[4] == 0x01 && payload[5] == 0x2a {
-			width := (uint(payload[6]) | uint(payload[7])<<8) & 0x3fff
-			height := (uint(payload[8]) | uint(payload[9])<<8) & 0x3fff
-			return width, height
+		chunkEnd := offset + int(chunkSize)
+		paddedEnd := chunkEnd + int(chunkSize&1)
+		if paddedEnd > len(body) {
+			return 0, 0
 		}
+		payload := body[offset:chunkEnd]
+
+		switch chunkID {
+		case "VP8X":
+			if seenVP8X || seenImage || offset != 20 || len(payload) != 10 || payload[0]&0xc1 != 0 || payload[1] != 0 || payload[2] != 0 || payload[3] != 0 {
+				return 0, 0
+			}
+			seenVP8X = true
+			canvasWidth = readDraftWebPUint24(payload[4:7]) + 1
+			canvasHeight = readDraftWebPUint24(payload[7:10]) + 1
+			if uint64(canvasWidth)*uint64(canvasHeight) > 1<<32-1 {
+				return 0, 0
+			}
+		case "ALPH":
+			if !seenVP8X || seenAlpha || seenImage || len(payload) < 2 || payload[0]&0xc0 != 0 || payload[0]&0x03 > 1 {
+				return 0, 0
+			}
+			seenAlpha = true
+		case "VP8 ":
+			if seenImage {
+				return 0, 0
+			}
+			imageWidth, imageHeight = draftVP8Dimensions(payload)
+			if imageWidth == 0 || imageHeight == 0 || seenVP8X && payloadNeedsDraftWebPAlpha(body[20]) != seenAlpha {
+				return 0, 0
+			}
+			seenImage = true
+		case "VP8L":
+			if seenImage || seenAlpha {
+				return 0, 0
+			}
+			imageWidth, imageHeight = draftVP8LDimensions(payload)
+			if imageWidth == 0 || imageHeight == 0 {
+				return 0, 0
+			}
+			seenImage = true
+		}
+		offset = paddedEnd
 	}
-	return 0, 0
+	if !seenImage {
+		return 0, 0
+	}
+	if seenVP8X && (imageWidth != canvasWidth || imageHeight != canvasHeight) {
+		return 0, 0
+	}
+	return imageWidth, imageHeight
+}
+
+func draftVP8Dimensions(payload []byte) (uint, uint) {
+	if len(payload) < 11 || payload[0]&1 != 0 || payload[3] != 0x9d || payload[4] != 0x01 || payload[5] != 0x2a {
+		return 0, 0
+	}
+	frameTag := uint32(payload[0]) | uint32(payload[1])<<8 | uint32(payload[2])<<16
+	firstPartitionSize := uint64(frameTag >> 5)
+	if firstPartitionSize == 0 || firstPartitionSize+10 >= uint64(len(payload)) {
+		return 0, 0
+	}
+	width := (uint(payload[6]) | uint(payload[7])<<8) & 0x3fff
+	height := (uint(payload[8]) | uint(payload[9])<<8) & 0x3fff
+	return width, height
+}
+
+func draftVP8LDimensions(payload []byte) (uint, uint) {
+	if len(payload) < 6 || payload[0] != 0x2f {
+		return 0, 0
+	}
+	bits := binary.LittleEndian.Uint32(payload[1:5])
+	if bits>>29 != 0 {
+		return 0, 0
+	}
+	return uint(bits&0x3fff) + 1, uint((bits>>14)&0x3fff) + 1
+}
+
+func readDraftWebPUint24(value []byte) uint {
+	return uint(value[0]) | uint(value[1])<<8 | uint(value[2])<<16
+}
+
+func payloadNeedsDraftWebPAlpha(vp8xFlags byte) bool {
+	return vp8xFlags&(1<<4) != 0
 }

@@ -776,14 +776,16 @@ func (a *API) media(kind string) gin.HandlerFunc {
 			c.Status(http.StatusNotFound)
 			return
 		}
-		direct, err := a.content.ObjectStore().PrivateURL(key, time.Minute)
-		if err != nil {
-			c.Status(http.StatusBadGateway)
-			return
-		}
-		if direct != "" {
-			c.Redirect(http.StatusTemporaryRedirect, direct)
-			return
+		if kind != "draft-assets" {
+			direct, err := a.content.ObjectStore().PrivateURL(key, time.Minute)
+			if err != nil {
+				c.Status(http.StatusBadGateway)
+				return
+			}
+			if direct != "" {
+				c.Redirect(http.StatusTemporaryRedirect, direct)
+				return
+			}
 		}
 		reader, err := a.content.ObjectStore().Open(c.Request.Context(), key)
 		if err != nil {
