@@ -63,11 +63,7 @@ func (converter *legacyConverter) convertBlock(node *xhtml.Node) []Node {
 			}
 			return []Node{{Type: "heading", Attrs: rawAttrs(map[string]any{"level": level}), Content: content}}
 		case "p":
-			content := converter.convertInlineChildren(node, nil)
-			if !inlineHasText(content) {
-				return nil
-			}
-			return []Node{paragraphNode(content)}
+			return converter.convertParagraph(node)
 		case "blockquote":
 			content := converter.convertBlockChildren(node)
 			if len(content) == 0 {
@@ -92,6 +88,29 @@ func (converter *legacyConverter) convertBlock(node *xhtml.Node) []Node {
 	default:
 		return nil
 	}
+}
+
+func (converter *legacyConverter) convertParagraph(node *xhtml.Node) []Node {
+	result := make([]Node, 0)
+	inline := make([]Node, 0)
+	flushInline := func() {
+		if inlineHasText(inline) {
+			result = append(result, paragraphNode(inline))
+		}
+		inline = nil
+	}
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == xhtml.ElementNode && child.Data == "img" {
+			flushInline()
+			if image, ok := converter.convertImage(child); ok {
+				result = append(result, image)
+			}
+			continue
+		}
+		inline = append(inline, converter.convertInline(child, nil)...)
+	}
+	flushInline()
+	return result
 }
 
 func (converter *legacyConverter) convertBlockChildren(parent *xhtml.Node) []Node {
@@ -181,6 +200,10 @@ func (converter *legacyConverter) convertInline(node *xhtml.Node, marks []Mark) 
 			}
 			if _, ok := attrs["href"]; !ok {
 				converter.warn("链接缺少安全地址，已保留文字")
+				return converter.convertInlineChildren(node, marks)
+			}
+			if href, _ := attrs["href"].(string); !isSupportedLinkHref(href) {
+				converter.warn("链接协议不受支持，已保留文字")
 				return converter.convertInlineChildren(node, marks)
 			}
 			return converter.convertInlineChildren(node, appendMark(marks, Mark{Type: "link", Attrs: rawAttrs(attrs)}))

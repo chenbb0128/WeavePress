@@ -15,6 +15,10 @@ func TestValidateDocument(t *testing.T) {
 	}{
 		{"paragraph", `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"正文","marks":[{"type":"bold"}]}]}]}`, true},
 		{"image", `{"type":"doc","content":[{"type":"image","attrs":{"draftAssetId":18,"width":75,"align":"center","alt":"产品","caption":"说明"}}]}`, true},
+		{"horizontal rule", `{"type":"doc","content":[{"type":"horizontalRule"}]}`, true},
+		{"horizontal rule in blockquote", `{"type":"doc","content":[{"type":"blockquote","content":[{"type":"horizontalRule"}]}]}`, true},
+		{"horizontal rule in list item", `{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"horizontalRule"}]}]}]}`, true},
+		{"horizontal rule in paragraph rejected", `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"horizontalRule"}]}]}`, false},
 		{"h1 rejected", `{"type":"doc","content":[{"type":"heading","attrs":{"level":1}}]}`, false},
 		{"script node rejected", `{"type":"doc","content":[{"type":"script"}]}`, false},
 		{"javascript link rejected", `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"链接","marks":[{"type":"link","attrs":{"href":"javascript:alert(1)"}}]}]}]}`, false},

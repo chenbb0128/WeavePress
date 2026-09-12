@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -148,6 +149,13 @@ func (state *documentValidationState) validateNode(node Node, parent string, dep
 		if len(node.Content) != 0 || node.Text != "" || len(node.Marks) != 0 {
 			return fmt.Errorf("hardBreak must be empty")
 		}
+	case "horizontalRule":
+		if err := requireNoAttrs(node.Attrs); err != nil {
+			return err
+		}
+		if len(node.Content) != 0 || node.Text != "" || len(node.Marks) != 0 {
+			return fmt.Errorf("horizontalRule must be empty")
+		}
 	case "image":
 		if err := state.validateImage(node); err != nil {
 			return err
@@ -208,8 +216,7 @@ func validateMark(mark Mark) error {
 		if err := decodeAttr(mark.Attrs, "href", &href); err != nil {
 			return fmt.Errorf("link href must be a string")
 		}
-		parsed, err := url.ParseRequestURI(href)
-		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		if !isSupportedLinkHref(href) {
 			return fmt.Errorf("link href must use http or https")
 		}
 		if raw, ok := mark.Attrs["title"]; ok {
@@ -227,18 +234,23 @@ func validateMark(mark Mark) error {
 func allowsChild(parent, child string) bool {
 	switch parent {
 	case "doc":
-		return child == "paragraph" || child == "heading" || child == "blockquote" || child == "bulletList" || child == "orderedList" || child == "image"
+		return child == "paragraph" || child == "heading" || child == "blockquote" || child == "bulletList" || child == "orderedList" || child == "image" || child == "horizontalRule"
 	case "paragraph", "heading":
 		return child == "text" || child == "hardBreak"
 	case "blockquote":
-		return child == "paragraph" || child == "heading" || child == "blockquote" || child == "bulletList" || child == "orderedList" || child == "image"
+		return child == "paragraph" || child == "heading" || child == "blockquote" || child == "bulletList" || child == "orderedList" || child == "image" || child == "horizontalRule"
 	case "bulletList", "orderedList":
 		return child == "listItem"
 	case "listItem":
-		return child == "paragraph" || child == "heading" || child == "blockquote" || child == "bulletList" || child == "orderedList" || child == "image"
+		return child == "paragraph" || child == "heading" || child == "blockquote" || child == "bulletList" || child == "orderedList" || child == "image" || child == "horizontalRule"
 	default:
 		return false
 	}
+}
+
+func isSupportedLinkHref(href string) bool {
+	parsed, err := url.ParseRequestURI(href)
+	return err == nil && (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https"))
 }
 
 func requireNoAttrs(attrs map[string]json.RawMessage) error {

@@ -67,6 +67,40 @@ func TestConvertLegacyHTMLRejectsContentWithoutBody(t *testing.T) {
 	}
 }
 
+func TestConvertLegacyHTMLSplitsParagraphAroundMappedImage(t *testing.T) {
+	result, err := ConvertLegacyHTML(`<p>图片前<img data-weavepress-asset-id="11" alt="插图">图片后<strong>加粗</strong></p>`, map[uint64]uint64{11: 101})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Document.Content) != 3 {
+		t.Fatalf("content = %#v", result.Document.Content)
+	}
+	if got := []string{result.Document.Content[0].Type, result.Document.Content[1].Type, result.Document.Content[2].Type}; !reflect.DeepEqual(got, []string{"paragraph", "image", "paragraph"}) {
+		t.Fatalf("node types = %v, document = %#v", got, result.Document)
+	}
+	if ids := ReferencedDraftAssetIDs(result.Document); !reflect.DeepEqual(ids, []uint64{101}) {
+		t.Fatalf("ids = %v", ids)
+	}
+	trailing := result.Document.Content[2].Content
+	if trailing[0].Text != "图片后" || trailing[1].Text != "加粗" || len(trailing[1].Marks) != 1 || trailing[1].Marks[0].Type != "bold" {
+		t.Fatalf("trailing paragraph = %#v", trailing)
+	}
+}
+
+func TestConvertLegacyHTMLDropsUnsupportedLinkMark(t *testing.T) {
+	result, err := ConvertLegacyHTML(`<p><a href="mailto:editor@example.com">邮件联系</a></p>`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Document.Content[0].Content[0]
+	if text.Text != "邮件联系" || len(text.Marks) != 0 {
+		t.Fatalf("text = %#v", text)
+	}
+	if len(result.Warnings) == 0 {
+		t.Fatal("expected unsupported-link warning")
+	}
+}
+
 func TestPreviewHTMLSupportsDraftAndLegacyPlaceholders(t *testing.T) {
 	preview := PreviewHTML(`<img data-weavepress-draft-asset-id="7"><img data-weavepress-asset-id="8">`, func(id uint64) string {
 		return "/media/drafts/" + strconv.FormatUint(id, 10)

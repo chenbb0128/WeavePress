@@ -1,6 +1,7 @@
 package editorial
 
 import (
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -46,5 +47,19 @@ func TestSanitizeHTMLDropsScriptsAndExternalImageSources(t *testing.T) {
 func TestReferencedAssetIDsRejectsUnarchivedImages(t *testing.T) {
 	if _, err := ReferencedAssetIDs(`<p>正文</p><img alt="外部图片">`); err == nil {
 		t.Fatal("image without archived asset placeholder was accepted")
+	}
+}
+
+func TestPreviewHTMLPrefersDraftAssetPlaceholder(t *testing.T) {
+	var requested []uint64
+	preview := PreviewHTML(`<img data-weavepress-asset-id="8" data-weavepress-draft-asset-id="7">`, func(id uint64) string {
+		requested = append(requested, id)
+		return "/media/assets/" + strconv.FormatUint(id, 10)
+	})
+	if !reflect.DeepEqual(requested, []uint64{7}) {
+		t.Fatalf("requested IDs = %v", requested)
+	}
+	if strings.Count(preview, `src=`) != 1 || !strings.Contains(preview, `src="/media/assets/7"`) {
+		t.Fatalf("preview = %s", preview)
 	}
 }

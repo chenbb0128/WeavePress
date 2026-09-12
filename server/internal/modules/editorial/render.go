@@ -119,12 +119,23 @@ func PreviewHTML(value string, assetURL func(uint64) string) string {
 	var walk func(*xhtml.Node)
 	walk = func(node *xhtml.Node) {
 		if node.Type == xhtml.ElementNode && node.Data == "img" {
+			placeholder := ""
 			for _, attr := range node.Attr {
-				if attr.Key == "data-weavepress-draft-asset-id" || attr.Key == "data-weavepress-asset-id" {
-					if id, parseErr := strconv.ParseUint(attr.Val, 10, 64); parseErr == nil && id > 0 {
-						node.Attr = append(node.Attr, xhtml.Attribute{Key: "src", Val: assetURL(id)})
+				if attr.Key == "data-weavepress-draft-asset-id" {
+					placeholder = attr.Val
+					break
+				}
+			}
+			if placeholder == "" {
+				for _, attr := range node.Attr {
+					if attr.Key == "data-weavepress-asset-id" {
+						placeholder = attr.Val
+						break
 					}
 				}
+			}
+			if id, parseErr := strconv.ParseUint(placeholder, 10, 64); parseErr == nil && id > 0 {
+				node.Attr = append(node.Attr, xhtml.Attribute{Key: "src", Val: assetURL(id)})
 			}
 		}
 		for child := node.FirstChild; child != nil; child = child.NextSibling {
