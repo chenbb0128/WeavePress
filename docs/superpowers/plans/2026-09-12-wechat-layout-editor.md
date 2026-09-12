@@ -484,8 +484,8 @@ if len(assets) != 2 || assets[0].Origin != "article" { t.Fatalf("assets = %#v", 
 doc, err := editorial.ParseDocument(json.RawMessage(fmt.Sprintf(`{"type":"doc","content":[{"type":"image","attrs":{"draftAssetId":%d,"width":100,"align":"center","alt":"","caption":""}}]}`, assets[0].ID)))
 if err != nil { t.Fatal(err) }
 updated, err := store.UpdateDraft(ctx, draft.ID, user.ID, editorial.UpdateInput{
-    Title: "排版稿", EditorDocument: doc, ThemeID: "clear-blue", ThemeVersion: 1,
-    RenderedHTML: "<section>saved</section>", ExpectedVersion: draft.CurrentVersion, ChangeNote: "排版保存",
+    Title: "排版稿", EditorDocument: &doc, ThemeID: "clear-blue", ThemeVersion: 1,
+    ContentHTML: "<section>saved</section>", ExpectedVersion: draft.CurrentVersion, ChangeNote: "排版保存",
 })
 if err != nil { t.Fatal(err) }
 if updated.CurrentVersion != 2 || updated.EditorDocument == nil || updated.ThemeID != "clear-blue" { t.Fatalf("updated = %#v", updated) }
@@ -510,30 +510,17 @@ type UpdateInput struct {
     Title           string
     Author          string
     Digest          string
-    EditorDocument Document
+    ContentHTML     string
+    EditorDocument *Document
     ThemeID         string
     ThemeVersion    uint
-    RenderedHTML    string
     CoverAssetID    *uint64
     ExpectedVersion uint
     ChangeNote      string
 }
-
-type RestoreInput struct {
-    TargetVersion   uint
-    ExpectedVersion uint
-    Title           string
-    Author          string
-    Digest          string
-    EditorDocument Document
-    ThemeID         string
-    ThemeVersion    uint
-    RenderedHTML    string
-    CoverAssetID    *uint64
-}
 ```
 
-并在 `store.go` 一次性增加完整端口，确保同一提交内所有实现就绪：
+`ContentHTML` 是 service 传给 store 的内部字段，不属于最终 HTTP 保存请求。并在 `store.go` 一次性增加素材端口，确保同一提交内所有实现就绪：
 
 ```go
 EnsureArticleAssets(context.Context, uint64, uint64, uint64) error
@@ -541,7 +528,6 @@ ListDraftAssets(context.Context, uint64) ([]DraftAsset, error)
 GetDraftAsset(context.Context, uint64, uint64) (DraftAsset, error)
 GetDraftAssetByID(context.Context, uint64) (DraftAsset, error)
 CreateUploadedDraftAsset(context.Context, uint64, uint64, NewDraftAsset) (DraftAsset, error)
-RestoreDraftVersion(context.Context, uint64, uint64, RestoreInput) (Draft, error)
 ```
 
 - [ ] **Step 4: 实现稿件素材 SQL**
@@ -562,7 +548,7 @@ WHERE article_id = ? AND download_status = 'completed' AND object_key <> ''
 
 `CreateDraft` 和 `AIStore.CompleteGeneration` 都先以 `cover_asset_id = NULL` 创建稿件，再在同一事务登记来源素材，按 `(draft_id, article_asset_id)` 查到新的稿件素材 ID，最后更新当前稿和 v1 封面。初始 `content_html` 保留旧占位、`editor_document` 为 NULL，因此首次读取走 Task 2 的无写入转换。`GeneratedDraftInput.CoverAssetID` 继续表示来源文章素材 ID，只在事务内部映射，避免改动 AI 生成 service 的外部语义。
 
-`UpdateDraft` 在同一事务中更新当前稿的 `editor_document/theme_id/theme_version/content_html/cover_asset_id` 并插入完全相同快照的 `draft_versions`。`RestoreDraftVersion` 接收 service 已准备好的 `RestoreInput`，锁定当前版本、检查 expectedVersion 后写入一个新版本，不修改目标历史记录。
+`UpdateDraft` 在同一事务中更新当前稿的 `editor_document/theme_id/theme_version/content_html/cover_asset_id` 并插入完全相同快照的 `draft_versions`。Task 4 暂时保留现有 `RestoreDraftVersion(ctx, id, userID, targetVersion, expectedVersion)` 签名，并在原事务中把历史版本的结构化文档、主题和 HTML 一起复制到新版本；旧 HTML 转换后恢复所需的 `RestoreInput` 在 Task 6 与 service 同步切换。
 
 - [ ] **Step 6: 运行最小持久化测试并提交**
 
@@ -707,11 +693,14 @@ git commit -m "feat: 增加微信稿件素材上传"
 ### Task 6: 串联保存、旧稿、预检、恢复和微信发布
 
 **Files:**
+- Modify: `server/internal/modules/editorial/model.go`
+- Modify: `server/internal/modules/editorial/store.go`
 - Modify: `server/internal/modules/editorial/service.go`
 - Modify: `server/internal/modules/editorial/preflight.go`
 - Modify: `server/internal/modules/editorial/preflight_test.go`
 - Modify: `server/internal/modules/editorial/render.go`
 - Modify: `server/internal/modules/editorial/service_test.go`
+- Modify: `server/internal/modules/workspace/mysqlstore/editorial.go`
 - Modify: `server/internal/platform/wechat/client.go`
 - Modify: `server/internal/platform/wechat/client_test.go`
 - Modify: `server/internal/transport/weaveapi/api.go`
@@ -730,7 +719,7 @@ func TestUpdateRendersTrustedDocument(t *testing.T) {
     service := New(store, store, nil, nil, newFakeObjects(), false)
     doc := mustDocument(t, `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"正文"}]}]}`)
     saved, err := service.Update(context.Background(), 1, 7, UpdateInput{
-        Title: "标题", EditorDocument: doc, ThemeID: "clear-blue",
+        Title: "标题", EditorDocument: &doc, ThemeID: "clear-blue",
         ExpectedVersion: 1, ChangeNote: "调整排版",
     })
     if err != nil { t.Fatal(err) }
@@ -759,13 +748,34 @@ func (s *Service) validateDraftAssets(ctx context.Context, draftID uint64, doc D
 
 `hydrateDraft` 调用 `EnsureArticleAssets` 和 `ListDraftAssets`。当 `EditorDocument == nil` 时，构造 `article_asset_id -> draft_assets.id` 映射并调用 `ConvertLegacyHTML`，只修改返回值，设置默认主题与 `MigrationNeeded=true`；转换失败保留原 `ContentHTML`，返回 `MigrationNeeded=true` 和中文警告，不写数据库。
 
-`prepareUpdate` 固定 `ThemeVersion=1`，调用 `ResolveTheme`、`ValidateDocument`、素材归属/状态/正文 1 MiB 校验，再调用 `RenderDocument` 填充 `RenderedHTML`。API 的 PUT 请求不再接收 `contentHtml` 和 `themeVersion`。
+`prepareUpdate` 要求 `EditorDocument != nil`，固定 `ThemeVersion=1`，调用 `ResolveTheme`、`ValidateDocument`、素材归属/状态/正文 1 MiB 校验，再调用 `RenderDocument` 填充内部 `ContentHTML`。API 的 PUT 请求不再接收 `contentHtml` 和 `themeVersion`。
 
 - [ ] **Step 4: 修改预检和版本恢复**
 
 `ValidateWeChatDraft` 只接受最近保存的非空 `EditorDocument` 和 `ContentHTML`；正文图片从 `ReferencedDraftAssetIDs(*draft.EditorDocument)` 获取，素材从 `draft.Assets` 匹配。封面必须属于当前稿件且 `CoverEligible=true`。增加稳定 issue：`EDITOR_DOCUMENT_REQUIRED`、`DRAFT_ASSET_MISSING`、`CONTENT_IMAGE_TOO_LARGE`、`COVER_ASSET_INVALID`。
 
 `RestoreVersion` 对结构化历史版本直接重新校验并按记录的 `(theme_id, theme_version)` 渲染；旧版本先转换。恢复后的新版本完整保存文档、主题、HTML、元信息和封面。
+
+在 `model.go` 增加 `RestoreInput`，并与 `store.go`、MySQL 实现同步把恢复签名切换为：
+
+```go
+type RestoreInput struct {
+    TargetVersion   uint
+    ExpectedVersion uint
+    Title           string
+    Author          string
+    Digest          string
+    EditorDocument *Document
+    ThemeID         string
+    ThemeVersion    uint
+    ContentHTML     string
+    CoverAssetID    *uint64
+}
+
+RestoreDraftVersion(context.Context, uint64, uint64, RestoreInput) (Draft, error)
+```
+
+`SubmitReview` 必须先读取 hydrate 后的最近保存版本并运行 `ValidateWeChatDraft`，预检失败返回 `PreflightError`，成功才把状态从 `editing` 改为 `in_review`。`Preflight` 和发布任务的 `process` 同样使用 hydrate 后带 `draft.Assets` 的稿件，确保上传图片在检查和发布时可见。
 
 - [ ] **Step 5: 修改微信发布适配器**
 
@@ -797,7 +807,7 @@ Run: `cd server; go test ./internal/modules/editorial ./internal/platform/wechat
 Expected: PASS。
 
 ```bash
-git add server/internal/modules/editorial server/internal/platform/wechat/client.go server/internal/platform/wechat/client_test.go server/internal/transport/weaveapi/api.go
+git add server/internal/modules/editorial server/internal/modules/workspace/mysqlstore/editorial.go server/internal/platform/wechat/client.go server/internal/platform/wechat/client_test.go server/internal/transport/weaveapi/api.go
 git commit -m "feat: 串联微信排版保存与发布"
 ```
 
