@@ -9,6 +9,9 @@ import (
 )
 
 const (
+	DefaultThemeID           = "minimal-business"
+	DefaultThemeVersion uint = 1
+
 	StatusEditing       = "editing"
 	StatusInReview      = "in_review"
 	StatusApproved      = "approved"
@@ -23,6 +26,13 @@ const (
 )
 
 var (
+	ErrDocumentInvalid     = errors.New("editor document is invalid")
+	ErrThemeNotFound       = errors.New("wechat layout theme not found")
+	ErrDraftAssetInvalid   = errors.New("draft asset is invalid")
+	ErrDraftAssetTooLarge  = errors.New("draft asset is too large")
+	ErrDraftAssetType      = errors.New("draft asset type is unsupported")
+	ErrLegacyConvertFailed = errors.New("legacy draft conversion failed")
+
 	ErrDraftNotEditable     = errors.New("draft is not editable")
 	ErrDraftStateConflict   = errors.New("draft state transition conflict")
 	ErrDraftVersionConflict = errors.New("draft version conflict")
@@ -81,6 +91,33 @@ type DraftVersion struct {
 	ChangeNote   string    `json:"changeNote"`
 	CreatedBy    uint64    `json:"createdBy"`
 	CreatedAt    time.Time `json:"createdAt"`
+}
+
+type DraftAsset struct {
+	ID             uint64    `json:"id"`
+	DraftID        uint64    `json:"draftId"`
+	Origin         string    `json:"origin"`
+	ArticleAssetID *uint64   `json:"articleAssetId,omitempty"`
+	ObjectKey      string    `json:"-"`
+	MediaType      string    `json:"mediaType"`
+	ByteSize       uint64    `json:"byteSize"`
+	Width          uint      `json:"width"`
+	Height         uint      `json:"height"`
+	SHA256         [32]byte  `json:"-"`
+	UploadedBy     uint64    `json:"uploadedBy"`
+	CreatedAt      time.Time `json:"createdAt"`
+	MediaURL       string    `json:"mediaUrl"`
+	BodyEligible   bool      `json:"bodyEligible"`
+	CoverEligible  bool      `json:"coverEligible"`
+}
+
+type NewDraftAsset struct {
+	ObjectKey string
+	MediaType string
+	ByteSize  uint64
+	Width     uint
+	Height    uint
+	SHA256    [32]byte
 }
 
 type PublishJob struct {
