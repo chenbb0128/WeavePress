@@ -3,6 +3,7 @@ package mysqlstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -12,7 +13,12 @@ import (
 
 const (
 	draftColumns = `id, source_article_id, title, author, digest, content_html, cover_asset_id,
-		status, current_version, created_by, updated_by, created_at, updated_at`
+		status, current_version, created_by, updated_by, created_at, updated_at,
+		editor_document, theme_id, theme_version`
+	draftVersionColumns = `id, draft_id, version, title, author, digest, content_html, cover_asset_id,
+		change_note, created_by, created_at, editor_document, theme_id, theme_version`
+	draftAssetColumns = `id, draft_id, origin, article_asset_id, object_key, media_type,
+		byte_size, width, height, sha256, uploaded_by, created_at`
 	publishJobColumns = `id, draft_id, requested_by, status, attempts, manual_retries,
 		remote_media_id, error_code, error_message, started_at, finished_at, created_at, updated_at`
 )
@@ -23,7 +29,7 @@ func (s *Store) CreateDraft(ctx context.Context, articleID, userID uint64, title
 		return editorial.Draft{}, err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `INSERT INTO drafts (source_article_id, title, author, digest, content_html, cover_asset_id, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, articleID, title, author, digest, contentHTML, nullableID(coverID), userID, userID)
+	result, err := tx.ExecContext(ctx, `INSERT INTO drafts (source_article_id, title, author, digest, content_html, cover_asset_id, created_by, updated_by) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`, articleID, title, author, digest, contentHTML, userID, userID)
 	if err != nil {
 		return editorial.Draft{}, err
 	}
@@ -31,16 +37,95 @@ func (s *Store) CreateDraft(ctx context.Context, articleID, userID uint64, title
 	if err != nil {
 		return editorial.Draft{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO draft_versions (draft_id, version, title, author, digest, content_html, cover_asset_id, change_note, created_by) VALUES (?, 1, ?, ?, ?, ?, ?, '从采集文章创建', ?)`, id, title, author, digest, contentHTML, nullableID(coverID), userID); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO draft_versions (draft_id, version, title, author, digest, content_html, cover_asset_id, change_note, created_by) VALUES (?, 1, ?, ?, ?, ?, NULL, '从采集文章创建', ?)`, id, title, author, digest, contentHTML, userID); err != nil {
 		return editorial.Draft{}, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO draft_events (draft_id, actor_id, from_status, to_status, note) VALUES (?, ?, '', 'editing', '从采集文章创建')`, id, userID); err != nil {
 		return editorial.Draft{}, err
 	}
+	if err = ensureArticleAssets(ctx, tx, uint64(id), articleID, userID); err != nil {
+		return editorial.Draft{}, err
+	}
+	if coverID != nil {
+		mappedCoverID, mapErr := getArticleDraftAssetID(ctx, tx, uint64(id), *coverID)
+		if mapErr != nil {
+			return editorial.Draft{}, mapErr
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE drafts SET cover_asset_id = ? WHERE id = ?`, mappedCoverID, id); err != nil {
+			return editorial.Draft{}, err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE draft_versions SET cover_asset_id = ? WHERE draft_id = ? AND version = 1`, mappedCoverID, id); err != nil {
+			return editorial.Draft{}, err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return editorial.Draft{}, err
 	}
 	return s.GetDraft(ctx, uint64(id), true)
+}
+
+func (s *Store) EnsureArticleAssets(ctx context.Context, draftID, articleID, userID uint64) error {
+	return ensureArticleAssets(ctx, s.db, draftID, articleID, userID)
+}
+
+func (s *Store) ListDraftAssets(ctx context.Context, draftID uint64) ([]editorial.DraftAsset, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+draftAssetColumns+` FROM draft_assets WHERE draft_id = ? ORDER BY id`, draftID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	assets := make([]editorial.DraftAsset, 0)
+	for rows.Next() {
+		asset, scanErr := scanDraftAsset(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		assets = append(assets, asset)
+	}
+	return assets, rows.Err()
+}
+
+func (s *Store) GetDraftAsset(ctx context.Context, draftID, assetID uint64) (editorial.DraftAsset, error) {
+	return scanDraftAsset(s.db.QueryRowContext(ctx, `SELECT `+draftAssetColumns+` FROM draft_assets WHERE id = ? AND draft_id = ?`, assetID, draftID))
+}
+
+func (s *Store) GetDraftAssetByID(ctx context.Context, assetID uint64) (editorial.DraftAsset, error) {
+	return scanDraftAsset(s.db.QueryRowContext(ctx, `SELECT `+draftAssetColumns+` FROM draft_assets WHERE id = ?`, assetID))
+}
+
+func (s *Store) CreateUploadedDraftAsset(ctx context.Context, draftID, userID uint64, input editorial.NewDraftAsset) (editorial.DraftAsset, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return editorial.DraftAsset{}, err
+	}
+	defer tx.Rollback()
+	var status string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM drafts WHERE id = ? FOR UPDATE`, draftID).Scan(&status); errors.Is(err, sql.ErrNoRows) {
+		return editorial.DraftAsset{}, workspace.ErrNotFound
+	} else if err != nil {
+		return editorial.DraftAsset{}, err
+	}
+	if status != editorial.StatusEditing {
+		return editorial.DraftAsset{}, editorial.ErrDraftNotEditable
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO draft_assets
+		(draft_id, origin, article_asset_id, object_key, media_type, byte_size, width, height, sha256, uploaded_by)
+		VALUES (?, 'upload', NULL, ?, ?, ?, ?, ?, ?, ?)`, draftID, input.ObjectKey, input.MediaType, input.ByteSize, input.Width, input.Height, input.SHA256[:], userID)
+	if err != nil {
+		return editorial.DraftAsset{}, err
+	}
+	assetID, err := result.LastInsertId()
+	if err != nil {
+		return editorial.DraftAsset{}, err
+	}
+	asset, err := scanDraftAsset(tx.QueryRowContext(ctx, `SELECT `+draftAssetColumns+` FROM draft_assets WHERE id = ?`, assetID))
+	if err != nil {
+		return editorial.DraftAsset{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return editorial.DraftAsset{}, err
+	}
+	return asset, nil
 }
 
 func (s *Store) GetDraft(ctx context.Context, id uint64, withSource bool) (editorial.Draft, error) {
@@ -108,21 +193,16 @@ func (s *Store) ListDrafts(ctx context.Context, keyword, status string, page, pa
 }
 
 func (s *Store) ListDraftVersions(ctx context.Context, draftID uint64) ([]editorial.DraftVersion, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, draft_id, version, title, author, digest, content_html, cover_asset_id, change_note, created_by, created_at FROM draft_versions WHERE draft_id = ? ORDER BY version DESC`, draftID)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+draftVersionColumns+` FROM draft_versions WHERE draft_id = ? ORDER BY version DESC`, draftID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	items := make([]editorial.DraftVersion, 0)
 	for rows.Next() {
-		var item editorial.DraftVersion
-		var cover sql.NullInt64
-		if err := rows.Scan(&item.ID, &item.DraftID, &item.Version, &item.Title, &item.Author, &item.Digest, &item.ContentHTML, &cover, &item.ChangeNote, &item.CreatedBy, &item.CreatedAt); err != nil {
-			return nil, err
-		}
-		if cover.Valid {
-			id := uint64(cover.Int64)
-			item.CoverAssetID = &id
+		item, scanErr := scanDraftVersion(rows)
+		if scanErr != nil {
+			return nil, scanErr
 		}
 		items = append(items, item)
 	}
@@ -130,10 +210,14 @@ func (s *Store) ListDraftVersions(ctx context.Context, draftID uint64) ([]editor
 }
 
 func (s *Store) GetDraftVersion(ctx context.Context, draftID uint64, version uint) (editorial.DraftVersion, error) {
-	return scanDraftVersion(s.db.QueryRowContext(ctx, `SELECT id, draft_id, version, title, author, digest, content_html, cover_asset_id, change_note, created_by, created_at FROM draft_versions WHERE draft_id = ? AND version = ?`, draftID, version))
+	return scanDraftVersion(s.db.QueryRowContext(ctx, `SELECT `+draftVersionColumns+` FROM draft_versions WHERE draft_id = ? AND version = ?`, draftID, version))
 }
 
 func (s *Store) UpdateDraft(ctx context.Context, id, userID uint64, input editorial.UpdateInput) (editorial.Draft, error) {
+	editorDocument, err := marshalEditorDocument(input.EditorDocument)
+	if err != nil {
+		return editorial.Draft{}, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return editorial.Draft{}, err
@@ -153,14 +237,14 @@ func (s *Store) UpdateDraft(ctx context.Context, id, userID uint64, input editor
 		return editorial.Draft{}, editorial.ErrDraftVersionConflict
 	}
 	nextVersion := version + 1
-	result, err := tx.ExecContext(ctx, `UPDATE drafts SET title = ?, author = ?, digest = ?, content_html = ?, cover_asset_id = ?, current_version = ?, updated_by = ? WHERE id = ? AND status = 'editing' AND current_version = ?`, input.Title, input.Author, input.Digest, input.ContentHTML, nullableID(input.CoverAssetID), nextVersion, userID, id, version)
+	result, err := tx.ExecContext(ctx, `UPDATE drafts SET title = ?, author = ?, digest = ?, content_html = ?, editor_document = ?, theme_id = ?, theme_version = ?, cover_asset_id = ?, current_version = ?, updated_by = ? WHERE id = ? AND status = 'editing' AND current_version = ?`, input.Title, input.Author, input.Digest, input.ContentHTML, editorDocument, input.ThemeID, input.ThemeVersion, nullableID(input.CoverAssetID), nextVersion, userID, id, version)
 	if err != nil {
 		return editorial.Draft{}, err
 	}
 	if affected, _ := result.RowsAffected(); affected != 1 {
 		return editorial.Draft{}, editorial.ErrDraftVersionConflict
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO draft_versions (draft_id, version, title, author, digest, content_html, cover_asset_id, change_note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, nextVersion, input.Title, input.Author, input.Digest, input.ContentHTML, nullableID(input.CoverAssetID), input.ChangeNote, userID); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO draft_versions (draft_id, version, title, author, digest, content_html, editor_document, theme_id, theme_version, cover_asset_id, change_note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, nextVersion, input.Title, input.Author, input.Digest, input.ContentHTML, editorDocument, input.ThemeID, input.ThemeVersion, nullableID(input.CoverAssetID), input.ChangeNote, userID); err != nil {
 		return editorial.Draft{}, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -188,12 +272,16 @@ func (s *Store) RestoreDraftVersion(ctx context.Context, id, userID uint64, targ
 	if currentVersion != expectedVersion || targetVersion >= currentVersion {
 		return editorial.Draft{}, editorial.ErrDraftVersionConflict
 	}
-	historical, err := scanDraftVersion(tx.QueryRowContext(ctx, `SELECT id, draft_id, version, title, author, digest, content_html, cover_asset_id, change_note, created_by, created_at FROM draft_versions WHERE draft_id = ? AND version = ?`, id, targetVersion))
+	historical, err := scanDraftVersion(tx.QueryRowContext(ctx, `SELECT `+draftVersionColumns+` FROM draft_versions WHERE draft_id = ? AND version = ?`, id, targetVersion))
 	if err != nil {
 		return editorial.Draft{}, err
 	}
 	nextVersion := currentVersion + 1
-	result, err := tx.ExecContext(ctx, `UPDATE drafts SET title = ?, author = ?, digest = ?, content_html = ?, cover_asset_id = ?, current_version = ?, updated_by = ? WHERE id = ? AND status = 'editing' AND current_version = ?`, historical.Title, historical.Author, historical.Digest, historical.ContentHTML, nullableID(historical.CoverAssetID), nextVersion, userID, id, currentVersion)
+	editorDocument, err := marshalEditorDocument(historical.EditorDocument)
+	if err != nil {
+		return editorial.Draft{}, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE drafts SET title = ?, author = ?, digest = ?, content_html = ?, editor_document = ?, theme_id = ?, theme_version = ?, cover_asset_id = ?, current_version = ?, updated_by = ? WHERE id = ? AND status = 'editing' AND current_version = ?`, historical.Title, historical.Author, historical.Digest, historical.ContentHTML, editorDocument, historical.ThemeID, historical.ThemeVersion, nullableID(historical.CoverAssetID), nextVersion, userID, id, currentVersion)
 	if err != nil {
 		return editorial.Draft{}, err
 	}
@@ -201,7 +289,7 @@ func (s *Store) RestoreDraftVersion(ctx context.Context, id, userID uint64, targ
 		return editorial.Draft{}, editorial.ErrDraftVersionConflict
 	}
 	changeNote := fmt.Sprintf("恢复自 v%d", targetVersion)
-	if _, err = tx.ExecContext(ctx, `INSERT INTO draft_versions (draft_id, version, title, author, digest, content_html, cover_asset_id, change_note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, nextVersion, historical.Title, historical.Author, historical.Digest, historical.ContentHTML, nullableID(historical.CoverAssetID), changeNote, userID); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO draft_versions (draft_id, version, title, author, digest, content_html, editor_document, theme_id, theme_version, cover_asset_id, change_note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, nextVersion, historical.Title, historical.Author, historical.Digest, historical.ContentHTML, editorDocument, historical.ThemeID, historical.ThemeVersion, nullableID(historical.CoverAssetID), changeNote, userID); err != nil {
 		return editorial.Draft{}, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -460,7 +548,8 @@ func (s *Store) RetryPublishJob(ctx context.Context, id, userID uint64) (editori
 func scanDraft(row scanner) (editorial.Draft, error) {
 	var draft editorial.Draft
 	var cover sql.NullInt64
-	err := row.Scan(&draft.ID, &draft.SourceArticleID, &draft.Title, &draft.Author, &draft.Digest, &draft.ContentHTML, &cover, &draft.Status, &draft.CurrentVersion, &draft.CreatedBy, &draft.UpdatedBy, &draft.CreatedAt, &draft.UpdatedAt)
+	var editorDocument []byte
+	err := row.Scan(&draft.ID, &draft.SourceArticleID, &draft.Title, &draft.Author, &draft.Digest, &draft.ContentHTML, &cover, &draft.Status, &draft.CurrentVersion, &draft.CreatedBy, &draft.UpdatedBy, &draft.CreatedAt, &draft.UpdatedAt, &editorDocument, &draft.ThemeID, &draft.ThemeVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return draft, workspace.ErrNotFound
 	}
@@ -471,13 +560,18 @@ func scanDraft(row scanner) (editorial.Draft, error) {
 		id := uint64(cover.Int64)
 		draft.CoverAssetID = &id
 	}
+	draft.EditorDocument, err = decodeEditorDocument(editorDocument)
+	if err != nil {
+		return draft, err
+	}
 	return draft, nil
 }
 
 func scanDraftVersion(row scanner) (editorial.DraftVersion, error) {
 	var item editorial.DraftVersion
 	var cover sql.NullInt64
-	err := row.Scan(&item.ID, &item.DraftID, &item.Version, &item.Title, &item.Author, &item.Digest, &item.ContentHTML, &cover, &item.ChangeNote, &item.CreatedBy, &item.CreatedAt)
+	var editorDocument []byte
+	err := row.Scan(&item.ID, &item.DraftID, &item.Version, &item.Title, &item.Author, &item.Digest, &item.ContentHTML, &cover, &item.ChangeNote, &item.CreatedBy, &item.CreatedAt, &editorDocument, &item.ThemeID, &item.ThemeVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return item, workspace.ErrNotFound
 	}
@@ -488,7 +582,86 @@ func scanDraftVersion(row scanner) (editorial.DraftVersion, error) {
 		id := uint64(cover.Int64)
 		item.CoverAssetID = &id
 	}
+	item.EditorDocument, err = decodeEditorDocument(editorDocument)
+	if err != nil {
+		return item, err
+	}
 	return item, nil
+}
+
+func scanDraftAsset(row scanner) (editorial.DraftAsset, error) {
+	var asset editorial.DraftAsset
+	var articleAssetID sql.NullInt64
+	var sha256Bytes []byte
+	err := row.Scan(&asset.ID, &asset.DraftID, &asset.Origin, &articleAssetID, &asset.ObjectKey, &asset.MediaType, &asset.ByteSize, &asset.Width, &asset.Height, &sha256Bytes, &asset.UploadedBy, &asset.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return asset, workspace.ErrNotFound
+	}
+	if err != nil {
+		return asset, err
+	}
+	if len(sha256Bytes) != len(asset.SHA256) {
+		return asset, fmt.Errorf("draft asset %d has invalid sha256 length %d", asset.ID, len(sha256Bytes))
+	}
+	copy(asset.SHA256[:], sha256Bytes)
+	if articleAssetID.Valid {
+		id := uint64(articleAssetID.Int64)
+		asset.ArticleAssetID = &id
+	}
+	asset.BodyEligible = asset.ByteSize <= editorial.WeChatMaxContentImageSize
+	asset.CoverEligible = asset.ByteSize <= editorial.WeChatMaxCoverImageSize
+	return asset, nil
+}
+
+func decodeEditorDocument(raw []byte) (*editorial.Document, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var document editorial.Document
+	if err := json.Unmarshal(raw, &document); err != nil {
+		return nil, fmt.Errorf("decode editor document: %w", err)
+	}
+	if err := editorial.ValidateDocument(document); err != nil {
+		return nil, err
+	}
+	return &document, nil
+}
+
+func marshalEditorDocument(document *editorial.Document) (any, error) {
+	if document == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(document)
+	if err != nil {
+		return nil, fmt.Errorf("encode editor document: %w", err)
+	}
+	return raw, nil
+}
+
+type sqlExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+type sqlRowQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func ensureArticleAssets(ctx context.Context, exec sqlExecer, draftID, articleID, userID uint64) error {
+	_, err := exec.ExecContext(ctx, `INSERT IGNORE INTO draft_assets
+		(draft_id, origin, article_asset_id, object_key, media_type, byte_size, width, height, sha256, uploaded_by)
+		SELECT ?, 'article', id, object_key, media_type, byte_size, width, height, sha256, ?
+		FROM article_assets
+		WHERE article_id = ? AND download_status = 'completed' AND object_key <> ''`, draftID, userID, articleID)
+	return err
+}
+
+func getArticleDraftAssetID(ctx context.Context, queryer sqlRowQueryer, draftID, articleAssetID uint64) (uint64, error) {
+	var assetID uint64
+	err := queryer.QueryRowContext(ctx, `SELECT id FROM draft_assets WHERE draft_id = ? AND article_asset_id = ?`, draftID, articleAssetID).Scan(&assetID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, workspace.ErrNotFound
+	}
+	return assetID, err
 }
 
 func scanPublishJob(row scanner) (editorial.PublishJob, error) {

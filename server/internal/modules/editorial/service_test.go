@@ -124,6 +124,26 @@ func (s *fakeEditorialStore) SetDraftStatus(context.Context, uint64, uint64, str
 	return Draft{}, errors.New("not implemented")
 }
 
+func (s *fakeEditorialStore) EnsureArticleAssets(context.Context, uint64, uint64, uint64) error {
+	return errors.New("not implemented")
+}
+
+func (s *fakeEditorialStore) ListDraftAssets(context.Context, uint64) ([]DraftAsset, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *fakeEditorialStore) GetDraftAsset(context.Context, uint64, uint64) (DraftAsset, error) {
+	return DraftAsset{}, errors.New("not implemented")
+}
+
+func (s *fakeEditorialStore) GetDraftAssetByID(context.Context, uint64) (DraftAsset, error) {
+	return DraftAsset{}, errors.New("not implemented")
+}
+
+func (s *fakeEditorialStore) CreateUploadedDraftAsset(context.Context, uint64, uint64, NewDraftAsset) (DraftAsset, error) {
+	return DraftAsset{}, errors.New("not implemented")
+}
+
 func (s *fakeEditorialStore) CreatePublishJob(context.Context, uint64, uint64) (PublishJob, error) {
 	s.createPublishCalls++
 	return PublishJob{}, errors.New("not implemented")

@@ -166,6 +166,9 @@ type UpdateInput struct {
 	Author          string
 	Digest          string
 	ContentHTML     string
+	EditorDocument  *Document
+	ThemeID         string
+	ThemeVersion    uint
 	CoverAssetID    *uint64
 	ExpectedVersion uint
 	ChangeNote      string

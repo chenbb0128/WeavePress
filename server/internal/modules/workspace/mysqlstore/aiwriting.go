@@ -453,9 +453,9 @@ func (s *AIStore) CompleteGeneration(ctx context.Context, jobID uint64, output a
 	draftResult, err := tx.ExecContext(ctx, `INSERT INTO drafts
 		(source_article_id, title, author, digest, content_html, cover_asset_id, status,
 		 current_version, created_by, updated_by)
-		VALUES (?, ?, '', ?, ?, ?, 'editing', 1, ?, ?)`,
+		VALUES (?, ?, '', ?, ?, NULL, 'editing', 1, ?, ?)`,
 		draftInput.SourceArticleID, draftInput.Title, draftInput.Digest, draftInput.ContentHTML,
-		nullableID(draftInput.CoverAssetID), draftInput.CreatedBy, draftInput.CreatedBy)
+		draftInput.CreatedBy, draftInput.CreatedBy)
 	if err != nil {
 		return aiwriting.Generation{}, err
 	}
@@ -466,14 +466,29 @@ func (s *AIStore) CompleteGeneration(ctx context.Context, jobID uint64, output a
 	const changeNote = "AI 合规采编生成"
 	if _, err = tx.ExecContext(ctx, `INSERT INTO draft_versions
 		(draft_id, version, title, author, digest, content_html, cover_asset_id, change_note, created_by)
-		VALUES (?, 1, ?, '', ?, ?, ?, ?, ?)`, draftID, draftInput.Title, draftInput.Digest,
-		draftInput.ContentHTML, nullableID(draftInput.CoverAssetID), changeNote, draftInput.CreatedBy); err != nil {
+		VALUES (?, 1, ?, '', ?, ?, NULL, ?, ?)`, draftID, draftInput.Title, draftInput.Digest,
+		draftInput.ContentHTML, changeNote, draftInput.CreatedBy); err != nil {
 		return aiwriting.Generation{}, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO draft_events
 		(draft_id, actor_id, from_status, to_status, note) VALUES (?, ?, '', 'editing', ?)`,
 		draftID, draftInput.CreatedBy, changeNote); err != nil {
 		return aiwriting.Generation{}, err
+	}
+	if err = ensureArticleAssets(ctx, tx, uint64(draftID), draftInput.SourceArticleID, draftInput.CreatedBy); err != nil {
+		return aiwriting.Generation{}, err
+	}
+	if draftInput.CoverAssetID != nil {
+		mappedCoverID, mapErr := getArticleDraftAssetID(ctx, tx, uint64(draftID), *draftInput.CoverAssetID)
+		if mapErr != nil {
+			return aiwriting.Generation{}, mapErr
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE drafts SET cover_asset_id = ? WHERE id = ?`, mappedCoverID, draftID); err != nil {
+			return aiwriting.Generation{}, err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE draft_versions SET cover_asset_id = ? WHERE draft_id = ? AND version = 1`, mappedCoverID, draftID); err != nil {
+			return aiwriting.Generation{}, err
+		}
 	}
 	blocksJSON, err := json.Marshal(output.Blocks)
 	if err != nil {

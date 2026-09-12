@@ -20,6 +20,11 @@ type Store interface {
 	UpdateDraft(context.Context, uint64, uint64, UpdateInput) (Draft, error)
 	RestoreDraftVersion(context.Context, uint64, uint64, uint, uint) (Draft, error)
 	SetDraftStatus(context.Context, uint64, uint64, string, string, string) (Draft, error)
+	EnsureArticleAssets(context.Context, uint64, uint64, uint64) error
+	ListDraftAssets(context.Context, uint64) ([]DraftAsset, error)
+	GetDraftAsset(context.Context, uint64, uint64) (DraftAsset, error)
+	GetDraftAssetByID(context.Context, uint64) (DraftAsset, error)
+	CreateUploadedDraftAsset(context.Context, uint64, uint64, NewDraftAsset) (DraftAsset, error)
 
 	CreatePublishJob(context.Context, uint64, uint64) (PublishJob, error)
 	GetPublishJob(context.Context, uint64, bool) (PublishJob, error)

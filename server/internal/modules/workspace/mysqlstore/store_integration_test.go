@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -22,6 +23,180 @@ import (
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace/mysqlstore"
 	"github.com/chenbb0128/weavepress/server/internal/platform/database"
 )
+
+func TestDraftLayoutPersistence(t *testing.T) {
+	rawDSN := os.Getenv("WEAVEPRESS_TEST_MYSQL_DSN")
+	if rawDSN == "" {
+		t.Skip("WEAVEPRESS_TEST_MYSQL_DSN is not set")
+	}
+	dsn, err := database.NormalizeMySQLDSN(rawDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	store := mysqlstore.New(db)
+	suffix := time.Now().UnixNano()
+	user, err := store.CreateUser(ctx, fmt.Sprintf("layout_%d", suffix), "unused", "排版持久化测试", workspace.RoleEditor, "active")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM drafts WHERE created_by = ?`, user.ID)
+		_, _ = db.Exec(`UPDATE articles SET duplicate_of_id = NULL WHERE created_by = ?`, user.ID)
+		_, _ = db.Exec(`DELETE FROM articles WHERE created_by = ?`, user.ID)
+		_, _ = db.Exec(`DELETE FROM users WHERE id = ?`, user.ID)
+	})
+
+	canonical := fmt.Sprintf("https://example.com/layout/%d", suffix)
+	article, job, _, err := store.CreateArticleJob(ctx, canonical, canonical, sha256.Sum256([]byte(canonical)), "web", user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stage := range []string{"fetching", "parsing", "storing_assets"} {
+		if err := store.SetJobStage(ctx, job.ID, stage, stage); err != nil {
+			t.Fatal(err)
+		}
+	}
+	firstURL := canonical + "/first.jpg"
+	secondURL := canonical + "/second.png"
+	firstHash := sha256.Sum256([]byte("first"))
+	secondHash := sha256.Sum256([]byte("second"))
+	collected := workspace.CollectedArticle{
+		Title: "排版持久化文章", Author: "作者", PlainText: "正文", CleanHTML: "<p>正文</p>",
+		Blocks: []workspace.Block{
+			{Type: "paragraph", Text: "正文"},
+			{Type: "image", SourceURL: firstURL, Alt: "首图"},
+			{Type: "image", SourceURL: secondURL, Alt: "次图"},
+		},
+		Metadata: map[string]any{"test": true},
+	}
+	storedAssets := []workspace.StoredAsset{
+		{SourceURL: firstURL, ObjectKey: "articles/layout-first.jpg", MediaType: "image/jpeg", ByteSize: 128, Width: 800, Height: 600, Position: 1, IsCover: true, DownloadStatus: "completed", SHA256: firstHash},
+		{SourceURL: secondURL, ObjectKey: "articles/layout-second.png", MediaType: "image/png", ByteSize: 256, Width: 640, Height: 480, Position: 2, DownloadStatus: "completed", SHA256: secondHash},
+	}
+	if err := store.CompleteArticle(ctx, article.ID, job.ID, collected, "raw/layout.html.gz", sha256.Sum256([]byte(collected.PlainText+fmt.Sprint(suffix))), storedAssets, nil); err != nil {
+		t.Fatal(err)
+	}
+	article, err = store.GetArticle(ctx, article.ID)
+	if err != nil || len(article.Assets) != 2 {
+		t.Fatalf("article assets = %#v, err=%v", article.Assets, err)
+	}
+	sourceCoverID := article.Assets[0].ID
+	draft, err := store.CreateDraft(ctx, article.ID, user.ID, article.Title, article.Author, "摘要", "<section>legacy</section>", &sourceCoverID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets, err := store.ListDraftAssets(ctx, draft.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assets) != 2 || assets[0].Origin != "article" {
+		t.Fatalf("assets = %#v", assets)
+	}
+	if draft.CoverAssetID == nil || *draft.CoverAssetID != assets[0].ID {
+		t.Fatalf("draft cover = %#v, assets = %#v", draft.CoverAssetID, assets)
+	}
+	initialVersion, err := store.GetDraftVersion(ctx, draft.ID, 1)
+	if err != nil || initialVersion.CoverAssetID == nil || *initialVersion.CoverAssetID != assets[0].ID {
+		t.Fatalf("initial version = %#v, err=%v", initialVersion, err)
+	}
+	if err := store.EnsureArticleAssets(ctx, draft.ID, article.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	assetsAgain, err := store.ListDraftAssets(ctx, draft.ID)
+	if err != nil || len(assetsAgain) != 2 {
+		t.Fatalf("assets after ensure = %#v, err=%v", assetsAgain, err)
+	}
+
+	otherDraft, err := store.CreateDraft(ctx, article.ID, user.ID, "另一稿件", article.Author, "摘要", "<section>other</section>", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetDraftAsset(ctx, otherDraft.ID, assets[0].ID); !errors.Is(err, workspace.ErrNotFound) {
+		t.Fatalf("cross-draft asset error = %v", err)
+	}
+	uploadHash := sha256.Sum256([]byte("upload"))
+	uploaded, err := store.CreateUploadedDraftAsset(ctx, draft.ID, user.ID, editorial.NewDraftAsset{
+		ObjectKey: "drafts/layout-upload.webp", MediaType: "image/webp", ByteSize: 2 << 20,
+		Width: 1200, Height: 900, SHA256: uploadHash,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uploaded.Origin != "upload" || uploaded.BodyEligible || !uploaded.CoverEligible {
+		t.Fatalf("uploaded = %#v", uploaded)
+	}
+	loadedUpload, err := store.GetDraftAssetByID(ctx, uploaded.ID)
+	if err != nil || loadedUpload.ID != uploaded.ID {
+		t.Fatalf("loaded upload = %#v, err=%v", loadedUpload, err)
+	}
+	if _, err := store.SetDraftStatus(ctx, otherDraft.ID, user.ID, editorial.StatusEditing, editorial.StatusInReview, "锁定上传"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateUploadedDraftAsset(ctx, otherDraft.ID, user.ID, editorial.NewDraftAsset{ObjectKey: "drafts/locked.png", MediaType: "image/png", ByteSize: 1, SHA256: uploadHash}); !errors.Is(err, editorial.ErrDraftNotEditable) {
+		t.Fatalf("upload to locked draft error = %v", err)
+	}
+
+	doc, err := editorial.ParseDocument(json.RawMessage(fmt.Sprintf(`{"type":"doc","content":[{"type":"image","attrs":{"draftAssetId":%d,"width":100,"align":"center","alt":"","caption":""}}]}`, assets[0].ID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.UpdateDraft(ctx, draft.ID, user.ID, editorial.UpdateInput{
+		Title: "排版稿", EditorDocument: &doc, ThemeID: "clear-blue", ThemeVersion: 1,
+		ContentHTML: "<section>saved</section>", ExpectedVersion: draft.CurrentVersion, ChangeNote: "排版保存",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.CurrentVersion != 2 || updated.EditorDocument == nil || updated.ThemeID != "clear-blue" {
+		t.Fatalf("updated = %#v", updated)
+	}
+	if _, err := store.UpdateDraft(ctx, draft.ID, user.ID, editorial.UpdateInput{Title: "过期保存", ContentHTML: "<section>stale</section>", ExpectedVersion: draft.CurrentVersion}); !errors.Is(err, editorial.ErrDraftVersionConflict) {
+		t.Fatalf("stale update error = %v", err)
+	}
+	v2BeforeRestore, err := store.GetDraftVersion(ctx, draft.ID, 2)
+	if err != nil || v2BeforeRestore.EditorDocument == nil || v2BeforeRestore.ThemeID != "clear-blue" || v2BeforeRestore.ContentHTML != "<section>saved</section>" {
+		t.Fatalf("v2 before restore = %#v, err=%v", v2BeforeRestore, err)
+	}
+
+	replacement, err := editorial.ParseDocument(json.RawMessage(`{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"替换内容"}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := store.UpdateDraft(ctx, draft.ID, user.ID, editorial.UpdateInput{
+		Title: "替换稿", EditorDocument: &replacement, ThemeID: "natural-green", ThemeVersion: 1,
+		ContentHTML: "<section>changed</section>", CoverAssetID: &assets[1].ID,
+		ExpectedVersion: updated.CurrentVersion, ChangeNote: "再次保存",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := store.RestoreDraftVersion(ctx, draft.ID, user.ID, 2, changed.CurrentVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.CurrentVersion != 4 || restored.EditorDocument == nil || !reflect.DeepEqual(*restored.EditorDocument, doc) || restored.ThemeID != "clear-blue" || restored.ThemeVersion != 1 || restored.ContentHTML != "<section>saved</section>" {
+		t.Fatalf("restored = %#v", restored)
+	}
+	v2AfterRestore, err := store.GetDraftVersion(ctx, draft.ID, 2)
+	if err != nil || !reflect.DeepEqual(v2AfterRestore, v2BeforeRestore) {
+		t.Fatalf("v2 after restore = %#v, before=%#v, err=%v", v2AfterRestore, v2BeforeRestore, err)
+	}
+	v4, err := store.GetDraftVersion(ctx, draft.ID, 4)
+	if err != nil || v4.EditorDocument == nil || !reflect.DeepEqual(*v4.EditorDocument, doc) || v4.ThemeID != "clear-blue" || v4.ContentHTML != "<section>saved</section>" || v4.ChangeNote != "恢复自 v2" {
+		t.Fatalf("v4 = %#v, err=%v", v4, err)
+	}
+}
 
 func TestMySQLIntegrationCollectionStateAndIdempotency(t *testing.T) {
 	rawDSN := os.Getenv("WEAVEPRESS_TEST_MYSQL_DSN")
@@ -245,7 +420,7 @@ func TestMySQLIntegrationEditorialWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := store.UpdateDraft(ctx, draft.ID, user.ID, editorial.UpdateInput{Title: draft.Title + "（改）", Author: draft.Author, Digest: draft.Digest, ContentHTML: contentHTML, CoverAssetID: &coverID, ExpectedVersion: 1, ChangeNote: "调整标题"})
+	updated, err := store.UpdateDraft(ctx, draft.ID, user.ID, editorial.UpdateInput{Title: draft.Title + "（改）", Author: draft.Author, Digest: draft.Digest, ContentHTML: contentHTML, ThemeID: draft.ThemeID, ThemeVersion: draft.ThemeVersion, CoverAssetID: draft.CoverAssetID, ExpectedVersion: 1, ChangeNote: "调整标题"})
 	if err != nil || updated.CurrentVersion != 2 {
 		t.Fatalf("updated version = %d, err=%v", updated.CurrentVersion, err)
 	}
@@ -621,8 +796,9 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT status, author, cover_asset_id FROM drafts WHERE id = ?`, draftID).Scan(&draftStatus, &draftAuthor, &draftCover); err != nil {
 		t.Fatal(err)
 	}
-	if draftStatus != editorial.StatusEditing || draftAuthor != "" || !draftCover.Valid || uint64(draftCover.Int64) != coverID {
-		t.Fatalf("draft status=%q author=%q cover=%#v", draftStatus, draftAuthor, draftCover)
+	draftAssets, assetErr := workspaceStore.ListDraftAssets(ctx, draftID)
+	if draftStatus != editorial.StatusEditing || draftAuthor != "" || assetErr != nil || len(draftAssets) != 1 || draftAssets[0].ArticleAssetID == nil || *draftAssets[0].ArticleAssetID != coverID || !draftCover.Valid || uint64(draftCover.Int64) != draftAssets[0].ID {
+		t.Fatalf("draft status=%q author=%q cover=%#v assets=%#v err=%v", draftStatus, draftAuthor, draftCover, draftAssets, assetErr)
 	}
 	assertCount := func(query string, want int, args ...any) {
 		t.Helper()
@@ -631,6 +807,7 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 			t.Fatalf("count query %q = %d, want %d, err=%v", query, count, want, countErr)
 		}
 	}
+	assertCount(`SELECT COUNT(*) FROM draft_versions WHERE draft_id = ? AND version = 1 AND cover_asset_id = ?`, 1, draftID, draftAssets[0].ID)
 	assertCount(`SELECT COUNT(*) FROM draft_versions WHERE draft_id = ? AND version = 1 AND change_note = 'AI 合规采编生成'`, 1, draftID)
 	assertCount(`SELECT COUNT(*) FROM draft_events WHERE draft_id = ? AND from_status = '' AND to_status = 'editing' AND note = 'AI 合规采编生成'`, 1, draftID)
 	completedGenerationAgain, err := aiStore.CompleteGeneration(ctx, generationJob.ID, generationOutput, draftInput, aiwriting.TokenUsage{InputTokens: 999, OutputTokens: 999, TotalTokens: 999})
