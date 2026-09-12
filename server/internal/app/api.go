@@ -103,7 +103,7 @@ func NewAPI(cfg config.Config, logger *slog.Logger) (*API, error) {
 	queueClient := queue.NewClient(cfg.Redis)
 	authService := authn.New(store, redis, cfg.Auth)
 	contentService := content.New(store, queueClient, objects, cfg)
-	editorialService := editorial.New(store, store, queueClient, nil, cfg.WeChat.Enabled)
+	editorialService := editorial.New(store, store, queueClient, nil, objects, cfg.WeChat.Enabled)
 	aiStore := mysqlstore.NewAIStore(db.SQL)
 	aiService := aiwriting.New(aiStore, store, queueClient, nil, cfg.AI)
 	businessAPI := weaveapi.New(store, authService, contentService, editorialService, aiService, cfg)

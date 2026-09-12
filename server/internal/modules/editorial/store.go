@@ -11,6 +11,10 @@ type ArticleStore interface {
 	GetAsset(context.Context, uint64) (workspace.Asset, error)
 }
 
+type AssetObjects interface {
+	Put(context.Context, string, []byte, string) error
+}
+
 type Store interface {
 	CreateDraft(context.Context, uint64, uint64, string, string, string, string, *uint64) (Draft, error)
 	GetDraft(context.Context, uint64, bool) (Draft, error)

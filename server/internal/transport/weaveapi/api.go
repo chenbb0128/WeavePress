@@ -65,16 +65,19 @@ func (a *API) Register(router *gin.Engine) {
 	protected.GET("/articles/:id", a.getArticle)
 	protected.GET("/articles/:id/raw-url", a.rawURL)
 
-	protected.POST("/drafts", a.createDraft)
-	protected.GET("/drafts", a.listDrafts)
-	protected.GET("/drafts/:id", a.getDraft)
-	protected.PUT("/drafts/:id", a.updateDraft)
-	protected.GET("/drafts/:id/versions", a.listDraftVersions)
-	protected.POST("/drafts/:id/versions/:version/restore", a.restoreDraftVersion)
-	protected.GET("/drafts/:id/preflight", a.draftPreflight)
-	protected.POST("/drafts/:id/submit-review", a.submitDraftReview)
-	protected.POST("/drafts/:id/review", a.requireRole(workspace.RoleAdmin), a.reviewDraft)
-	protected.POST("/drafts/:id/publish", a.requireRole(workspace.RoleAdmin), a.publishDraft)
+	protected.POST("/drafts", a.requireCode("draft:create"), a.createDraft)
+	protected.GET("/drafts", a.requireCode("draft:view"), a.listDrafts)
+	protected.GET("/drafts/:id", a.requireCode("draft:view"), a.getDraft)
+	protected.PUT("/drafts/:id", a.requireCode("draft:update"), a.updateDraft)
+	protected.GET("/drafts/:id/versions", a.requireCode("draft:view"), a.listDraftVersions)
+	protected.POST("/drafts/:id/versions/:version/restore", a.requireCode("draft:update"), a.restoreDraftVersion)
+	protected.GET("/drafts/:id/preflight", a.requireCode("draft:view"), a.draftPreflight)
+	protected.POST("/drafts/:id/submit-review", a.requireCode("draft:submit-review"), a.submitDraftReview)
+	protected.POST("/drafts/:id/review", a.requireRole(workspace.RoleAdmin), a.requireCode("draft:review"), a.reviewDraft)
+	protected.POST("/drafts/:id/publish", a.requireRole(workspace.RoleAdmin), a.requireCode("draft:publish"), a.publishDraft)
+	protected.GET("/wechat-layout/themes", a.requireCode("draft:view"), a.listWeChatLayoutThemes)
+	protected.GET("/drafts/:id/assets", a.requireCode("draft:view"), a.listDraftAssets)
+	protected.POST("/drafts/:id/assets", a.requireCode("draft:update"), a.uploadDraftAsset)
 	protected.GET("/wechat/status", a.wechatStatus)
 	protected.GET("/wechat-publish-jobs", a.listPublishJobs)
 	protected.GET("/wechat-publish-jobs/:id", a.getPublishJob)
@@ -92,6 +95,7 @@ func (a *API) Register(router *gin.Engine) {
 
 	router.GET("/media/assets/:id", a.media("assets"))
 	router.GET("/media/raw/:id", a.media("raw"))
+	router.GET("/media/draft-assets/:id", a.media("draft-assets"))
 }
 
 type loginInput struct {
@@ -661,6 +665,81 @@ func (a *API) retryPublishJob(c *gin.Context) {
 	response.JSON(c, http.StatusAccepted, job)
 }
 
+func (a *API) listWeChatLayoutThemes(c *gin.Context) {
+	response.OK(c, a.editorial.Themes())
+}
+
+func (a *API) listDraftAssets(c *gin.Context) {
+	id, err := parseID(c)
+	if err != nil {
+		response.Error(c, response.BadRequest("稿件 ID 不正确", err))
+		return
+	}
+	assets, err := a.editorial.Assets(c.Request.Context(), id)
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	for index := range assets {
+		a.decorateDraftAsset(&assets[index])
+	}
+	response.OK(c, assets)
+}
+
+func (a *API) uploadDraftAsset(c *gin.Context) {
+	id, err := parseID(c)
+	if err != nil {
+		response.Error(c, response.BadRequest("稿件 ID 不正确", err))
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 10<<20+1<<20)
+	if err := c.Request.ParseMultipartForm(10<<20 + 1<<20); err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			a.writeError(c, editorial.ErrDraftAssetTooLarge)
+			return
+		}
+		a.writeError(c, editorial.ErrDraftAssetInvalid)
+		return
+	}
+	if c.Request.MultipartForm != nil {
+		defer c.Request.MultipartForm.RemoveAll()
+	}
+	files := c.Request.MultipartForm.File
+	if len(files) != 1 || len(files["file"]) != 1 {
+		a.writeError(c, editorial.ErrDraftAssetInvalid)
+		return
+	}
+	header := files["file"][0]
+	file, err := header.Open()
+	if err != nil {
+		a.writeError(c, editorial.ErrDraftAssetInvalid)
+		return
+	}
+	body, readErr := io.ReadAll(file)
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil {
+		a.writeError(c, editorial.ErrDraftAssetInvalid)
+		return
+	}
+	user, err := a.currentUser(c)
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	asset, err := a.editorial.UploadAsset(c.Request.Context(), id, user.ID, header.Filename, header.Header.Get("Content-Type"), body)
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	a.decorateDraftAsset(&asset)
+	response.Created(c, fmt.Sprintf("/api/drafts/%d/assets/%d", id, asset.ID), asset)
+}
+
+func (a *API) decorateDraftAsset(asset *editorial.DraftAsset) {
+	asset.MediaURL = a.content.SignMedia("draft-assets", asset.ID)
+}
+
 func (a *API) decorateDraft(draft *editorial.Draft) {
 	if draft.SourceArticle != nil {
 		for index := range draft.SourceArticle.Assets {
@@ -687,7 +766,12 @@ func (a *API) media(kind string) gin.HandlerFunc {
 			c.Status(http.StatusForbidden)
 			return
 		}
-		key, mediaType, err := a.content.MediaObject(c.Request.Context(), kind, id)
+		var key, mediaType string
+		if kind == "draft-assets" {
+			key, mediaType, err = a.editorial.AssetObject(c.Request.Context(), id)
+		} else {
+			key, mediaType, err = a.content.MediaObject(c.Request.Context(), kind, id)
+		}
 		if err != nil || key == "" {
 			c.Status(http.StatusNotFound)
 			return
@@ -846,6 +930,12 @@ func (a *API) writeError(c *gin.Context, err error) {
 		response.Error(c, response.Conflict("任务当前不能重试", err))
 	case errors.Is(err, editorial.ErrDraftNotEditable):
 		response.Error(c, response.Conflict("稿件当前不能编辑", err))
+	case errors.Is(err, editorial.ErrDraftAssetType):
+		response.Error(c, response.BadRequest("图片格式不支持", err))
+	case errors.Is(err, editorial.ErrDraftAssetInvalid):
+		response.Error(c, response.BadRequest("图片内容无效", err))
+	case errors.Is(err, editorial.ErrDraftAssetTooLarge):
+		response.Error(c, response.NewError(response.CodePayloadTooLarge, http.StatusRequestEntityTooLarge, "图片超过 10 MiB 限制", err))
 	case errors.Is(err, editorial.ErrDraftVersionConflict):
 		response.Error(c, response.Conflict("稿件已被其他人更新，请刷新后重试", err))
 	case errors.Is(err, editorial.ErrDraftStateConflict):

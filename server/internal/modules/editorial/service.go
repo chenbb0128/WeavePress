@@ -2,6 +2,7 @@ package editorial
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,11 +22,53 @@ type Service struct {
 	articles  ArticleStore
 	queue     *queue.Client
 	publisher Publisher
+	objects   AssetObjects
 	enabled   bool
 }
 
-func New(store Store, articles ArticleStore, queueClient *queue.Client, publisher Publisher, enabled bool) *Service {
-	return &Service{store: store, articles: articles, queue: queueClient, publisher: publisher, enabled: enabled}
+func New(store Store, articles ArticleStore, queueClient *queue.Client, publisher Publisher, objects AssetObjects, enabled bool) *Service {
+	return &Service{store: store, articles: articles, queue: queueClient, publisher: publisher, objects: objects, enabled: enabled}
+}
+
+func (s *Service) Themes() []ThemeSummary { return ListThemes() }
+
+func (s *Service) Assets(ctx context.Context, draftID uint64) ([]DraftAsset, error) {
+	return s.store.ListDraftAssets(ctx, draftID)
+}
+
+func (s *Service) UploadAsset(ctx context.Context, draftID, userID uint64, filename, declared string, body []byte) (DraftAsset, error) {
+	draft, err := s.store.GetDraft(ctx, draftID, false)
+	if err != nil {
+		return DraftAsset{}, err
+	}
+	if draft.Status != StatusEditing {
+		return DraftAsset{}, ErrDraftNotEditable
+	}
+	inspected, err := InspectDraftImage(body, declared)
+	if err != nil {
+		return DraftAsset{}, err
+	}
+	if s.objects == nil {
+		return DraftAsset{}, fmt.Errorf("draft asset object store unavailable")
+	}
+	now := time.Now().UTC()
+	key := fmt.Sprintf("drafts/%04d/%02d/%s.%s", now.Year(), now.Month(), hex.EncodeToString(inspected.SHA256[:]), inspected.Extension)
+	if err := s.objects.Put(ctx, key, body, inspected.MediaType); err != nil {
+		return DraftAsset{}, err
+	}
+	return s.store.CreateUploadedDraftAsset(ctx, draftID, userID, NewDraftAsset{
+		ObjectKey: key,
+		MediaType: inspected.MediaType,
+		ByteSize:  inspected.ByteSize,
+		Width:     inspected.Width,
+		Height:    inspected.Height,
+		SHA256:    inspected.SHA256,
+	})
+}
+
+func (s *Service) AssetObject(ctx context.Context, id uint64) (string, string, error) {
+	asset, err := s.store.GetDraftAssetByID(ctx, id)
+	return asset.ObjectKey, asset.MediaType, err
 }
 
 func (s *Service) CreateFromArticle(ctx context.Context, articleID, userID uint64) (Draft, error) {

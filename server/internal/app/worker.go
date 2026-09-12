@@ -68,7 +68,7 @@ func (w *Worker) Run(ctx context.Context) (err error) {
 	store := mysqlstore.New(db.SQL)
 	contentService := content.New(store, queueClient, objects, w.cfg)
 	wechatPublisher := wechat.New(w.cfg.WeChat, objects)
-	editorialService := editorial.New(store, store, queueClient, wechatPublisher, w.cfg.WeChat.Enabled)
+	editorialService := editorial.New(store, store, queueClient, wechatPublisher, objects, w.cfg.WeChat.Enabled)
 	aiStore := mysqlstore.NewAIStore(db.SQL)
 	aiService := aiwriting.New(aiStore, store, queueClient, newAIProvider(w.cfg.AI), w.cfg.AI)
 
