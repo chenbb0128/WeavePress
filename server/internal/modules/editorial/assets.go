@@ -150,12 +150,14 @@ func draftWebPDimensions(body []byte) (uint, uint) {
 }
 
 func draftVP8Dimensions(payload []byte) (uint, uint) {
+	const minimumTokenPartitionSize = 4
+
 	if len(payload) < 11 || payload[0]&1 != 0 || payload[3] != 0x9d || payload[4] != 0x01 || payload[5] != 0x2a {
 		return 0, 0
 	}
 	frameTag := uint32(payload[0]) | uint32(payload[1])<<8 | uint32(payload[2])<<16
 	firstPartitionSize := uint64(frameTag >> 5)
-	if firstPartitionSize == 0 || firstPartitionSize+10 >= uint64(len(payload)) {
+	if firstPartitionSize == 0 || firstPartitionSize+10+minimumTokenPartitionSize > uint64(len(payload)) {
 		return 0, 0
 	}
 	width := (uint(payload[6]) | uint(payload[7])<<8) & 0x3fff
@@ -164,7 +166,7 @@ func draftVP8Dimensions(payload []byte) (uint, uint) {
 }
 
 func draftVP8LDimensions(payload []byte) (uint, uint) {
-	if len(payload) < 6 || payload[0] != 0x2f {
+	if len(payload) < 8 || payload[0] != 0x2f {
 		return 0, 0
 	}
 	bits := binary.LittleEndian.Uint32(payload[1:5])

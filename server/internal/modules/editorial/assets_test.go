@@ -54,6 +54,8 @@ func TestInspectDraftImageRejectsInvalidInput(t *testing.T) {
 		{name: "zero dimensions", mediaType: "image/webp", body: zeroWidthDraftWebP(), want: ErrDraftAssetInvalid},
 		{name: "vp8x canvas without image", mediaType: "image/webp", body: draftWebPCanvasOnly(), want: ErrDraftAssetInvalid},
 		{name: "truncated image payload", mediaType: "image/webp", body: validDraftWebPVP8()[:len(validDraftWebPVP8())-1], want: ErrDraftAssetInvalid},
+		{name: "truncated vp8 bitstream with consistent lengths", mediaType: "image/webp", body: truncatedDraftWebPVP8(), want: ErrDraftAssetInvalid},
+		{name: "truncated vp8l bitstream with consistent lengths", mediaType: "image/webp", body: truncatedDraftWebPVP8L(), want: ErrDraftAssetInvalid},
 		{name: "wrong riff length", mediaType: "image/webp", body: draftWebPWithWrongRIFFLength(), want: ErrDraftAssetInvalid},
 		{name: "wrong chunk length", mediaType: "image/webp", body: draftWebPWithWrongChunkLength(), want: ErrDraftAssetInvalid},
 		{name: "too large", mediaType: "image/png", body: make([]byte, WeChatMaxCoverImageSize+1), want: ErrDraftAssetTooLarge},
@@ -125,6 +127,20 @@ func validDraftWebPVP8L() []byte {
 		'V', 'P', '8', 'L', 0x08, 0, 0, 0,
 		0x2f, 0x00, 0x00, 0x00, 0x10, 0x88, 0x88, 0x08,
 	}
+}
+
+func truncatedDraftWebPVP8() []byte {
+	body := append([]byte(nil), validDraftWebPVP8()[:len(validDraftWebPVP8())-2]...)
+	body[4] = 0x22
+	body[16] = 0x16
+	return body
+}
+
+func truncatedDraftWebPVP8L() []byte {
+	body := append([]byte(nil), validDraftWebPVP8L()[:len(validDraftWebPVP8L())-2]...)
+	body[4] = 0x12
+	body[16] = 0x06
+	return body
 }
 
 func validDraftWebPVP8X() []byte {
