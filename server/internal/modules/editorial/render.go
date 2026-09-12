@@ -59,7 +59,7 @@ func RenderArticle(article workspace.Article) string {
 func SanitizeHTML(value string) string {
 	policy := bluemonday.NewPolicy()
 	policy.AllowElements("section", "h2", "h3", "h4", "p", "blockquote", "ul", "ol", "li", "pre", "code", "strong", "b", "em", "i", "u", "br", "figure", "figcaption", "img", "a")
-	policy.AllowAttrs("data-weavepress-asset-id", "alt").OnElements("img")
+	policy.AllowAttrs("data-weavepress-asset-id", "data-weavepress-draft-asset-id", "alt").OnElements("img")
 	policy.AllowAttrs("href", "title").OnElements("a")
 	policy.AllowStandardURLs()
 	policy.RequireNoFollowOnLinks(true)
@@ -120,7 +120,7 @@ func PreviewHTML(value string, assetURL func(uint64) string) string {
 	walk = func(node *xhtml.Node) {
 		if node.Type == xhtml.ElementNode && node.Data == "img" {
 			for _, attr := range node.Attr {
-				if attr.Key == "data-weavepress-asset-id" {
+				if attr.Key == "data-weavepress-draft-asset-id" || attr.Key == "data-weavepress-asset-id" {
 					if id, parseErr := strconv.ParseUint(attr.Val, 10, 64); parseErr == nil && id > 0 {
 						node.Attr = append(node.Attr, xhtml.Attribute{Key: "src", Val: assetURL(id)})
 					}

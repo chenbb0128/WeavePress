@@ -51,22 +51,28 @@ const (
 )
 
 type Draft struct {
-	ID              uint64             `json:"id"`
-	SourceArticleID uint64             `json:"sourceArticleId"`
-	Title           string             `json:"title"`
-	Author          string             `json:"author"`
-	Digest          string             `json:"digest"`
-	ContentHTML     string             `json:"contentHtml"`
-	PreviewHTML     string             `json:"previewHtml,omitempty"`
-	CoverAssetID    *uint64            `json:"coverAssetId,omitempty"`
-	Status          string             `json:"status"`
-	CurrentVersion  uint               `json:"currentVersion"`
-	CreatedBy       uint64             `json:"createdBy"`
-	UpdatedBy       uint64             `json:"updatedBy"`
-	CreatedAt       time.Time          `json:"createdAt"`
-	UpdatedAt       time.Time          `json:"updatedAt"`
-	SourceArticle   *workspace.Article `json:"sourceArticle,omitempty"`
-	Events          []DraftEvent       `json:"events,omitempty"`
+	ID                uint64             `json:"id"`
+	SourceArticleID   uint64             `json:"sourceArticleId"`
+	Title             string             `json:"title"`
+	Author            string             `json:"author"`
+	Digest            string             `json:"digest"`
+	ContentHTML       string             `json:"contentHtml"`
+	PreviewHTML       string             `json:"previewHtml,omitempty"`
+	CoverAssetID      *uint64            `json:"coverAssetId,omitempty"`
+	Status            string             `json:"status"`
+	CurrentVersion    uint               `json:"currentVersion"`
+	CreatedBy         uint64             `json:"createdBy"`
+	UpdatedBy         uint64             `json:"updatedBy"`
+	CreatedAt         time.Time          `json:"createdAt"`
+	UpdatedAt         time.Time          `json:"updatedAt"`
+	SourceArticle     *workspace.Article `json:"sourceArticle,omitempty"`
+	Events            []DraftEvent       `json:"events,omitempty"`
+	EditorDocument    *Document          `json:"editorDocument,omitempty"`
+	ThemeID           string             `json:"themeId"`
+	ThemeVersion      uint               `json:"themeVersion"`
+	MigrationNeeded   bool               `json:"migrationNeeded"`
+	MigrationWarnings []string           `json:"migrationWarnings,omitempty"`
+	Assets            []DraftAsset       `json:"-"`
 }
 
 type DraftEvent struct {
@@ -80,17 +86,20 @@ type DraftEvent struct {
 }
 
 type DraftVersion struct {
-	ID           uint64    `json:"id"`
-	DraftID      uint64    `json:"draftId"`
-	Version      uint      `json:"version"`
-	Title        string    `json:"title"`
-	Author       string    `json:"author"`
-	Digest       string    `json:"digest"`
-	ContentHTML  string    `json:"contentHtml"`
-	CoverAssetID *uint64   `json:"coverAssetId,omitempty"`
-	ChangeNote   string    `json:"changeNote"`
-	CreatedBy    uint64    `json:"createdBy"`
-	CreatedAt    time.Time `json:"createdAt"`
+	ID             uint64    `json:"id"`
+	DraftID        uint64    `json:"draftId"`
+	Version        uint      `json:"version"`
+	Title          string    `json:"title"`
+	Author         string    `json:"author"`
+	Digest         string    `json:"digest"`
+	ContentHTML    string    `json:"contentHtml"`
+	CoverAssetID   *uint64   `json:"coverAssetId,omitempty"`
+	ChangeNote     string    `json:"changeNote"`
+	CreatedBy      uint64    `json:"createdBy"`
+	CreatedAt      time.Time `json:"createdAt"`
+	EditorDocument *Document `json:"editorDocument,omitempty"`
+	ThemeID        string    `json:"themeId"`
+	ThemeVersion   uint      `json:"themeVersion"`
 }
 
 type DraftAsset struct {
