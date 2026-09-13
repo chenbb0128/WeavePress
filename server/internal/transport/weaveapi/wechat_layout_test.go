@@ -128,7 +128,7 @@ func TestDraftAssetUploadHTTPBoundaries(t *testing.T) {
 		{name: "unauthenticated", status: editorial.StatusEditing, mediaType: "image/png", body: validPNG, wantStatus: http.StatusUnauthorized},
 		{name: "not editing", status: editorial.StatusApproved, mediaType: "image/png", body: validPNG, token: true, wantStatus: http.StatusConflict},
 		{name: "svg", status: editorial.StatusEditing, mediaType: "image/svg+xml", body: []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`), token: true, wantStatus: http.StatusBadRequest, wantText: "图片格式不支持"},
-		{name: "over 10 MiB", status: editorial.StatusEditing, mediaType: "image/png", body: make([]byte, editorial.WeChatMaxCoverImageSize+1), token: true, wantStatus: http.StatusRequestEntityTooLarge, wantText: "图片超过 10 MiB 限制"},
+		{name: "over 10 MiB", status: editorial.StatusEditing, mediaType: "image/png", body: make([]byte, editorial.WeChatMaxCoverImageSize+1), token: true, wantStatus: http.StatusRequestEntityTooLarge, wantText: "封面及上传最大 10 MiB"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
