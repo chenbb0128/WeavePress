@@ -147,6 +147,112 @@ func TestDraftLayoutFreshInstall(t *testing.T) {
 	t.Run("TestMySQLIntegrationAIStore", TestMySQLIntegrationAIStore)
 }
 
+func TestDraftLayoutCoverAfterOldImageRollback(t *testing.T) {
+	db, _ := layoutTestDatabase(t, 20260909000100)
+	seedLayoutLegacy(t, db)
+	if err := goose.Up(db, layoutMigrations); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	store := mysqlstore.New(db)
+	service := editorial.New(store, store, nil, nil, nil, false)
+	for _, test := range []struct {
+		name       string
+		upload     bool
+		oldCover   any
+		oldVersion bool
+		wantSource uint64
+		wantUpload bool
+	}{
+		{"source changed to B", false, 102, false, 102, false},
+		{"source cleared", false, nil, false, 0, false},
+		{"upload kept without old save", true, nil, false, 0, true},
+		{"upload changed to B", true, 102, false, 102, false},
+		{"upload cleared by old save", true, nil, true, 0, false},
+		{"source changed to B by old save", false, 102, true, 102, false},
+		{"source cleared by old save", false, nil, true, 0, false},
+		{"upload changed to B by old save", true, 102, true, 102, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sourceCover := uint64(101)
+			draft, err := store.CreateDraft(ctx, 1, 1, test.name, "", "", "<p>正文</p>", &sourceCover)
+			if err != nil {
+				t.Fatal(err)
+			}
+			draft, err = service.Get(ctx, draft.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var uploaded editorial.DraftAsset
+			if test.upload {
+				uploaded, err = store.CreateUploadedDraftAsset(ctx, draft.ID, 1, editorial.NewDraftAsset{ObjectKey: "upload.png", MediaType: "image/png", ByteSize: 100, Width: 10, Height: 10})
+				if err != nil {
+					t.Fatal(err)
+				}
+				draft.CoverAssetID = &uploaded.ID
+			}
+			saved, err := service.Update(ctx, draft.ID, 1, editorial.UpdateInput{Title: draft.Title, EditorDocument: draft.EditorDocument, ThemeID: draft.ThemeID, CoverAssetID: draft.CoverAssetID, ExpectedVersion: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Old code only writes its own column. A real old save also creates a version
+			// without editor_document/cover_draft_asset_id, proving which writer saved it.
+			if _, err := db.Exec(`UPDATE drafts SET cover_asset_id = ?, current_version = current_version + ? WHERE id = ?`, test.oldCover, test.oldVersion, draft.ID); err != nil {
+				t.Fatal(err)
+			}
+			if test.oldVersion {
+				if _, err := db.Exec(`INSERT INTO draft_versions (draft_id, version, title, content_html, cover_asset_id, created_by)
+					SELECT id, current_version, title, content_html, cover_asset_id, updated_by FROM drafts WHERE id = ?`, draft.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			read, err := service.Get(ctx, draft.ID)
+			if err != nil || read.EditorDocument == nil {
+				t.Fatalf("structured read = %#v, %v", read, err)
+			}
+			var wantID *uint64
+			if test.wantUpload {
+				wantID = &uploaded.ID
+			} else if test.wantSource != 0 {
+				for _, asset := range read.Assets {
+					if asset.ArticleAssetID != nil && *asset.ArticleAssetID == test.wantSource {
+						id := asset.ID
+						wantID = &id
+					}
+				}
+				if wantID == nil {
+					t.Fatal("missing expected source cover fixture")
+				}
+			}
+			if (read.CoverAssetID == nil) != (wantID == nil) || (wantID != nil && *read.CoverAssetID != *wantID) {
+				t.Fatalf("rollback cover = %v (previous new cover %v), want %v; old column=%v", read.CoverAssetID, saved.CoverAssetID, wantID, test.oldCover)
+			}
+			resaved, err := service.Update(ctx, draft.ID, 1, editorial.UpdateInput{Title: read.Title, EditorDocument: read.EditorDocument, ThemeID: read.ThemeID, CoverAssetID: read.CoverAssetID, ExpectedVersion: read.CurrentVersion})
+			if err != nil {
+				t.Fatal(err)
+			}
+			version, err := store.GetDraftVersion(ctx, draft.ID, resaved.CurrentVersion)
+			if err != nil || (version.CoverAssetID == nil) != (wantID == nil) || (wantID != nil && *version.CoverAssetID != *wantID) {
+				t.Fatalf("next save lost old image's choice: %#v, %v", version, err)
+			}
+			var old sql.NullInt64
+			if err := db.QueryRow(`SELECT cover_asset_id FROM drafts WHERE id = ?`, draft.ID).Scan(&old); err != nil || old.Valid != (test.wantSource != 0) || (old.Valid && uint64(old.Int64) != test.wantSource) {
+				t.Fatalf("next save overwrote legacy cover: %#v, %v", old, err)
+			}
+			if test.upload && test.oldVersion && test.oldCover == nil {
+				restored, err := service.RestoreVersion(ctx, draft.ID, 1, saved.CurrentVersion, resaved.CurrentVersion)
+				if err != nil || restored.CoverAssetID == nil || *restored.CoverAssetID != uploaded.ID {
+					t.Fatalf("explicit restore must retain the historical upload: %#v, %v", restored, err)
+				}
+				reread, err := service.Get(ctx, draft.ID)
+				if err != nil || reread.CoverAssetID == nil || *reread.CoverAssetID != uploaded.ID {
+					t.Fatalf("restored upload mistaken for a legacy clear: %#v, %v", reread, err)
+				}
+			}
+		})
+	}
+}
+
 func TestLegacyReviewedDraftMigrationTransaction(t *testing.T) {
 	for _, status := range []string{editorial.StatusApproved, editorial.StatusPublishFailed} {
 		t.Run(status, func(t *testing.T) {

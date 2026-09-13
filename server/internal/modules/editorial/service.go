@@ -101,7 +101,28 @@ func (s *Service) Get(ctx context.Context, id uint64) (Draft, error) {
 	if err != nil {
 		return Draft{}, err
 	}
-	return s.hydrateDraft(ctx, draft)
+	draft, err = s.hydrateDraft(ctx, draft)
+	if err != nil {
+		return Draft{}, err
+	}
+	if draft.EditorDocument != nil && !draft.MigrationNeeded && draft.LegacyCoverAssetID == nil && draft.CoverAssetID != nil {
+		for _, asset := range draft.Assets {
+			if asset.ID != *draft.CoverAssetID || asset.Origin != "upload" {
+				continue
+			}
+			// NULL also represents an upload in old images. An old save creates a
+			// version without a document, which records an explicit legacy clear.
+			version, err := s.store.GetDraftVersion(ctx, id, draft.CurrentVersion)
+			if err != nil {
+				return Draft{}, err
+			}
+			if version.EditorDocument == nil {
+				draft.CoverAssetID = nil
+			}
+			break
+		}
+	}
+	return draft, nil
 }
 
 func (s *Service) hydrateDraft(ctx context.Context, draft Draft) (Draft, error) {
@@ -113,23 +134,31 @@ func (s *Service) hydrateDraft(ctx context.Context, draft Draft) (Draft, error) 
 		return Draft{}, err
 	}
 	draft.Assets = assets
+	mapping := make(map[uint64]uint64)
+	var sourceCover *uint64
+	var currentCoverIsArticle bool
+	for _, asset := range assets {
+		if asset.ArticleAssetID != nil {
+			mapping[*asset.ArticleAssetID] = asset.ID
+			if draft.CoverAssetID != nil && asset.ID == *draft.CoverAssetID {
+				currentCoverIsArticle = true
+			}
+			if draft.LegacyCoverAssetID != nil && *asset.ArticleAssetID == *draft.LegacyCoverAssetID {
+				id := asset.ID
+				sourceCover = &id
+			}
+		}
+	}
+	// Reconcile before the structured-document return: old images can change
+	// or clear article covers while leaving the newer draft-asset column intact.
+	if draft.LegacyCoverAssetID != nil || currentCoverIsArticle || draft.EditorDocument == nil {
+		draft.CoverAssetID = sourceCover
+	}
 	if draft.EditorDocument != nil {
 		return draft, nil
 	}
 	draft.MigrationNeeded = true
 	draft.ThemeID, draft.ThemeVersion = DefaultThemeID, DefaultThemeVersion
-	mapping := make(map[uint64]uint64)
-	// An old application image may have changed the article cover after migration.
-	draft.CoverAssetID = nil
-	for _, asset := range assets {
-		if asset.ArticleAssetID != nil {
-			mapping[*asset.ArticleAssetID] = asset.ID
-			if draft.LegacyCoverAssetID != nil && *asset.ArticleAssetID == *draft.LegacyCoverAssetID {
-				id := asset.ID
-				draft.CoverAssetID = &id
-			}
-		}
-	}
 	converted, err := ConvertLegacyHTML(draft.ContentHTML, mapping)
 	if err != nil {
 		draft.MigrationWarnings = []string{"旧稿正文转换失败，请保留原文并重新整理后编辑"}

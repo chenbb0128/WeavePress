@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/gif"
@@ -92,6 +93,57 @@ func validAnimatedDraftGIF(t *testing.T, width, height int) []byte {
 		t.Fatal(err)
 	}
 	return buffer.Bytes()
+}
+
+func TestInspectDraftImageRejectsGIFFrameMetadataBudget(t *testing.T) {
+	for _, frames := range []int{2, 1024, 1025} {
+		t.Run(fmt.Sprint(frames), func(t *testing.T) {
+			body := transparentPaletteDraftGIF(t, frames)
+			if len(body) >= 10<<20 {
+				t.Fatal("fixture must fit the upload size limit")
+			}
+			decoded, err := gif.DecodeAll(bytes.NewReader(body))
+			if err != nil || len(decoded.Image) != frames || len(decoded.Image[0].Palette) != 256 {
+				t.Fatalf("invalid transparent global palette fixture: %v", err)
+			}
+			_, err = InspectDraftImage(body, "image/gif")
+			if frames <= 1024 && err != nil {
+				t.Fatalf("normal animation rejected: %v", err)
+			}
+			if frames > 1024 && !errors.Is(err, ErrDraftAssetInvalid) {
+				t.Fatalf("%d transparent frames accepted: %v; body=%d bytes, pixels=%d", frames, err, len(body), frames)
+			}
+			if frames > 1024 && draftGIFWithinPixelBudget(body) {
+				t.Fatal("excessive frame metadata must be rejected before DecodeAll")
+			}
+		})
+	}
+}
+
+func transparentPaletteDraftGIF(t *testing.T, frames int) []byte {
+	t.Helper()
+	palette := make(color.Palette, 256)
+	for index := range palette {
+		palette[index] = color.RGBA{R: uint8(index), A: 255}
+	}
+	palette[0] = color.RGBA{}
+	frame := image.NewPaletted(image.Rect(0, 0, 1, 1), palette)
+	var buffer bytes.Buffer
+	if err := gif.EncodeAll(&buffer, &gif.GIF{
+		Image: []*image.Paletted{frame}, Delay: []int{1},
+		Config: image.Config{ColorModel: palette, Width: 1, Height: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := buffer.Bytes()
+	// Encoded global palette: 13-byte header + 256 RGB entries; duplicate only
+	// the valid GCE/image block so every transparent frame clones that palette.
+	const frameOffset = 13 + 256*3
+	result := append([]byte(nil), body[:frameOffset]...)
+	for index := 0; index < frames; index++ {
+		result = append(result, body[frameOffset:len(body)-1]...)
+	}
+	return append(result, 0x3b)
 }
 
 func TestInspectDraftImage(t *testing.T) {

@@ -27,6 +27,9 @@ type InspectedImage struct {
 const (
 	maxDraftImageSide   = 16384
 	maxDraftImagePixels = 16777216
+	// Each GIF frame may retain a 256-entry palette (~4 KiB on 64-bit Go),
+	// in addition to its pixels. Bound palette/frame overhead to a few MiB.
+	maxDraftGIFFrames = 1024
 )
 
 func InspectDraftImage(body []byte, declared string) (InspectedImage, error) {
@@ -77,7 +80,7 @@ func draftGIFWithinPixelBudget(body []byte) bool {
 	if body[10]&0x80 != 0 {
 		offset += 3 << ((body[10] & 7) + 1)
 	}
-	var pixels uint
+	var pixels, frames uint
 	for offset < len(body) {
 		block := body[offset]
 		offset++
@@ -87,6 +90,10 @@ func draftGIFWithinPixelBudget(body []byte) bool {
 		case 0x21: // Extension label, followed by data sub-blocks.
 			offset++
 		case 0x2c: // Image descriptor and optional local color table.
+			if frames >= maxDraftGIFFrames {
+				return false
+			}
+			frames++
 			if len(body)-offset < 9 {
 				return false
 			}
