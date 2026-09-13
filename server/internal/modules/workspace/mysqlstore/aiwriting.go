@@ -483,10 +483,10 @@ func (s *AIStore) CompleteGeneration(ctx context.Context, jobID uint64, output a
 		if mapErr != nil {
 			return aiwriting.Generation{}, mapErr
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE drafts SET cover_asset_id = ? WHERE id = ?`, mappedCoverID, draftID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE drafts SET cover_draft_asset_id = ?, cover_asset_id = ? WHERE id = ?`, mappedCoverID, *draftInput.CoverAssetID, draftID); err != nil {
 			return aiwriting.Generation{}, err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE draft_versions SET cover_asset_id = ? WHERE draft_id = ? AND version = 1`, mappedCoverID, draftID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE draft_versions SET cover_draft_asset_id = ?, cover_asset_id = ? WHERE draft_id = ? AND version = 1`, mappedCoverID, *draftInput.CoverAssetID, draftID); err != nil {
 			return aiwriting.Generation{}, err
 		}
 	}

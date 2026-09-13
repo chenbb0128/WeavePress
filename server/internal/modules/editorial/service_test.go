@@ -439,7 +439,8 @@ func TestUpdateValidatesDraftAssets(t *testing.T) {
 
 func TestRestoreLegacyCreatesStructuredVersion(t *testing.T) {
 	coverID := uint64(8)
-	store := &fakeEditorialStore{draft: Draft{ID: 1, CurrentVersion: 3}, historical: DraftVersion{DraftID: 1, Version: 1, Title: "历史标题", Author: "历史作者", Digest: "历史摘要", ContentHTML: `<p>历史正文</p>`, CoverAssetID: &coverID}, assets: []DraftAsset{{ID: 8, DraftID: 1, ObjectKey: "cover.webp", MediaType: "image/webp", ByteSize: 8, BodyEligible: true, CoverEligible: true}}}
+	articleCoverID := uint64(101)
+	store := &fakeEditorialStore{draft: Draft{ID: 1, CurrentVersion: 3}, historical: DraftVersion{DraftID: 1, Version: 1, Title: "历史标题", Author: "历史作者", Digest: "历史摘要", ContentHTML: `<p>历史正文</p>`, CoverAssetID: &coverID, LegacyCoverAssetID: &articleCoverID}, assets: []DraftAsset{{ID: 8, DraftID: 1, ArticleAssetID: &articleCoverID, ObjectKey: "cover.webp", MediaType: "image/webp", ByteSize: 8, BodyEligible: true, CoverEligible: true}}}
 	got, err := New(store, &fakeArticleStore{}, nil, nil, nil, false).RestoreVersion(context.Background(), 1, 7, 1, 3)
 	if err != nil {
 		t.Fatal(err)

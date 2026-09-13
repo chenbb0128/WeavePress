@@ -119,9 +119,15 @@ func (s *Service) hydrateDraft(ctx context.Context, draft Draft) (Draft, error) 
 	draft.MigrationNeeded = true
 	draft.ThemeID, draft.ThemeVersion = DefaultThemeID, DefaultThemeVersion
 	mapping := make(map[uint64]uint64)
+	// An old application image may have changed the article cover after migration.
+	draft.CoverAssetID = nil
 	for _, asset := range assets {
 		if asset.ArticleAssetID != nil {
 			mapping[*asset.ArticleAssetID] = asset.ID
+			if draft.LegacyCoverAssetID != nil && *asset.ArticleAssetID == *draft.LegacyCoverAssetID {
+				id := asset.ID
+				draft.CoverAssetID = &id
+			}
 		}
 	}
 	converted, err := ConvertLegacyHTML(draft.ContentHTML, mapping)
@@ -169,6 +175,7 @@ func (s *Service) RestoreVersion(ctx context.Context, id, userID uint64, version
 	draft.Title, draft.Author, draft.Digest = historical.Title, historical.Author, historical.Digest
 	draft.EditorDocument, draft.ContentHTML = historical.EditorDocument, historical.ContentHTML
 	draft.ThemeID, draft.ThemeVersion, draft.CoverAssetID = historical.ThemeID, historical.ThemeVersion, historical.CoverAssetID
+	draft.LegacyCoverAssetID = historical.LegacyCoverAssetID
 	draft, err = s.hydrateDraft(ctx, draft)
 	if err != nil {
 		return Draft{}, err

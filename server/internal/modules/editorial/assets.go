@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"image"
-	_ "image/gif"
+	"image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 	"mime"
@@ -24,6 +24,11 @@ type InspectedImage struct {
 	SHA256    [32]byte
 }
 
+const (
+	maxDraftImageSide   = 16384
+	maxDraftImagePixels = 16777216
+)
+
 func InspectDraftImage(body []byte, declared string) (InspectedImage, error) {
 	if len(body) > WeChatMaxCoverImageSize {
 		return InspectedImage{}, ErrDraftAssetTooLarge
@@ -38,7 +43,20 @@ func InspectDraftImage(body []byte, declared string) (InspectedImage, error) {
 		return InspectedImage{}, ErrDraftAssetType
 	}
 	width, height := draftImageDimensions(body, actualType)
-	if width == 0 || height == 0 {
+	// Divide instead of multiplying untrusted dimensions to avoid overflow.
+	if width == 0 || height == 0 || width > maxDraftImageSide || height > maxDraftImageSide || width > maxDraftImagePixels/height {
+		return InspectedImage{}, ErrDraftAssetInvalid
+	}
+	if actualType == "image/gif" {
+		// DecodeAll retains every frame; bound their combined allocation first.
+		if !draftGIFWithinPixelBudget(body) {
+			return InspectedImage{}, ErrDraftAssetInvalid
+		}
+		_, err = gif.DecodeAll(bytes.NewReader(body))
+	} else {
+		_, _, err = image.Decode(bytes.NewReader(body))
+	}
+	if err != nil {
 		return InspectedImage{}, ErrDraftAssetInvalid
 	}
 	return InspectedImage{
@@ -49,6 +67,60 @@ func InspectDraftImage(body []byte, declared string) (InspectedImage, error) {
 		Height:    height,
 		SHA256:    sha256.Sum256(body),
 	}, nil
+}
+
+func draftGIFWithinPixelBudget(body []byte) bool {
+	if len(body) < 13 {
+		return false
+	}
+	offset := 13
+	if body[10]&0x80 != 0 {
+		offset += 3 << ((body[10] & 7) + 1)
+	}
+	var pixels uint
+	for offset < len(body) {
+		block := body[offset]
+		offset++
+		switch block {
+		case 0x3b: // Trailer.
+			return pixels > 0
+		case 0x21: // Extension label, followed by data sub-blocks.
+			offset++
+		case 0x2c: // Image descriptor and optional local color table.
+			if len(body)-offset < 9 {
+				return false
+			}
+			width := uint(binary.LittleEndian.Uint16(body[offset+4 : offset+6]))
+			height := uint(binary.LittleEndian.Uint16(body[offset+6 : offset+8]))
+			if width == 0 || height == 0 || width > maxDraftImageSide || height > maxDraftImageSide || width > (maxDraftImagePixels-pixels)/height {
+				return false
+			}
+			pixels += width * height
+			packed := body[offset+8]
+			offset += 9
+			if packed&0x80 != 0 {
+				offset += 3 << ((packed & 7) + 1)
+			}
+			offset++ // LZW minimum code size.
+		default:
+			return false
+		}
+		for {
+			if offset >= len(body) {
+				return false
+			}
+			size := int(body[offset])
+			offset++
+			if size == 0 {
+				break
+			}
+			if size > len(body)-offset {
+				return false
+			}
+			offset += size
+		}
+	}
+	return false
 }
 
 func draftImageExtension(mediaType string) (string, bool) {
@@ -102,13 +174,12 @@ func draftWebPDimensions(body []byte) (uint, uint) {
 		offset = paddedEnd
 	}
 
-	decoded, err := webp.Decode(bytes.NewReader(body))
+	config, err := webp.DecodeConfig(bytes.NewReader(body))
 	if err != nil {
 		return 0, 0
 	}
-	bounds := decoded.Bounds()
-	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
+	if config.Width <= 0 || config.Height <= 0 {
 		return 0, 0
 	}
-	return uint(bounds.Dx()), uint(bounds.Dy())
+	return uint(config.Width), uint(config.Height)
 }

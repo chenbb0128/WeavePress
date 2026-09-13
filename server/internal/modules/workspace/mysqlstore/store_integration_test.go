@@ -103,11 +103,20 @@ func TestDraftLayoutPersistence(t *testing.T) {
 	if len(assets) != 2 || assets[0].Origin != "article" {
 		t.Fatalf("assets = %#v", assets)
 	}
-	if draft.CoverAssetID == nil || *draft.CoverAssetID != assets[0].ID {
+	var mappedCoverID uint64
+	for _, asset := range assets {
+		if asset.ArticleAssetID != nil && *asset.ArticleAssetID == sourceCoverID {
+			mappedCoverID = asset.ID
+		}
+	}
+	if mappedCoverID == 0 || draft.CoverAssetID == nil || *draft.CoverAssetID != mappedCoverID {
 		t.Fatalf("draft cover = %#v, assets = %#v", draft.CoverAssetID, assets)
 	}
+	if draft.LegacyCoverAssetID == nil || *draft.LegacyCoverAssetID != sourceCoverID {
+		t.Fatalf("old image must receive article cover %d, got %v", sourceCoverID, draft.LegacyCoverAssetID)
+	}
 	initialVersion, err := store.GetDraftVersion(ctx, draft.ID, 1)
-	if err != nil || initialVersion.CoverAssetID == nil || *initialVersion.CoverAssetID != assets[0].ID {
+	if err != nil || initialVersion.CoverAssetID == nil || *initialVersion.CoverAssetID != mappedCoverID {
 		t.Fatalf("initial version = %#v, err=%v", initialVersion, err)
 	}
 	if err := store.EnsureArticleAssets(ctx, draft.ID, article.ID, user.ID); err != nil {
@@ -153,13 +162,16 @@ func TestDraftLayoutPersistence(t *testing.T) {
 	}
 	updated, err := store.UpdateDraft(ctx, draft.ID, user.ID, editorial.UpdateInput{
 		Title: "排版稿", EditorDocument: &doc, ThemeID: "clear-blue", ThemeVersion: 1,
-		ContentHTML: "<section>saved</section>", ExpectedVersion: draft.CurrentVersion, ChangeNote: "排版保存",
+		ContentHTML: "<section>saved</section>", CoverAssetID: &uploaded.ID, ExpectedVersion: draft.CurrentVersion, ChangeNote: "排版保存",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if updated.CurrentVersion != 2 || updated.EditorDocument == nil || updated.ThemeID != "clear-blue" {
 		t.Fatalf("updated = %#v", updated)
+	}
+	if updated.CoverAssetID == nil || *updated.CoverAssetID != uploaded.ID || updated.LegacyCoverAssetID != nil {
+		t.Fatalf("uploaded cover must use only the new column: %#v", updated)
 	}
 	if _, err := store.UpdateDraft(ctx, draft.ID, user.ID, editorial.UpdateInput{Title: "过期保存", ContentHTML: "<section>stale</section>", ExpectedVersion: draft.CurrentVersion}); !errors.Is(err, editorial.ErrDraftVersionConflict) {
 		t.Fatalf("stale update error = %v", err)
@@ -187,6 +199,9 @@ func TestDraftLayoutPersistence(t *testing.T) {
 	}
 	if restored.CurrentVersion != 4 || restored.EditorDocument == nil || !reflect.DeepEqual(*restored.EditorDocument, doc) || restored.ThemeID != "clear-blue" || restored.ThemeVersion != 1 || restored.ContentHTML != "<section>saved</section>" {
 		t.Fatalf("restored = %#v", restored)
+	}
+	if restored.CoverAssetID == nil || *restored.CoverAssetID != uploaded.ID || restored.LegacyCoverAssetID != nil {
+		t.Fatalf("restored uploaded cover = %#v", restored)
 	}
 	v2AfterRestore, err := store.GetDraftVersion(ctx, draft.ID, 2)
 	if err != nil || !reflect.DeepEqual(v2AfterRestore, v2BeforeRestore) {
@@ -793,7 +808,7 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 	}
 	var draftStatus, draftAuthor string
 	var draftCover sql.NullInt64
-	if err := db.QueryRowContext(ctx, `SELECT status, author, cover_asset_id FROM drafts WHERE id = ?`, draftID).Scan(&draftStatus, &draftAuthor, &draftCover); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT status, author, cover_draft_asset_id FROM drafts WHERE id = ?`, draftID).Scan(&draftStatus, &draftAuthor, &draftCover); err != nil {
 		t.Fatal(err)
 	}
 	draftAssets, assetErr := workspaceStore.ListDraftAssets(ctx, draftID)
@@ -807,7 +822,9 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 			t.Fatalf("count query %q = %d, want %d, err=%v", query, count, want, countErr)
 		}
 	}
-	assertCount(`SELECT COUNT(*) FROM draft_versions WHERE draft_id = ? AND version = 1 AND cover_asset_id = ?`, 1, draftID, draftAssets[0].ID)
+	assertCount(`SELECT COUNT(*) FROM draft_versions WHERE draft_id = ? AND version = 1 AND cover_draft_asset_id = ?`, 1, draftID, draftAssets[0].ID)
+	assertCount(`SELECT COUNT(*) FROM drafts WHERE id = ? AND cover_asset_id = ?`, 1, draftID, coverID)
+	assertCount(`SELECT COUNT(*) FROM draft_versions WHERE draft_id = ? AND version = 1 AND cover_asset_id = ?`, 1, draftID, coverID)
 	assertCount(`SELECT COUNT(*) FROM draft_versions WHERE draft_id = ? AND version = 1 AND change_note = 'AI 合规采编生成'`, 1, draftID)
 	assertCount(`SELECT COUNT(*) FROM draft_events WHERE draft_id = ? AND from_status = '' AND to_status = 'editing' AND note = 'AI 合规采编生成'`, 1, draftID)
 	completedGenerationAgain, err := aiStore.CompleteGeneration(ctx, generationJob.ID, generationOutput, draftInput, aiwriting.TokenUsage{InputTokens: 999, OutputTokens: 999, TotalTokens: 999})

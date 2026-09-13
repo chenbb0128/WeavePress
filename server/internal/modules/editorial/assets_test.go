@@ -2,6 +2,7 @@ package editorial
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -13,6 +14,85 @@ import (
 	"os"
 	"testing"
 )
+
+func TestDraftAssetUploadRejectsTruncatedImage(t *testing.T) {
+	for _, test := range []struct {
+		name, format string
+		body         []byte
+		cut          int
+	}{
+		{"png", "png", validDraftPNG(t, 20, 10), 20},
+		{"jpeg", "jpeg", validDraftJPEG(t, 20, 10), 10},
+		{"gif", "gif", validDraftGIF(t, 20, 10), 5},
+		{"gif later frame", "gif", validAnimatedDraftGIF(t, 20, 10), 5},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// Truncate an encoded image after its complete size header, in the image data.
+			body := test.body[:len(test.body)-test.cut]
+			if _, _, err := image.DecodeConfig(bytes.NewReader(body)); err != nil {
+				t.Fatalf("fixture must retain a valid size header: %v", err)
+			}
+			_, _, decodeErr := image.Decode(bytes.NewReader(body))
+			if test.format == "gif" {
+				_, decodeErr = gif.DecodeAll(bytes.NewReader(body))
+			}
+			if decodeErr == nil {
+				t.Fatal("fixture must contain truncated pixel data")
+			}
+			store := &fakeEditorialStore{draft: Draft{ID: 7, Status: StatusEditing, CurrentVersion: 3}}
+			objects := &fakeAssetObjects{}
+			service := New(store, &fakeArticleStore{}, nil, nil, objects, false)
+			_, err := service.UploadAsset(context.Background(), 7, 42, "image."+test.format, "image/"+test.format, body)
+			if !errors.Is(err, ErrDraftAssetInvalid) {
+				t.Fatalf("UploadAsset() error = %v, want invalid image", err)
+			}
+			if len(objects.body) != 0 || len(store.assets) != 0 || store.draft.CurrentVersion != 3 {
+				t.Fatal("invalid image changed object storage, asset records or draft version")
+			}
+		})
+	}
+}
+
+func TestInspectDraftImageRejectsPixelBudget(t *testing.T) {
+	webp := append([]byte(nil), validDraftWebPVP8L()...)
+	binary.LittleEndian.PutUint32(webp[21:25], uint32(4097-1)|uint32(4096-1)<<14|1<<28)
+	for _, test := range []struct {
+		name, mediaType string
+		body            []byte
+	}{
+		{"png pixels", "image/png", validDraftPNG(t, 4097, 4096)},
+		{"jpeg pixels", "image/jpeg", validDraftJPEG(t, 4097, 4096)},
+		{"gif pixels", "image/gif", validDraftGIF(t, 4097, 4096)},
+		{"gif cumulative frame pixels", "image/gif", validAnimatedDraftGIF(t, 4096, 4096)},
+		{"webp pixels", "image/webp", webp},
+		{"png side", "image/png", validDraftPNG(t, 16385, 1)},
+		{"jpeg side", "image/jpeg", validDraftJPEG(t, 1, 16385)},
+		{"gif side", "image/gif", validDraftGIF(t, 16385, 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := InspectDraftImage(test.body, test.mediaType)
+			if !errors.Is(err, ErrDraftAssetInvalid) {
+				t.Fatalf("InspectDraftImage() error = %v, want pixel budget rejection", err)
+			}
+		})
+	}
+}
+
+func validAnimatedDraftGIF(t *testing.T, width, height int) []byte {
+	t.Helper()
+	palette := color.Palette{color.Black, color.White}
+	var buffer bytes.Buffer
+	if err := gif.EncodeAll(&buffer, &gif.GIF{
+		Image: []*image.Paletted{
+			image.NewPaletted(image.Rect(0, 0, width, height), palette),
+			image.NewPaletted(image.Rect(0, 0, 1, 1), palette),
+		},
+		Delay: []int{10, 10},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
+}
 
 func TestInspectDraftImage(t *testing.T) {
 	tests := []struct {
@@ -27,6 +107,7 @@ func TestInspectDraftImage(t *testing.T) {
 		{name: "png", mediaType: "image/png", body: validDraftPNG(t, 20, 10), wantType: "image/png", wantExt: "png", wantWidth: 20, wantHeight: 10},
 		{name: "jpeg", mediaType: "image/jpeg", body: validDraftJPEG(t, 20, 10), wantType: "image/jpeg", wantExt: "jpg", wantWidth: 20, wantHeight: 10},
 		{name: "gif", mediaType: "image/gif", body: validDraftGIF(t, 20, 10), wantType: "image/gif", wantExt: "gif", wantWidth: 20, wantHeight: 10},
+		{name: "animated gif", mediaType: "image/gif", body: validAnimatedDraftGIF(t, 20, 10), wantType: "image/gif", wantExt: "gif", wantWidth: 20, wantHeight: 10},
 		{name: "webp vp8", mediaType: "image/webp", body: validDraftWebPVP8(), wantType: "image/webp", wantExt: "webp", wantWidth: 1, wantHeight: 1},
 		{name: "webp vp8l", mediaType: "image/webp", body: validDraftWebPVP8L(), wantType: "image/webp", wantExt: "webp", wantWidth: 1, wantHeight: 1},
 		{name: "webp vp8x", mediaType: "image/webp", body: validDraftWebPVP8X(), wantType: "image/webp", wantExt: "webp", wantWidth: 1, wantHeight: 1},

@@ -153,6 +153,19 @@ const editable = computed(
     !submitting.value &&
     !uploading.value,
 );
+const migrationReviewRequired = computed(
+  () =>
+    draft.value?.migrationNeeded &&
+    ['approved', 'publish_failed'].includes(draft.value.status),
+);
+const migrationSavable = computed(
+  () =>
+    migrationReviewRequired.value &&
+    hasAccessByCodes(['draft:update']) &&
+    !migrationFailed.value &&
+    !submitting.value &&
+    !uploading.value,
+);
 const cover = computed(() =>
   assets.value.find((asset) => asset.id === form.coverAssetId),
 );
@@ -291,7 +304,7 @@ function reportSaveError(error: unknown, context: DraftContext) {
   }
 }
 async function save() {
-  if (!draft.value || !editable.value) return;
+  if (!draft.value || (!editable.value && !migrationSavable.value)) return;
   const context = captureContext();
   if (!context) return;
   if (!form.title.trim() || !hasBody(form.editorDocument.content)) {
@@ -300,6 +313,18 @@ async function save() {
   }
   submitting.value = true;
   try {
+    if (migrationReviewRequired.value) {
+      try {
+        await ElMessageBox.confirm(
+          '保存结构化迁移稿将清除旧审核结论，退回编辑状态；必须重新审核后才能发布。',
+          '保存迁移稿并重新审核',
+          { type: 'warning' },
+        );
+      } catch {
+        return;
+      }
+      if (!isCurrent(context)) return;
+    }
     const updated = await updateDraftApi(
       context.id,
       {
@@ -554,6 +579,15 @@ onMounted(load);
               </span>
             </ElTooltip>
             <ElButton
+              v-if="migrationReviewRequired"
+              v-access:code="'draft:update'"
+              :loading="submitting"
+              :disabled="!migrationSavable"
+              type="warning"
+              @click="save"
+              >保存迁移稿并重新审核</ElButton
+            >
+            <ElButton
               v-if="draft.status === 'in_review'"
               v-access:code="'draft:review'"
               type="success"
@@ -612,6 +646,13 @@ onMounted(load);
         </ul>
       </ElAlert>
 
+      <ElAlert
+        v-if="migrationReviewRequired"
+        class="mt-4"
+        :closable="false"
+        title="此旧稿需要保存结构化迁移版本；保存将清除旧审核结论并退回编辑，需重新审核后才能发布。"
+        type="warning"
+      />
       <ElAlert
         v-if="draft.migrationWarnings?.length"
         class="mt-4"
