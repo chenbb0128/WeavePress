@@ -62,25 +62,28 @@ function isHTTPLink(value: string): boolean {
 }
 
 async function setLink() {
-  if (!props.editor || !props.editor.isEditable) return;
+  const editor = props.editor;
+  if (!editor || editor.isDestroyed || !editor.isEditable) return;
   try {
     const result = await ElMessageBox.prompt(
       '请输入 HTTP(S) 链接',
       '设置链接',
       {
         inputPattern: /^https?:\/\/\S+$/i,
-        inputValue: props.editor.getAttributes('link').href || '',
+        inputValue: editor.getAttributes('link').href || '',
         inputErrorMessage: '链接必须以 http:// 或 https:// 开头',
       },
     );
     const href = result.value.trim();
-    if (!isHTTPLink(href)) return;
-    props.editor
-      .chain()
-      .focus()
-      .extendMarkRange('link')
-      .setLink({ href })
-      .run();
+    if (
+      props.editor !== editor ||
+      editor.isDestroyed ||
+      !editor.isEditable ||
+      !isHTTPLink(href)
+    ) {
+      return;
+    }
+    editor.chain().focus().extendMarkRange('link').setLink({ href }).run();
   } catch {
     // 用户取消输入。
   }

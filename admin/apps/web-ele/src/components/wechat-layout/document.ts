@@ -28,8 +28,9 @@ const SAFE_FONT_FAMILY = /^[\w\s'",-]+$/;
 const IMAGE_ATTRS = ['align', 'alt', 'caption', 'draftAssetId', 'width'];
 
 export function normalizeDocument(value: EditorDocument): EditorDocument {
+  const document = value as unknown as Record<string, unknown>;
   return {
-    content: (value.content ?? []).map(cloneNode),
+    content: normalizeChildren(document.content, 'doc'),
     type: 'doc',
   };
 }
@@ -62,21 +63,136 @@ export function renderPreviewHtml(
   return `<article style="${escapeHTML(style)}">${content}</article>`;
 }
 
-function cloneNode(node: EditorNode): EditorNode {
+type ParentNodeType = 'doc' | EditorNode['type'];
+
+function normalizeChildren(
+  value: unknown,
+  parent: ParentNodeType,
+): EditorNode[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const node = normalizeNode(item, parent);
+    return node ? [node] : [];
+  });
+}
+
+function normalizeNode(
+  value: unknown,
+  parent: ParentNodeType,
+): EditorNode | undefined {
+  if (!isRecord(value) || typeof value.type !== 'string') return undefined;
+  const type = value.type as EditorNode['type'];
+  if (!allowsChild(parent, type)) return undefined;
+
+  switch (type) {
+    case 'paragraph':
+    case 'blockquote':
+    case 'bulletList':
+    case 'orderedList':
+    case 'listItem':
+      return { content: normalizeChildren(value.content, type), type };
+    case 'heading': {
+      const attrs = isRecord(value.attrs) ? value.attrs : {};
+      if (attrs.level !== 2 && attrs.level !== 3) return undefined;
+      return {
+        attrs: { level: attrs.level },
+        content: normalizeChildren(value.content, type),
+        type,
+      };
+    }
+    case 'text': {
+      if (typeof value.text !== 'string') return undefined;
+      const marks = normalizeMarks(value.marks);
+      return {
+        ...(marks.length > 0 ? { marks } : {}),
+        text: value.text,
+        type,
+      };
+    }
+    case 'hardBreak':
+    case 'horizontalRule':
+      return { type };
+    case 'image': {
+      const attrs = normalizeImageAttrs(value.attrs);
+      return attrs ? { attrs, type } : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+function normalizeMarks(value: unknown): EditorMark[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap<EditorMark>((item): EditorMark[] => {
+    if (!isRecord(item) || typeof item.type !== 'string') return [];
+    if (
+      item.type === 'bold' ||
+      item.type === 'italic' ||
+      item.type === 'underline'
+    ) {
+      return [{ type: item.type }];
+    }
+    if (item.type !== 'link' || !isRecord(item.attrs)) return [];
+    const { href, title } = item.attrs;
+    if (typeof href !== 'string' || !isSafeHTTPURL(href)) return [];
+    return [
+      {
+        attrs: {
+          href,
+          ...(typeof title === 'string' ? { title } : {}),
+        },
+        type: 'link' as const,
+      },
+    ];
+  });
+}
+
+function normalizeImageAttrs(value: unknown): EditorImageAttrs | undefined {
+  if (!isRecord(value)) return undefined;
+  const draftAssetId = value.draftAssetId;
+  if (!Number.isSafeInteger(draftAssetId) || Number(draftAssetId) <= 0) {
+    return undefined;
+  }
+  const width =
+    value.width === 50 || value.width === 75 || value.width === 100
+      ? value.width
+      : 100;
   return {
-    ...(node.attrs ? { attrs: { ...node.attrs } } : {}),
-    ...(node.content ? { content: node.content.map(cloneNode) } : {}),
-    ...(node.marks
-      ? {
-          marks: node.marks.map((mark) => ({
-            ...(mark.attrs ? { attrs: { ...mark.attrs } } : {}),
-            type: mark.type,
-          })),
-        }
-      : {}),
-    ...(node.text === undefined ? {} : { text: node.text }),
-    type: node.type,
+    align: 'center',
+    alt: typeof value.alt === 'string' ? value.alt : '',
+    caption: typeof value.caption === 'string' ? value.caption : '',
+    draftAssetId: Number(draftAssetId),
+    width,
   };
+}
+
+function allowsChild(parent: ParentNodeType, child: EditorNode['type']) {
+  switch (parent) {
+    case 'doc':
+    case 'blockquote':
+    case 'listItem':
+      return (
+        child === 'paragraph' ||
+        child === 'heading' ||
+        child === 'blockquote' ||
+        child === 'bulletList' ||
+        child === 'orderedList' ||
+        child === 'image' ||
+        child === 'horizontalRule'
+      );
+    case 'paragraph':
+    case 'heading':
+      return child === 'text' || child === 'hardBreak';
+    case 'bulletList':
+    case 'orderedList':
+      return child === 'listItem';
+    default:
+      return false;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function canonicalize(value: unknown): unknown {

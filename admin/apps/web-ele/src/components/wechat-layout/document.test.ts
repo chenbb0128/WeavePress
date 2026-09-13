@@ -44,6 +44,125 @@ describe('微信排版文档工具', () => {
     expect(value).toEqual({ type: 'doc' });
   });
 
+  it('rebuilds common TipTap JSON with only protocol fields', () => {
+    const tipTapDocument = {
+      type: 'doc',
+      attrs: { class: 'editor-root' },
+      content: [
+        {
+          type: 'orderedList',
+          attrs: { start: 3, type: null },
+          content: [
+            {
+              type: 'listItem',
+              attrs: { color: 'red' },
+              content: [
+                {
+                  type: 'paragraph',
+                  attrs: { textAlign: 'center' },
+                  content: [
+                    {
+                      type: 'text',
+                      text: '正文',
+                      attrs: { class: 'text' },
+                      marks: [
+                        {
+                          type: 'link',
+                          attrs: {
+                            href: 'https://example.com/article',
+                            target: '_blank',
+                            rel: 'noopener noreferrer nofollow',
+                            class: 'external-link',
+                            title: '原文',
+                          },
+                        },
+                        { type: 'strike' },
+                        { type: 'bold', attrs: { class: 'strong' } },
+                      ],
+                    },
+                    {
+                      type: 'text',
+                      text: '危险链接',
+                      marks: [
+                        {
+                          type: 'link',
+                          attrs: { href: 'javascript:alert(1)' },
+                        },
+                      ],
+                    },
+                  ],
+                },
+                {
+                  type: 'image',
+                  attrs: {
+                    draftAssetId: 18,
+                    width: 640,
+                    align: 'left',
+                    alt: 7,
+                    caption: null,
+                    src: 'https://evil.example/tracker.png',
+                    style: 'position:fixed',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        {
+          type: 'codeBlock',
+          attrs: { language: 'html' },
+          content: [{ type: 'text', text: '<script>alert(1)</script>' }],
+        },
+      ],
+    } as unknown as EditorDocument;
+
+    expect(normalizeDocument(tipTapDocument)).toEqual({
+      type: 'doc',
+      content: [
+        {
+          type: 'orderedList',
+          content: [
+            {
+              type: 'listItem',
+              content: [
+                {
+                  type: 'paragraph',
+                  content: [
+                    {
+                      type: 'text',
+                      text: '正文',
+                      marks: [
+                        {
+                          type: 'link',
+                          attrs: {
+                            href: 'https://example.com/article',
+                            title: '原文',
+                          },
+                        },
+                        { type: 'bold' },
+                      ],
+                    },
+                    { type: 'text', text: '危险链接' },
+                  ],
+                },
+                {
+                  type: 'image',
+                  attrs: {
+                    draftAssetId: 18,
+                    width: 100,
+                    align: 'center',
+                    alt: '',
+                    caption: '',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   it('renders escaped themed preview and draft asset URL', () => {
     const html = renderPreviewHtml(
       {

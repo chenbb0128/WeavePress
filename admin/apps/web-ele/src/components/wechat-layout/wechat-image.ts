@@ -12,11 +12,17 @@ export const WechatImage = Image.extend({
 
   addAttributes() {
     return {
-      draftAssetId: { default: 0 },
-      width: { default: 100 },
-      align: { default: 'center' },
-      alt: { default: '' },
-      caption: { default: '' },
+      draftAssetId: {
+        default: 0,
+        parseHTML: (element) => {
+          const value = Number(element.getAttribute('data-draft-asset-id'));
+          return Number.isSafeInteger(value) && value > 0 ? value : 0;
+        },
+      },
+      width: { default: 100, parseHTML: () => 100 },
+      align: { default: 'center', parseHTML: () => 'center' },
+      alt: { default: '', parseHTML: () => '' },
+      caption: { default: '', parseHTML: () => '' },
     };
   },
 
@@ -24,15 +30,6 @@ export const WechatImage = Image.extend({
     return [
       {
         tag: 'figure[data-draft-asset-id]',
-        getAttrs: (element) => {
-          if (typeof element === 'string') return false;
-          const draftAssetId = Number(
-            element.getAttribute('data-draft-asset-id'),
-          );
-          return Number.isSafeInteger(draftAssetId) && draftAssetId > 0
-            ? { draftAssetId }
-            : false;
-        },
       },
     ];
   },
