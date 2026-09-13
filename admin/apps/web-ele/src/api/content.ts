@@ -19,6 +19,69 @@ export type DraftStatus =
   | 'publishing';
 export type PublishJobStatus = 'completed' | 'failed' | 'publishing' | 'queued';
 
+export interface EditorDocument {
+  content?: EditorNode[];
+  type: 'doc';
+}
+export interface EditorImageAttrs {
+  align: 'center';
+  alt: string;
+  caption: string;
+  draftAssetId: number;
+  width: 50 | 75 | 100;
+}
+export interface EditorNode {
+  attrs?: EditorImageAttrs | { level: 2 | 3 };
+  content?: EditorNode[];
+  marks?: EditorMark[];
+  text?: string;
+  type:
+    | 'blockquote'
+    | 'bulletList'
+    | 'hardBreak'
+    | 'heading'
+    | 'horizontalRule'
+    | 'image'
+    | 'listItem'
+    | 'orderedList'
+    | 'paragraph'
+    | 'text';
+}
+export interface EditorMark {
+  attrs?: { href?: string; title?: string };
+  type: 'bold' | 'italic' | 'link' | 'underline';
+}
+export interface DraftAsset {
+  articleAssetId?: number;
+  bodyEligible: boolean;
+  byteSize: number;
+  coverEligible: boolean;
+  createdAt: string;
+  draftId: number;
+  height: number;
+  id: number;
+  mediaType: string;
+  mediaUrl: string;
+  origin: 'article' | 'upload';
+  uploadedBy: number;
+  width: number;
+}
+export interface WeChatLayoutTheme {
+  id: string;
+  name: string;
+  preview: string;
+  tokens: {
+    accent: string;
+    border: string;
+    fontFamily: string;
+    heading: string;
+    muted: string;
+    surface: string;
+    text: string;
+  };
+  version: number;
+}
+
 export interface ContentBlock {
   alt?: string;
   assetId?: number;
@@ -112,8 +175,11 @@ export interface DraftVersion {
   createdBy: number;
   digest: string;
   draftId: number;
+  editorDocument?: EditorDocument;
   id: number;
   title: string;
+  themeId: string;
+  themeVersion: number;
   version: number;
 }
 export interface Draft {
@@ -124,13 +190,18 @@ export interface Draft {
   createdBy: number;
   currentVersion: number;
   digest: string;
+  editorDocument?: EditorDocument;
   events?: DraftEvent[];
   id: number;
+  migrationNeeded: boolean;
+  migrationWarnings?: string[];
   previewHtml?: string;
   sourceArticle?: Article;
   sourceArticleId: number;
   status: DraftStatus;
   title: string;
+  themeId: string;
+  themeVersion: number;
   updatedAt: string;
   updatedBy: number;
 }
@@ -227,14 +298,24 @@ export function updateDraftApi(
   input: {
     author: string;
     changeNote: string;
-    contentHtml: string;
     coverAssetId?: number;
     digest: string;
+    editorDocument: EditorDocument;
     expectedVersion: number;
+    themeId: string;
     title: string;
   },
 ) {
   return requestClient.put<Draft>(`/drafts/${id}`, input);
+}
+export function getWeChatLayoutThemesApi() {
+  return requestClient.get<WeChatLayoutTheme[]>('/wechat-layout/themes');
+}
+export function getDraftAssetsApi(id: number) {
+  return requestClient.get<DraftAsset[]>(`/drafts/${id}/assets`);
+}
+export function uploadDraftAssetApi(id: number, file: File) {
+  return requestClient.upload<DraftAsset>(`/drafts/${id}/assets`, { file });
 }
 export function getDraftVersionsApi(id: number) {
   return requestClient.get<DraftVersion[]>(`/drafts/${id}/versions`);
