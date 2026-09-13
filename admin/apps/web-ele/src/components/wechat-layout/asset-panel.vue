@@ -1,7 +1,9 @@
 <script lang="ts" setup>
+/* eslint-disable vue/html-closing-bracket-newline */
 import type { DraftAsset } from '#/api';
 
 import { ref } from 'vue';
+
 import { ElButton, ElEmpty, ElMessage, ElTag } from 'element-plus';
 
 const props = defineProps<{
@@ -10,8 +12,8 @@ const props = defineProps<{
   disabled: boolean;
 }>();
 const emit = defineEmits<{
-  insert: [asset: DraftAsset];
   cover: [assetId: number];
+  insert: [asset: DraftAsset];
   upload: [file: File];
 }>();
 const fileInput = ref<HTMLInputElement>();
@@ -42,9 +44,9 @@ function formatBytes(bytes: number) {
   <section aria-label="稿件素材">
     <div class="mb-3 flex items-center justify-between gap-2">
       <h2 class="font-semibold">稿件素材</h2>
-      <ElButton :disabled="disabled" size="small" @click="fileInput?.click()"
-        >上传图片</ElButton
-      >
+      <ElButton :disabled="disabled" size="small" @click="fileInput?.click()">
+        上传图片
+      </ElButton>
     </div>
     <input
       ref="fileInput"
@@ -77,14 +79,16 @@ function formatBytes(bytes: number) {
           type="primary"
           plain
           @click="emit('insert', asset)"
-          >插入正文</ElButton
         >
+          插入正文
+        </ElButton>
         <ElButton
           :disabled="disabled || !asset.coverEligible"
           size="small"
           @click="emit('cover', asset.id)"
-          >设为封面</ElButton
         >
+          设为封面
+        </ElButton>
       </div>
     </div>
     <ElEmpty
@@ -97,17 +101,19 @@ function formatBytes(bytes: number) {
 
 <style scoped>
 .asset-card {
-  margin-bottom: 12px;
   padding: 12px;
+  margin-bottom: 12px;
   border: 1px solid var(--el-border-color);
   border-radius: var(--el-border-radius-base);
 }
+
 .asset-card img {
   width: 100%;
   height: 140px;
   object-fit: contain;
   background: var(--el-fill-color-light);
 }
+
 .text-warning {
   color: var(--el-color-warning);
 }

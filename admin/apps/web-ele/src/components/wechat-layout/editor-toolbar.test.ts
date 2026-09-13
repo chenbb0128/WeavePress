@@ -1,9 +1,9 @@
 import type { App, ShallowRef } from 'vue';
 
-import { Editor } from '@tiptap/vue-3';
-import StarterKit from '@tiptap/starter-kit';
 import { createApp, defineComponent, h, nextTick, shallowRef } from 'vue';
 
+import StarterKit from '@tiptap/starter-kit';
+import { Editor } from '@tiptap/vue-3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import EditorToolbar from './editor-toolbar.vue';
@@ -64,7 +64,7 @@ function buttonByText(host: HTMLElement, text: string) {
   );
 }
 
-describe('EditorToolbar', () => {
+describe('editor toolbar', () => {
   afterEach(() => {
     for (const app of apps.splice(0)) app.unmount();
     for (const editor of editors.splice(0)) editor.destroy();

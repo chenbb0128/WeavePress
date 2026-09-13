@@ -60,6 +60,24 @@ catalogs:
     '@tanstack/vue-store':
       specifier: ^0.11.0
       version: 0.11.0
+    '@tiptap/extension-image':
+      specifier: ^3.31.3
+      version: 3.31.3
+    '@tiptap/extension-link':
+      specifier: ^3.31.3
+      version: 3.31.3
+    '@tiptap/extension-placeholder':
+      specifier: ^3.31.3
+      version: 3.31.3
+    '@tiptap/extension-underline':
+      specifier: ^3.31.3
+      version: 3.31.3
+    '@tiptap/starter-kit':
+      specifier: ^3.31.3
+      version: 3.31.3
+    '@tiptap/vue-3':
+      specifier: ^3.31.3
+      version: 3.31.3
     '@tsdown/css':
       specifier: ^0.22.13
       version: 0.22.13
@@ -488,22 +506,22 @@ importers:
   apps/web-ele:
     dependencies:
       '@tiptap/extension-image':
-        specifier: ^3.31.3
+        specifier: 'catalog:'
         version: 3.31.3(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))
       '@tiptap/extension-link':
-        specifier: ^3.31.3
+        specifier: 'catalog:'
         version: 3.31.3(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3)
       '@tiptap/extension-placeholder':
-        specifier: ^3.31.3
+        specifier: 'catalog:'
         version: 3.31.3(@tiptap/extensions@3.31.3(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3))
       '@tiptap/extension-underline':
-        specifier: ^3.31.3
+        specifier: 'catalog:'
         version: 3.31.3(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))
       '@tiptap/starter-kit':
-        specifier: ^3.31.3
+        specifier: 'catalog:'
         version: 3.31.3
       '@tiptap/vue-3':
-        specifier: ^3.31.3
+        specifier: 'catalog:'
         version: 3.31.3(@floating-ui/dom@1.8.0)(@tiptap/core@3.31.3(@tiptap/pm@3.31.3))(@tiptap/pm@3.31.3)(vue@3.5.40(typescript@6.0.3))
       '@vben/access':
         specifier: workspace:*

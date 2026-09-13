@@ -1,7 +1,9 @@
-import type { Draft, DraftStatus } from '#/api';
 import type { App } from 'vue';
 
+import type { Draft, DraftStatus } from '#/api';
+
 import { createApp, nextTick } from 'vue';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DraftDetail from './detail.vue';

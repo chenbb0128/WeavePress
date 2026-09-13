@@ -2,11 +2,11 @@
 import { computed } from 'vue';
 
 const props = defineProps<{
-  title: string;
   author: string;
-  digest: string;
-  coverUrl?: string;
   bodyHtml: string;
+  coverUrl?: string;
+  digest: string;
+  title: string;
 }>();
 function escapeHTML(value: string) {
   return value
@@ -38,10 +38,11 @@ const srcdoc = computed(() => {
   height: 760px;
   margin: 0 auto;
   overflow: hidden;
+  background: var(--el-bg-color);
   border: 1px solid var(--el-border-color);
   border-radius: 24px;
-  background: var(--el-bg-color);
 }
+
 iframe {
   display: block;
   width: 100%;

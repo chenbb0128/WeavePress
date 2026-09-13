@@ -2,9 +2,9 @@
 import type { WeChatLayoutTheme } from '#/api';
 
 defineProps<{
-  themes: WeChatLayoutTheme[];
-  modelValue: string;
   disabled: boolean;
+  modelValue: string;
+  themes: WeChatLayoutTheme[];
 }>();
 const emit = defineEmits<{
   'update:modelValue': [value: string];
@@ -48,26 +48,30 @@ const emit = defineEmits<{
   display: grid;
   gap: 8px;
   width: 100%;
-  margin-bottom: 10px;
   padding: 12px;
-  text-align: left;
+  margin-bottom: 10px;
   color: var(--el-text-color-primary);
+  text-align: left;
   background: var(--el-bg-color);
   border: 1px solid var(--el-border-color);
   border-radius: var(--el-border-radius-base);
 }
+
 .theme-card.selected {
   border-color: var(--el-color-primary);
   box-shadow: 0 0 0 1px var(--el-color-primary);
 }
+
 .theme-card:disabled {
   cursor: not-allowed;
 }
+
 .theme-sample {
   padding: 8px 10px;
-  border-left: 3px solid;
   font-size: 13px;
+  border-left: 3px solid;
 }
+
 .theme-swatch {
   display: inline-block;
   width: 12px;

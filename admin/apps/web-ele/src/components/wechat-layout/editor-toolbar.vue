@@ -1,8 +1,11 @@
 <script lang="ts" setup>
-import type { Editor } from '@tiptap/vue-3';
+// oxlint-disable-next-line import/no-empty-named-blocks, unicorn/require-module-specifiers -- TipTap commands rely on module augmentations.
 import type {} from '@tiptap/extension-link';
+// oxlint-disable-next-line import/no-empty-named-blocks, unicorn/require-module-specifiers -- TipTap commands rely on module augmentations.
 import type {} from '@tiptap/extension-underline';
+// oxlint-disable-next-line import/no-empty-named-blocks, unicorn/require-module-specifiers -- TipTap commands rely on module augmentations.
 import type {} from '@tiptap/starter-kit';
+import type { Editor } from '@tiptap/vue-3';
 
 import { computed } from 'vue';
 
@@ -98,36 +101,36 @@ function unsetLink() {
 
 <template>
   <div class="flex flex-wrap gap-2" role="toolbar" aria-label="正文排版工具栏">
-    <ElButton :disabled="disabled" size="small" @click="toggleBold"
-      >粗体</ElButton
-    >
-    <ElButton :disabled="disabled" size="small" @click="toggleItalic"
-      >斜体</ElButton
-    >
-    <ElButton :disabled="disabled" size="small" @click="toggleUnderline"
-      >下划线</ElButton
-    >
-    <ElButton :disabled="disabled" size="small" @click="toggleHeading(2)"
-      >H2</ElButton
-    >
-    <ElButton :disabled="disabled" size="small" @click="toggleHeading(3)"
-      >H3</ElButton
-    >
-    <ElButton :disabled="disabled" size="small" @click="toggleBlockquote"
-      >引用</ElButton
-    >
-    <ElButton :disabled="disabled" size="small" @click="toggleBulletList"
-      >无序列表</ElButton
-    >
-    <ElButton :disabled="disabled" size="small" @click="toggleOrderedList"
-      >有序列表</ElButton
-    >
-    <ElButton :disabled="disabled" size="small" @click="insertHorizontalRule"
-      >分割线</ElButton
-    >
+    <ElButton :disabled="disabled" size="small" @click="toggleBold">
+      粗体
+    </ElButton>
+    <ElButton :disabled="disabled" size="small" @click="toggleItalic">
+      斜体
+    </ElButton>
+    <ElButton :disabled="disabled" size="small" @click="toggleUnderline">
+      下划线
+    </ElButton>
+    <ElButton :disabled="disabled" size="small" @click="toggleHeading(2)">
+      H2
+    </ElButton>
+    <ElButton :disabled="disabled" size="small" @click="toggleHeading(3)">
+      H3
+    </ElButton>
+    <ElButton :disabled="disabled" size="small" @click="toggleBlockquote">
+      引用
+    </ElButton>
+    <ElButton :disabled="disabled" size="small" @click="toggleBulletList">
+      无序列表
+    </ElButton>
+    <ElButton :disabled="disabled" size="small" @click="toggleOrderedList">
+      有序列表
+    </ElButton>
+    <ElButton :disabled="disabled" size="small" @click="insertHorizontalRule">
+      分割线
+    </ElButton>
     <ElButton :disabled="disabled" size="small" @click="setLink">链接</ElButton>
-    <ElButton :disabled="disabled" size="small" @click="unsetLink"
-      >取消链接</ElButton
-    >
+    <ElButton :disabled="disabled" size="small" @click="unsetLink">
+      取消链接
+    </ElButton>
   </div>
 </template>

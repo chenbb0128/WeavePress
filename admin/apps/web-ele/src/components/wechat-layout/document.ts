@@ -58,6 +58,7 @@ export function renderPreviewHtml(
   const content = (document.content ?? [])
     .map((node) => renderNode(node, tokens, assetURLs))
     .join('');
+  // oxlint-disable-next-line better-tailwindcss/no-concatenated-classes -- This is inline CSS emitted for WeChat, not Tailwind classes.
   const style = `color:${tokens.text};font-family:${tokens.fontFamily};font-size:16px;line-height:1.85`;
 
   return `<article style="${escapeHTML(style)}">${content}</article>`;
@@ -85,12 +86,17 @@ function normalizeNode(
   if (!allowsChild(parent, type)) return undefined;
 
   switch (type) {
-    case 'paragraph':
     case 'blockquote':
     case 'bulletList':
-    case 'orderedList':
     case 'listItem':
+    case 'orderedList':
+    case 'paragraph': {
       return { content: normalizeChildren(value.content, type), type };
+    }
+    case 'hardBreak':
+    case 'horizontalRule': {
+      return { type };
+    }
     case 'heading': {
       const attrs = isRecord(value.attrs) ? value.attrs : {};
       if (attrs.level !== 2 && attrs.level !== 3) return undefined;
@@ -99,6 +105,10 @@ function normalizeNode(
         content: normalizeChildren(value.content, type),
         type,
       };
+    }
+    case 'image': {
+      const attrs = normalizeImageAttrs(value.attrs);
+      return attrs ? { attrs, type } : undefined;
     }
     case 'text': {
       if (typeof value.text !== 'string') return undefined;
@@ -109,15 +119,9 @@ function normalizeNode(
         type,
       };
     }
-    case 'hardBreak':
-    case 'horizontalRule':
-      return { type };
-    case 'image': {
-      const attrs = normalizeImageAttrs(value.attrs);
-      return attrs ? { attrs, type } : undefined;
-    }
-    default:
+    default: {
       return undefined;
+    }
   }
 }
 
@@ -168,9 +172,9 @@ function normalizeImageAttrs(value: unknown): EditorImageAttrs | undefined {
 
 function allowsChild(parent: ParentNodeType, child: EditorNode['type']) {
   switch (parent) {
-    case 'doc':
     case 'blockquote':
-    case 'listItem':
+    case 'doc':
+    case 'listItem': {
       return (
         child === 'paragraph' ||
         child === 'heading' ||
@@ -180,14 +184,18 @@ function allowsChild(parent: ParentNodeType, child: EditorNode['type']) {
         child === 'image' ||
         child === 'horizontalRule'
       );
-    case 'paragraph':
-    case 'heading':
-      return child === 'text' || child === 'hardBreak';
+    }
     case 'bulletList':
-    case 'orderedList':
+    case 'orderedList': {
       return child === 'listItem';
-    default:
+    }
+    case 'heading':
+    case 'paragraph': {
+      return child === 'text' || child === 'hardBreak';
+    }
+    default: {
       return false;
+    }
   }
 }
 
@@ -196,12 +204,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize);
+  if (Array.isArray(value)) return value.map((item) => canonicalize(item));
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value)
         .filter(([, item]) => item !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .toSorted(([left], [right]) => left.localeCompare(right))
         .map(([key, item]) => [key, canonicalize(item)]),
     );
   }
@@ -245,58 +253,70 @@ function renderNode(
   assetURLs: Map<number, string>,
 ): string {
   switch (node.type) {
-    case 'paragraph':
+    case 'blockquote': {
       return styledElement(
-        'p',
-        'margin:0 0 16px',
+        'blockquote',
+        `margin:20px 0;padding:12px 16px;border-left:4px solid ${tokens.accent};background:${tokens.surface};color:${tokens.text}`,
         renderChildren(node, tokens, assetURLs),
       );
+    }
+    case 'bulletList': {
+      return styledElement(
+        'ul',
+        'margin:0 0 16px;padding-left:24px',
+        renderChildren(node, tokens, assetURLs),
+      );
+    }
+    case 'hardBreak': {
+      return '<br>';
+    }
     case 'heading': {
       const level = headingLevel(node);
       if (!level) return '';
       const style =
         level === 2
-          ? `margin:32px 0 16px;padding-left:12px;border-left:4px solid ${tokens.accent};color:${tokens.heading};font-size:22px;line-height:1.4`
-          : `margin:24px 0 12px;color:${tokens.heading};font-size:18px;line-height:1.5`;
+          ? // oxlint-disable-next-line better-tailwindcss/enforce-consistent-class-order, better-tailwindcss/no-concatenated-classes -- This is inline CSS emitted for WeChat, not Tailwind classes.
+            `margin:32px 0 16px;padding-left:12px;border-left:4px solid ${tokens.accent};color:${tokens.heading};font-size:22px;line-height:1.4`
+          : // oxlint-disable-next-line better-tailwindcss/enforce-consistent-class-order, better-tailwindcss/no-concatenated-classes -- This is inline CSS emitted for WeChat, not Tailwind classes.
+            `margin:24px 0 12px;color:${tokens.heading};font-size:18px;line-height:1.5`;
       return styledElement(
         `h${level}`,
         style,
         renderChildren(node, tokens, assetURLs),
       );
     }
-    case 'blockquote':
+    case 'horizontalRule': {
       return styledElement(
-        'blockquote',
-        `margin:20px 0;padding:12px 16px;border-left:4px solid ${tokens.accent};background:${tokens.surface};color:${tokens.text}`,
-        renderChildren(node, tokens, assetURLs),
+        'hr',
+        `margin:28px 0;border:0;border-top:1px solid ${tokens.border}`,
       );
-    case 'bulletList':
-      return styledElement(
-        'ul',
-        'margin:0 0 16px;padding-left:24px',
-        renderChildren(node, tokens, assetURLs),
-      );
-    case 'orderedList':
+    }
+    case 'image': {
+      return renderImage(node, tokens, assetURLs);
+    }
+    case 'listItem': {
+      return `<li>${renderChildren(node, tokens, assetURLs)}</li>`;
+    }
+    case 'orderedList': {
       return styledElement(
         'ol',
         'margin:0 0 16px;padding-left:24px',
         renderChildren(node, tokens, assetURLs),
       );
-    case 'listItem':
-      return `<li>${renderChildren(node, tokens, assetURLs)}</li>`;
-    case 'horizontalRule':
+    }
+    case 'paragraph': {
       return styledElement(
-        'hr',
-        `margin:28px 0;border:0;border-top:1px solid ${tokens.border}`,
+        'p',
+        'margin:0 0 16px',
+        renderChildren(node, tokens, assetURLs),
       );
-    case 'hardBreak':
-      return '<br>';
-    case 'text':
+    }
+    case 'text': {
       return renderText(node, tokens);
-    case 'image':
-      return renderImage(node, tokens, assetURLs);
-    default:
+    }
+    default: {
       return '';
+    }
   }
 }
 
@@ -331,12 +351,12 @@ function renderMark(
   tokens: SafeThemeTokens,
 ): string {
   switch (mark.type) {
-    case 'bold':
+    case 'bold': {
       return `<strong>${html}</strong>`;
-    case 'italic':
+    }
+    case 'italic': {
       return `<em>${html}</em>`;
-    case 'underline':
-      return `<u>${html}</u>`;
+    }
     case 'link': {
       const href = mark.attrs?.href;
       if (typeof href !== 'string' || !isSafeHTTPURL(href)) return html;
@@ -345,8 +365,12 @@ function renderMark(
         typeof title === 'string' ? ` title="${escapeHTML(title)}"` : '';
       return `<a href="${escapeHTML(href)}"${titleAttribute} style="color:${tokens.accent};text-decoration:underline">${html}</a>`;
     }
-    default:
+    case 'underline': {
+      return `<u>${html}</u>`;
+    }
+    default: {
       return html;
+    }
   }
 }
 
@@ -375,7 +399,7 @@ function imageAttrs(node: EditorNode): EditorImageAttrs | undefined {
   if (!node.attrs || !('draftAssetId' in node.attrs)) return undefined;
   const attrs = node.attrs as EditorImageAttrs & Record<string, unknown>;
   if (
-    Object.keys(attrs).sort().join(',') !== IMAGE_ATTRS.join(',') ||
+    Object.keys(attrs).toSorted().join(',') !== IMAGE_ATTRS.join(',') ||
     !Number.isSafeInteger(attrs.draftAssetId) ||
     attrs.draftAssetId <= 0 ||
     ![50, 75, 100].includes(attrs.width) ||
@@ -400,7 +424,10 @@ function isSafeHTTPURL(value: string): boolean {
 
 function isSafeAssetURL(value: string): boolean {
   return (
-    (/^\/(?!\/)/.test(value) && !/[\u0000-\u001F]/.test(value)) ||
+    (/^\/(?!\/)/.test(value) &&
+      ![...value].some(
+        (character) => (character.codePointAt(0) ?? Infinity) <= 31,
+      )) ||
     isSafeHTTPURL(value)
   );
 }

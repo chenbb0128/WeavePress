@@ -1,6 +1,5 @@
-import { Editor } from '@tiptap/vue-3';
 import StarterKit from '@tiptap/starter-kit';
-
+import { Editor } from '@tiptap/vue-3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { WechatImage } from './wechat-image';
@@ -16,7 +15,7 @@ function createEditor(content: string) {
   return editor;
 }
 
-describe('WechatImage', () => {
+describe('wechat image', () => {
   afterEach(() => {
     for (const editor of editors.splice(0)) editor.destroy();
   });

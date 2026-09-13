@@ -1,11 +1,13 @@
 <script lang="ts" setup>
+/* eslint-disable vue/html-closing-bracket-newline */
+import type { DraftMetadata } from './document';
+
 import type {
   DraftAsset,
   EditorDocument,
   EditorImageAttrs,
   WeChatLayoutTheme,
 } from '#/api';
-import type { DraftMetadata } from './document';
 
 import {
   computed,
@@ -15,6 +17,7 @@ import {
   watch,
   watchEffect,
 } from 'vue';
+
 import Link from '@tiptap/extension-link';
 import Placeholder from '@tiptap/extension-placeholder';
 import Underline from '@tiptap/extension-underline';
@@ -25,9 +28,9 @@ import {
   ElButton,
   ElDrawer,
   ElInput,
+  ElMessage,
   ElOption,
   ElSelect,
-  ElMessage,
 } from 'element-plus';
 
 import AssetPanel from './asset-panel.vue';
@@ -42,11 +45,11 @@ const props = defineProps<{
   document: EditorDocument;
   editable: boolean;
   metadata: DraftMetadata;
-  themes: WeChatLayoutTheme[];
   themeId: string;
+  themes: WeChatLayoutTheme[];
 }>();
 const emit = defineEmits<{
-  'cover-change': [assetId: number];
+  coverChange: [assetId: number];
   'update:document': [value: EditorDocument];
   'update:themeId': [value: string];
   upload: [file: File];
@@ -78,7 +81,9 @@ const canvasVariables = computed(() => {
         key === 'fontFamily'
           ? value.length <= 160 && /^[\w\s'",-]+$/.test(value)
           : /^#[\dA-Fa-f]{3}(?:[\dA-Fa-f]{3}|[\dA-Fa-f]{5})?$/.test(value);
-      return valid ? [[`--article-${key}`, value]] : [];
+      const property =
+        key === 'fontFamily' ? '--article-font-family' : `--article-${key}`;
+      return valid ? [[property, value]] : [];
     }),
   );
 });
@@ -147,10 +152,13 @@ function cleanPastedHTML(html: string) {
       !safeHTTPURL(element.getAttribute('href') ?? '')
     )
       element.removeAttribute('href');
-    if (element.matches('figure[data-draft-asset-id]')) {
-      const id = Number(element.getAttribute('data-draft-asset-id'));
+    if (
+      element instanceof HTMLElement &&
+      element.matches('figure[data-draft-asset-id]')
+    ) {
+      const id = Number(element.dataset.draftAssetId);
       if (!props.assets.some((asset) => asset.id === id && asset.bodyEligible))
-        element.removeAttribute('data-draft-asset-id');
+        delete element.dataset.draftAssetId;
     }
   }
   return document.body.innerHTML;
@@ -301,7 +309,7 @@ async function copyLayout() {
           :cover-asset-id="metadata.coverAssetId"
           :disabled="!editable"
           @insert="insertAsset"
-          @cover="emit('cover-change', $event)"
+          @cover="emit('coverChange', $event)"
           @upload="emit('upload', $event)"
         />
       </aside>
@@ -313,8 +321,9 @@ async function copyLayout() {
             size="small"
             :disabled="!bodyHtml"
             @click="copyLayout"
-            >复制微信排版</ElButton
           >
+            复制微信排版
+          </ElButton>
           <div v-if="selectedImage" class="image-controls">
             <label
               >图片宽度
@@ -360,12 +369,13 @@ async function copyLayout() {
       </section>
       <aside v-if="desktop" class="workspace-panel preview-panel">
         <h2 class="mb-3 font-semibold">手机预览</h2>
-        <slot name="preview"
-          ><PhonePreview
+        <slot name="preview">
+          <PhonePreview
             v-bind="metadata"
             :cover-url="coverUrl"
             :body-html="bodyHtml"
-        /></slot>
+          />
+        </slot>
       </aside>
     </div>
     <ElDrawer
@@ -386,17 +396,18 @@ async function copyLayout() {
         :cover-asset-id="metadata.coverAssetId"
         :disabled="!editable"
         @insert="insertAsset"
-        @cover="emit('cover-change', $event)"
+        @cover="emit('coverChange', $event)"
         @upload="emit('upload', $event)"
       />
     </ElDrawer>
     <ElDrawer v-model="rightDrawer" title="手机预览" size="min(430px, 100vw)">
-      <slot name="preview"
-        ><PhonePreview
+      <slot name="preview">
+        <PhonePreview
           v-bind="metadata"
           :cover-url="coverUrl"
           :body-html="bodyHtml"
-      /></slot>
+        />
+      </slot>
     </ElDrawer>
   </div>
 </template>
@@ -405,12 +416,14 @@ async function copyLayout() {
 .layout-workspace {
   min-width: 0;
 }
+
 .workspace-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   overflow-x: auto;
 }
+
 .workspace-panel {
   min-width: 0;
   padding: 14px;
@@ -419,114 +432,136 @@ async function copyLayout() {
   border: 1px solid var(--el-border-color);
   border-radius: var(--el-border-radius-base);
 }
+
 .side-panel {
   max-height: 1000px;
   overflow-y: auto;
 }
+
 .editor-panel {
   padding: 0;
 }
+
 .editor-tools {
   padding: 14px;
   border-bottom: 1px solid var(--el-border-color);
 }
+
 .image-controls {
   display: grid;
   gap: 10px;
   margin-top: 14px;
 }
+
 .image-controls label {
   display: grid;
   gap: 4px;
   font-size: 13px;
 }
+
 .article-canvas {
   min-height: 760px;
   padding: 24px;
   background: #fff;
 }
+
 .article-canvas :deep(.tiptap) {
   min-height: 700px;
-  outline: none;
-  overflow-wrap: anywhere;
+  font: 16px/1.85 var(--article-font-family);
   color: var(--article-text);
-  font: 16px/1.85 var(--article-fontFamily);
+  overflow-wrap: anywhere;
+  outline: none;
 }
+
 .article-canvas :deep(p) {
   margin: 0 0 16px;
   color: var(--article-text);
 }
+
 .article-canvas :deep(h2) {
-  margin: 32px 0 16px;
   padding-left: 12px;
-  border-left: 4px solid var(--article-accent);
-  color: var(--article-heading);
+  margin: 32px 0 16px;
   font-size: 22px;
-  line-height: 1.4;
   font-weight: bold;
+  line-height: 1.4;
+  color: var(--article-heading);
+  border-left: 4px solid var(--article-accent);
 }
+
 .article-canvas :deep(h3) {
   margin: 24px 0 12px;
-  color: var(--article-heading);
   font-size: 18px;
-  line-height: 1.5;
   font-weight: bold;
+  line-height: 1.5;
+  color: var(--article-heading);
 }
+
 .article-canvas :deep(blockquote) {
-  margin: 20px 0;
   padding: 12px 16px;
-  border-left: 4px solid var(--article-accent);
-  background: var(--article-surface);
+  margin: 20px 0;
   color: var(--article-text);
+  background: var(--article-surface);
+  border-left: 4px solid var(--article-accent);
 }
+
 .article-canvas :deep(ul),
 .article-canvas :deep(ol) {
-  margin: 0 0 16px;
   padding-left: 24px;
+  margin: 0 0 16px;
   color: var(--article-text);
 }
+
 .article-canvas :deep(ul) {
   list-style: disc;
 }
+
 .article-canvas :deep(ol) {
   list-style: decimal;
 }
+
 .article-canvas :deep(a) {
   color: var(--article-accent);
   text-decoration: underline;
 }
+
 .article-canvas :deep(hr) {
   margin: 28px 0;
   border: 0;
   border-top: 1px solid var(--article-border);
 }
+
 .article-canvas :deep(figure) {
   margin: 20px 0;
   color: var(--article-muted);
 }
+
 .article-canvas :deep(figure img) {
   display: block;
   max-width: 100%;
   height: auto;
   margin: 0 auto;
 }
+
 .article-canvas :deep(figcaption) {
   margin-top: 8px;
-  color: var(--article-muted);
   font-size: 13px;
   line-height: 1.6;
+  color: var(--article-muted);
   text-align: center;
 }
+
 .article-canvas :deep(.ProseMirror-selectednode) {
   outline: 2px solid var(--el-color-primary);
 }
+
 .article-canvas :deep(p.is-editor-empty:first-child::before) {
   float: left;
   height: 0;
   color: var(--article-muted);
-  content: attr(data-placeholder);
   pointer-events: none;
+  content: attr(data-placeholder);
 }
+
 @media (min-width: 1280px) {
   .workspace-grid {
     grid-template-columns: 280px minmax(520px, 1fr) 420px;

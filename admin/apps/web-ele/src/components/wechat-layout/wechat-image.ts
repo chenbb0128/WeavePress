@@ -1,6 +1,6 @@
 import Image from '@tiptap/extension-image';
 
-const IMAGE_WIDTHS = [50, 75, 100];
+const IMAGE_WIDTHS = new Set([50, 75, 100]);
 
 export const WechatImage = Image.extend({
   name: 'image',
@@ -15,7 +15,7 @@ export const WechatImage = Image.extend({
       draftAssetId: {
         default: 0,
         parseHTML: (element) => {
-          const value = Number(element.getAttribute('data-draft-asset-id'));
+          const value = Number(element.dataset.draftAssetId);
           return Number.isSafeInteger(value) && value > 0 ? value : 0;
         },
       },
@@ -48,7 +48,7 @@ export const WechatImage = Image.extend({
         Number.isSafeInteger(draftAssetId) && draftAssetId > 0
           ? String(draftAssetId)
           : '0',
-      'data-width': IMAGE_WIDTHS.includes(width) ? String(width) : '100',
+      'data-width': IMAGE_WIDTHS.has(width) ? String(width) : '100',
     };
     const image = ['img', { alt }] as const;
 

@@ -16,12 +16,12 @@
     "#/*": "./src/*"
   },
   "dependencies": {
-    "@tiptap/extension-image": "^3.31.3",
-    "@tiptap/extension-link": "^3.31.3",
-    "@tiptap/extension-placeholder": "^3.31.3",
-    "@tiptap/extension-underline": "^3.31.3",
-    "@tiptap/starter-kit": "^3.31.3",
-    "@tiptap/vue-3": "^3.31.3",
+    "@tiptap/extension-image": "catalog:",
+    "@tiptap/extension-link": "catalog:",
+    "@tiptap/extension-placeholder": "catalog:",
+    "@tiptap/extension-underline": "catalog:",
+    "@tiptap/starter-kit": "catalog:",
+    "@tiptap/vue-3": "catalog:",
     "@vben/access": "workspace:*",
     "@vben/common-ui": "workspace:*",
     "@vben/constants": "workspace:*",

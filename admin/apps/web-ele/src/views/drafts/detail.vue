@@ -26,9 +26,10 @@ import {
   useRoute,
   useRouter,
 } from 'vue-router';
-import { useAccess } from '@vben/access';
-import { useEventListener } from '@vueuse/core';
 
+import { useAccess } from '@vben/access';
+
+import { useEventListener } from '@vueuse/core';
 import dayjs from 'dayjs';
 import {
   ElAlert,
@@ -290,11 +291,11 @@ function hasBody(nodes: EditorNode[] = []): boolean {
 function reportSaveError(error: unknown, context: DraftContext) {
   if (!isCurrent(context)) return;
   const failure = error as
-    | { code?: number; response?: { status?: number }; status?: number }
-    | undefined;
+    | undefined
+    | { code?: number; response?: { status?: number }; status?: number };
   // RequestClient 将 HTTP 错误解包为响应正文；30001 对应 HTTP 409。
   if (
-    failure?.code === 30001 ||
+    failure?.code === 30_001 ||
     (failure?.response?.status ?? failure?.status) === 409
   ) {
     conflict.value = true;

@@ -53,6 +53,12 @@ catalog:
   '@tanstack/store': ^0.11.0
   '@tanstack/vue-form': ^1.33.2
   '@tanstack/vue-store': ^0.11.0
+  '@tiptap/extension-image': ^3.31.3
+  '@tiptap/extension-link': ^3.31.3
+  '@tiptap/extension-placeholder': ^3.31.3
+  '@tiptap/extension-underline': ^3.31.3
+  '@tiptap/starter-kit': ^3.31.3
+  '@tiptap/vue-3': ^3.31.3
   '@tsdown/css': ^0.22.13
   '@types/archiver': ^8.0.0
   '@types/html-minifier-terser': ^7.0.2
