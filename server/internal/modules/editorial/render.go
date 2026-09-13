@@ -112,6 +112,15 @@ func ReferencedAssetIDs(value string) ([]uint64, error) {
 }
 
 func PreviewHTML(value string, assetURL func(uint64) string) string {
+	return previewHTML(value, assetURL, true)
+}
+
+// DraftPreviewHTML signs only draft asset placeholders, never legacy article IDs.
+func DraftPreviewHTML(value string, assetURL func(uint64) string) string {
+	return previewHTML(value, assetURL, false)
+}
+
+func previewHTML(value string, assetURL func(uint64) string, allowLegacy bool) string {
 	nodes, err := xhtml.ParseFragment(strings.NewReader(value), fragmentContext())
 	if err != nil {
 		return ""
@@ -126,7 +135,7 @@ func PreviewHTML(value string, assetURL func(uint64) string) string {
 					break
 				}
 			}
-			if placeholder == "" {
+			if placeholder == "" && allowLegacy {
 				for _, attr := range node.Attr {
 					if attr.Key == "data-weavepress-asset-id" {
 						placeholder = attr.Val

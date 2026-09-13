@@ -12,6 +12,7 @@ import (
 
 	"github.com/hibiken/asynq"
 
+	"github.com/chenbb0128/weavepress/server/internal/modules/workspace"
 	"github.com/chenbb0128/weavepress/server/internal/platform/queue"
 )
 
@@ -96,7 +97,50 @@ func (s *Service) CreateFromArticle(ctx context.Context, articleID, userID uint6
 }
 
 func (s *Service) Get(ctx context.Context, id uint64) (Draft, error) {
-	return s.store.GetDraft(ctx, id, true)
+	draft, err := s.store.GetDraft(ctx, id, true)
+	if err != nil {
+		return Draft{}, err
+	}
+	return s.hydrateDraft(ctx, draft)
+}
+
+func (s *Service) hydrateDraft(ctx context.Context, draft Draft) (Draft, error) {
+	if err := s.store.EnsureArticleAssets(ctx, draft.ID, draft.SourceArticleID, draft.CreatedBy); err != nil {
+		return Draft{}, err
+	}
+	assets, err := s.store.ListDraftAssets(ctx, draft.ID)
+	if err != nil {
+		return Draft{}, err
+	}
+	draft.Assets = assets
+	if draft.EditorDocument != nil {
+		return draft, nil
+	}
+	draft.MigrationNeeded = true
+	draft.ThemeID, draft.ThemeVersion = DefaultThemeID, DefaultThemeVersion
+	mapping := make(map[uint64]uint64)
+	for _, asset := range assets {
+		if asset.ArticleAssetID != nil {
+			mapping[*asset.ArticleAssetID] = asset.ID
+		}
+	}
+	converted, err := ConvertLegacyHTML(draft.ContentHTML, mapping)
+	if err != nil {
+		draft.MigrationWarnings = []string{"旧稿正文转换失败，请保留原文并重新整理后编辑"}
+		return draft, nil
+	}
+	theme, err := ResolveTheme(draft.ThemeID, draft.ThemeVersion)
+	if err != nil {
+		return Draft{}, err
+	}
+	rendered, err := RenderDocument(converted.Document, theme)
+	if err != nil {
+		return Draft{}, err
+	}
+	draft.EditorDocument = &converted.Document
+	draft.ContentHTML = rendered
+	draft.MigrationWarnings = converted.Warnings
+	return draft, nil
 }
 
 func (s *Service) List(ctx context.Context, keyword, status string, page, pageSize int) (Page[Draft], error) {
@@ -115,14 +159,47 @@ func (s *Service) RestoreVersion(ctx context.Context, id, userID uint64, version
 	if err != nil {
 		return Draft{}, err
 	}
-	if err := s.validateAssets(ctx, id, historical.ContentHTML, historical.CoverAssetID); err != nil {
+	draft, err := s.store.GetDraft(ctx, id, false)
+	if err != nil {
 		return Draft{}, err
 	}
-	return s.store.RestoreDraftVersion(ctx, id, userID, version, expectedVersion)
+	if draft.CurrentVersion != expectedVersion || version >= draft.CurrentVersion {
+		return Draft{}, ErrDraftVersionConflict
+	}
+	draft.Title, draft.Author, draft.Digest = historical.Title, historical.Author, historical.Digest
+	draft.EditorDocument, draft.ContentHTML = historical.EditorDocument, historical.ContentHTML
+	draft.ThemeID, draft.ThemeVersion, draft.CoverAssetID = historical.ThemeID, historical.ThemeVersion, historical.CoverAssetID
+	draft, err = s.hydrateDraft(ctx, draft)
+	if err != nil {
+		return Draft{}, err
+	}
+	if draft.EditorDocument == nil {
+		return Draft{}, ErrLegacyConvertFailed
+	}
+	theme, err := ResolveTheme(draft.ThemeID, draft.ThemeVersion)
+	if err != nil {
+		return Draft{}, err
+	}
+	if err = ValidateDocument(*draft.EditorDocument); err != nil {
+		return Draft{}, err
+	}
+	if err = s.validateDraftAssets(ctx, id, *draft.EditorDocument, draft.CoverAssetID); err != nil {
+		return Draft{}, err
+	}
+	rendered, err := RenderDocument(*draft.EditorDocument, theme)
+	if err != nil {
+		return Draft{}, err
+	}
+	return s.store.RestoreDraftVersion(ctx, id, userID, RestoreInput{
+		TargetVersion: version, ExpectedVersion: expectedVersion,
+		Title: draft.Title, Author: draft.Author, Digest: draft.Digest,
+		EditorDocument: draft.EditorDocument, ThemeID: draft.ThemeID, ThemeVersion: draft.ThemeVersion,
+		ContentHTML: rendered, CoverAssetID: draft.CoverAssetID,
+	})
 }
 
 func (s *Service) Preflight(ctx context.Context, id uint64) (PreflightResult, error) {
-	draft, err := s.store.GetDraft(ctx, id, true)
+	draft, err := s.Get(ctx, id)
 	if err != nil {
 		return PreflightResult{}, err
 	}
@@ -130,21 +207,47 @@ func (s *Service) Preflight(ctx context.Context, id uint64) (PreflightResult, er
 }
 
 func (s *Service) Update(ctx context.Context, id, userID uint64, input UpdateInput) (Draft, error) {
+	prepared, err := s.prepareUpdate(ctx, id, input)
+	if err != nil {
+		return Draft{}, err
+	}
+	return s.store.UpdateDraft(ctx, id, userID, prepared)
+}
+
+func (s *Service) prepareUpdate(ctx context.Context, draftID uint64, input UpdateInput) (UpdateInput, error) {
 	input.Title = strings.TrimSpace(input.Title)
 	input.Author = strings.TrimSpace(input.Author)
 	input.Digest = strings.TrimSpace(input.Digest)
 	input.ChangeNote = strings.TrimSpace(input.ChangeNote)
-	input.ContentHTML = SanitizeHTML(input.ContentHTML)
-	if input.Title == "" || utf8.RuneCountInString(input.Title) > 255 || utf8.RuneCountInString(input.Author) > 64 || utf8.RuneCountInString(input.Digest) > 255 || input.ContentHTML == "" || input.ExpectedVersion == 0 {
-		return Draft{}, ErrDraftStateConflict
+	if input.Title == "" || utf8.RuneCountInString(input.Title) > 255 || utf8.RuneCountInString(input.Author) > 64 || utf8.RuneCountInString(input.Digest) > 255 || input.ExpectedVersion == 0 {
+		return UpdateInput{}, ErrDraftStateConflict
 	}
-	if err := s.validateAssets(ctx, id, input.ContentHTML, input.CoverAssetID); err != nil {
-		return Draft{}, err
+	if input.EditorDocument == nil {
+		return UpdateInput{}, ErrDocumentInvalid
 	}
-	return s.store.UpdateDraft(ctx, id, userID, input)
+	input.ThemeVersion = DefaultThemeVersion
+	theme, err := ResolveTheme(input.ThemeID, input.ThemeVersion)
+	if err != nil {
+		return UpdateInput{}, err
+	}
+	if err = ValidateDocument(*input.EditorDocument); err != nil {
+		return UpdateInput{}, err
+	}
+	if err = s.validateDraftAssets(ctx, draftID, *input.EditorDocument, input.CoverAssetID); err != nil {
+		return UpdateInput{}, err
+	}
+	input.ContentHTML, err = RenderDocument(*input.EditorDocument, theme)
+	return input, err
 }
 
 func (s *Service) SubmitReview(ctx context.Context, id, userID uint64) (Draft, error) {
+	draft, err := s.Get(ctx, id)
+	if err != nil {
+		return Draft{}, err
+	}
+	if result := ValidateWeChatDraft(draft); !result.Valid {
+		return Draft{}, &PreflightError{Result: result}
+	}
 	return s.store.SetDraftStatus(ctx, id, userID, StatusEditing, StatusInReview, "提交审核")
 }
 
@@ -163,7 +266,7 @@ func (s *Service) Publish(ctx context.Context, id, userID uint64) (PublishJob, e
 	if !s.enabled {
 		return PublishJob{}, ErrPublisherDisabled
 	}
-	draft, err := s.store.GetDraft(ctx, id, true)
+	draft, err := s.Get(ctx, id)
 	if err != nil {
 		return PublishJob{}, err
 	}
@@ -258,9 +361,12 @@ func (s *Service) process(ctx context.Context, jobID uint64) error {
 			return err
 		}
 	}
-	draft, err := s.store.GetDraft(ctx, job.DraftID, true)
+	draft, err := s.Get(ctx, job.DraftID)
 	if err != nil {
 		return err
+	}
+	if result := ValidateWeChatDraft(draft); !result.Valid {
+		return &PreflightError{Result: result}
 	}
 	result, err := s.publisher.Publish(ctx, draft)
 	if err != nil {
@@ -269,26 +375,33 @@ func (s *Service) process(ctx context.Context, jobID uint64) error {
 	return s.store.CompletePublishJob(ctx, jobID, result.RemoteMediaID)
 }
 
-func (s *Service) validateAssets(ctx context.Context, draftID uint64, contentHTML string, coverID *uint64) error {
-	draft, err := s.store.GetDraft(ctx, draftID, false)
-	if err != nil {
-		return err
+func (s *Service) validateDraftAssets(ctx context.Context, draftID uint64, doc Document, coverID *uint64) error {
+	validate := func(id uint64, cover bool) error {
+		asset, err := s.store.GetDraftAsset(ctx, draftID, id)
+		if errors.Is(err, workspace.ErrNotFound) {
+			return ErrDraftAssetInvalid
+		}
+		if err != nil {
+			return err
+		}
+		if asset.DraftID != draftID || asset.ID != id || strings.TrimSpace(asset.ObjectKey) == "" || !isWeChatImageType(asset.MediaType, cover) {
+			return ErrDraftAssetInvalid
+		}
+		if !cover && asset.ByteSize > WeChatMaxContentImageSize {
+			return ErrDraftAssetTooLarge
+		}
+		if cover && (!asset.CoverEligible || asset.ByteSize > WeChatMaxCoverImageSize) || !cover && !asset.BodyEligible {
+			return ErrDraftAssetInvalid
+		}
+		return nil
 	}
-	ids, err := ReferencedAssetIDs(contentHTML)
-	if err != nil {
-		return ErrDraftStateConflict
+	for _, id := range ReferencedDraftAssetIDs(doc) {
+		if err := validate(id, false); err != nil {
+			return err
+		}
 	}
 	if coverID != nil {
-		ids = append(ids, *coverID)
-	}
-	for _, id := range ids {
-		asset, assetErr := s.articles.GetAsset(ctx, id)
-		if assetErr != nil {
-			return assetErr
-		}
-		if asset.ArticleID != draft.SourceArticleID || asset.DownloadStatus != "completed" {
-			return ErrDraftStateConflict
-		}
+		return validate(*coverID, true)
 	}
 	return nil
 }
@@ -299,6 +412,8 @@ func classifyPublish(err error) (string, string, bool) {
 		return publishErr.Code, publishErr.Message, publishErr.Retryable
 	}
 	switch {
+	case errors.Is(err, ErrDraftPreflightFailed):
+		return "DRAFT_PREFLIGHT_FAILED", "稿件未通过发布预检", false
 	case errors.Is(err, ErrPublisherDisabled):
 		return "WECHAT_NOT_CONFIGURED", "微信公众号发布尚未配置", false
 	case errors.Is(err, ErrCoverRequired):

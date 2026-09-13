@@ -184,6 +184,19 @@ type GeneratedDraftInput struct {
 	ChangeNote      string
 }
 
+type RestoreInput struct {
+	TargetVersion   uint
+	ExpectedVersion uint
+	Title           string
+	Author          string
+	Digest          string
+	EditorDocument  *Document
+	ThemeID         string
+	ThemeVersion    uint
+	ContentHTML     string
+	CoverAssetID    *uint64
+}
+
 type PreflightIssue struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`

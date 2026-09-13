@@ -253,7 +253,7 @@ func (s *Store) UpdateDraft(ctx context.Context, id, userID uint64, input editor
 	return s.GetDraft(ctx, id, true)
 }
 
-func (s *Store) RestoreDraftVersion(ctx context.Context, id, userID uint64, targetVersion, expectedVersion uint) (editorial.Draft, error) {
+func (s *Store) RestoreDraftVersion(ctx context.Context, id, userID uint64, input editorial.RestoreInput) (editorial.Draft, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return editorial.Draft{}, err
@@ -269,27 +269,27 @@ func (s *Store) RestoreDraftVersion(ctx context.Context, id, userID uint64, targ
 	if status != editorial.StatusEditing {
 		return editorial.Draft{}, editorial.ErrDraftNotEditable
 	}
-	if currentVersion != expectedVersion || targetVersion >= currentVersion {
+	if currentVersion != input.ExpectedVersion || input.TargetVersion == 0 || input.TargetVersion >= currentVersion {
 		return editorial.Draft{}, editorial.ErrDraftVersionConflict
 	}
-	historical, err := scanDraftVersion(tx.QueryRowContext(ctx, `SELECT `+draftVersionColumns+` FROM draft_versions WHERE draft_id = ? AND version = ?`, id, targetVersion))
+	_, err = scanDraftVersion(tx.QueryRowContext(ctx, `SELECT `+draftVersionColumns+` FROM draft_versions WHERE draft_id = ? AND version = ?`, id, input.TargetVersion))
 	if err != nil {
 		return editorial.Draft{}, err
 	}
 	nextVersion := currentVersion + 1
-	editorDocument, err := marshalEditorDocument(historical.EditorDocument)
+	editorDocument, err := marshalEditorDocument(input.EditorDocument)
 	if err != nil {
 		return editorial.Draft{}, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE drafts SET title = ?, author = ?, digest = ?, content_html = ?, editor_document = ?, theme_id = ?, theme_version = ?, cover_asset_id = ?, current_version = ?, updated_by = ? WHERE id = ? AND status = 'editing' AND current_version = ?`, historical.Title, historical.Author, historical.Digest, historical.ContentHTML, editorDocument, historical.ThemeID, historical.ThemeVersion, nullableID(historical.CoverAssetID), nextVersion, userID, id, currentVersion)
+	result, err := tx.ExecContext(ctx, `UPDATE drafts SET title = ?, author = ?, digest = ?, content_html = ?, editor_document = ?, theme_id = ?, theme_version = ?, cover_asset_id = ?, current_version = ?, updated_by = ? WHERE id = ? AND status = 'editing' AND current_version = ?`, input.Title, input.Author, input.Digest, input.ContentHTML, editorDocument, input.ThemeID, input.ThemeVersion, nullableID(input.CoverAssetID), nextVersion, userID, id, currentVersion)
 	if err != nil {
 		return editorial.Draft{}, err
 	}
 	if affected, _ := result.RowsAffected(); affected != 1 {
 		return editorial.Draft{}, editorial.ErrDraftVersionConflict
 	}
-	changeNote := fmt.Sprintf("恢复自 v%d", targetVersion)
-	if _, err = tx.ExecContext(ctx, `INSERT INTO draft_versions (draft_id, version, title, author, digest, content_html, editor_document, theme_id, theme_version, cover_asset_id, change_note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, nextVersion, historical.Title, historical.Author, historical.Digest, historical.ContentHTML, editorDocument, historical.ThemeID, historical.ThemeVersion, nullableID(historical.CoverAssetID), changeNote, userID); err != nil {
+	changeNote := fmt.Sprintf("恢复自 v%d", input.TargetVersion)
+	if _, err = tx.ExecContext(ctx, `INSERT INTO draft_versions (draft_id, version, title, author, digest, content_html, editor_document, theme_id, theme_version, cover_asset_id, change_note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, nextVersion, input.Title, input.Author, input.Digest, input.ContentHTML, editorDocument, input.ThemeID, input.ThemeVersion, nullableID(input.CoverAssetID), changeNote, userID); err != nil {
 		return editorial.Draft{}, err
 	}
 	if err = tx.Commit(); err != nil {

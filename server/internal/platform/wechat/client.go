@@ -20,7 +20,6 @@ import (
 
 	"github.com/chenbb0128/weavepress/server/internal/config"
 	"github.com/chenbb0128/weavepress/server/internal/modules/editorial"
-	"github.com/chenbb0128/weavepress/server/internal/modules/workspace"
 	"github.com/chenbb0128/weavepress/server/internal/platform/objectstore"
 )
 
@@ -58,12 +57,8 @@ func (c *Client) Publish(ctx context.Context, draft editorial.Draft) (editorial.
 	if draft.CoverAssetID == nil {
 		return editorial.PublishResult{}, editorial.ErrCoverRequired
 	}
-	if draft.SourceArticle == nil {
-		return editorial.PublishResult{}, publishError("DRAFT_SOURCE_MISSING", "稿件来源文章不存在", false, nil)
-	}
-
-	assets := make(map[uint64]workspace.Asset, len(draft.SourceArticle.Assets))
-	for _, asset := range draft.SourceArticle.Assets {
+	assets := make(map[uint64]editorial.DraftAsset, len(draft.Assets))
+	for _, asset := range draft.Assets {
 		assets[asset.ID] = asset
 	}
 	token, err := c.token(ctx)
@@ -76,13 +71,17 @@ func (c *Client) Publish(ctx context.Context, draft editorial.Draft) (editorial.
 	}
 	cover, ok := assets[*draft.CoverAssetID]
 	if !ok {
-		return editorial.PublishResult{}, publishError("WECHAT_COVER_INVALID", "封面素材不属于稿件来源文章", false, nil)
+		return editorial.PublishResult{}, publishError("COVER_ASSET_INVALID", "封面素材不属于当前稿件", false, nil)
 	}
 	thumbMediaID, err := c.uploadAsset(ctx, token, "/cgi-bin/material/add_material", "thumb", cover, true)
 	if err != nil {
 		return editorial.PublishResult{}, err
 	}
 
+	sourceURL := ""
+	if draft.SourceArticle != nil {
+		sourceURL = draft.SourceArticle.CanonicalURL
+	}
 	payload := struct {
 		Articles []draftArticle `json:"articles"`
 	}{Articles: []draftArticle{{
@@ -90,7 +89,7 @@ func (c *Client) Publish(ctx context.Context, draft editorial.Draft) (editorial.
 		Author:             draft.Author,
 		Digest:             draft.Digest,
 		Content:            content,
-		ContentSourceURL:   draft.SourceArticle.CanonicalURL,
+		ContentSourceURL:   sourceURL,
 		ThumbMediaID:       thumbMediaID,
 		ShowCoverPic:       1,
 		NeedOpenComment:    0,
@@ -167,7 +166,7 @@ func (c *Client) token(ctx context.Context) (string, error) {
 	return c.accessToken, nil
 }
 
-func (c *Client) uploadContentImages(ctx context.Context, token, content string, assets map[uint64]workspace.Asset) (string, error) {
+func (c *Client) uploadContentImages(ctx context.Context, token, content string, assets map[uint64]editorial.DraftAsset) (string, error) {
 	nodes, err := xhtml.ParseFragment(strings.NewReader(content), &xhtml.Node{Type: xhtml.ElementNode, Data: "div", DataAtom: atom.Div})
 	if err != nil {
 		return "", publishError("DRAFT_HTML_INVALID", "稿件正文 HTML 无法解析", false, err)
@@ -176,7 +175,7 @@ func (c *Client) uploadContentImages(ctx context.Context, token, content string,
 	var walk func(*xhtml.Node) error
 	walk = func(node *xhtml.Node) error {
 		if node.Type == xhtml.ElementNode && node.Data == "img" {
-			rawID, ok := attribute(node, "data-weavepress-asset-id")
+			rawID, ok := attribute(node, "data-weavepress-draft-asset-id")
 			if !ok {
 				return publishError("DRAFT_IMAGE_INVALID", "稿件正文包含未归档的图片", false, nil)
 			}
@@ -188,7 +187,7 @@ func (c *Client) uploadContentImages(ctx context.Context, token, content string,
 			if remoteURL == "" {
 				asset, exists := assets[id]
 				if !exists {
-					return publishError("DRAFT_IMAGE_INVALID", "稿件正文图片不属于来源文章", false, nil)
+					return publishError("DRAFT_IMAGE_INVALID", "稿件正文图片不属于当前稿件", false, nil)
 				}
 				remoteURL, parseErr = c.uploadAsset(ctx, token, "/cgi-bin/media/uploadimg", "", asset, false)
 				if parseErr != nil {
@@ -197,7 +196,7 @@ func (c *Client) uploadContentImages(ctx context.Context, token, content string,
 				uploaded[id] = remoteURL
 			}
 			setAttribute(node, "src", remoteURL)
-			removeAttribute(node, "data-weavepress-asset-id")
+			removeAttribute(node, "data-weavepress-draft-asset-id")
 		}
 		for child := node.FirstChild; child != nil; child = child.NextSibling {
 			if err := walk(child); err != nil {
@@ -220,7 +219,7 @@ func (c *Client) uploadContentImages(ctx context.Context, token, content string,
 	return output.String(), nil
 }
 
-func (c *Client) uploadAsset(ctx context.Context, token, endpointPath, mediaType string, asset workspace.Asset, material bool) (string, error) {
+func (c *Client) uploadAsset(ctx context.Context, token, endpointPath, mediaType string, asset editorial.DraftAsset, material bool) (string, error) {
 	data, err := c.readAsset(ctx, asset, material)
 	if err != nil {
 		return "", err
@@ -274,8 +273,8 @@ func (c *Client) uploadAsset(ctx context.Context, token, endpointPath, mediaType
 	return response.URL, nil
 }
 
-func (c *Client) readAsset(ctx context.Context, asset workspace.Asset, material bool) ([]byte, error) {
-	if asset.DownloadStatus != "completed" || asset.ObjectKey == "" {
+func (c *Client) readAsset(ctx context.Context, asset editorial.DraftAsset, material bool) ([]byte, error) {
+	if strings.TrimSpace(asset.ObjectKey) == "" {
 		return nil, publishError("DRAFT_ASSET_UNAVAILABLE", "稿件素材尚未完成归档", false, nil)
 	}
 	limit := int64(maxContentImageBytes)
@@ -399,10 +398,8 @@ func removeAttribute(node *xhtml.Node, key string) {
 
 func supportedImage(mediaType string, material bool) bool {
 	switch strings.ToLower(strings.TrimSpace(strings.Split(mediaType, ";")[0])) {
-	case "image/jpeg", "image/png":
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
 		return true
-	case "image/gif":
-		return material
 	default:
 		return false
 	}
@@ -417,6 +414,8 @@ func assetLimitMessage(material bool) string {
 
 func extensionFor(mediaType string) string {
 	switch strings.ToLower(strings.TrimSpace(strings.Split(mediaType, ";")[0])) {
+	case "image/webp":
+		return ".webp"
 	case "image/gif":
 		return ".gif"
 	case "image/png":

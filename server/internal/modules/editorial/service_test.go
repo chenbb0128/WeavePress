@@ -11,10 +11,12 @@ import (
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace"
 )
 
-func TestProcessPublishesQueuedDraft(t *testing.T) {
+func TestPublishProcessPublishesQueuedDraft(t *testing.T) {
+	coverID := uint64(8)
 	store := &fakeEditorialStore{
-		job:   PublishJob{ID: 8, DraftID: 3, Status: PublishQueued},
-		draft: Draft{ID: 3, Status: StatusPublishing},
+		job:    PublishJob{ID: 8, DraftID: 3, Status: PublishQueued},
+		draft:  Draft{ID: 3, Status: StatusPublishing, Title: "标题", ContentHTML: `<p>旧稿正文</p>`, CoverAssetID: &coverID},
+		assets: []DraftAsset{{ID: 8, DraftID: 3, ObjectKey: "cover.webp", MediaType: "image/webp", ByteSize: 8, BodyEligible: true, CoverEligible: true}},
 	}
 	publisher := &fakePublisher{result: PublishResult{RemoteMediaID: "wechat-draft-media"}}
 	service := New(store, &fakeArticleStore{}, nil, publisher, nil, true)
@@ -25,12 +27,17 @@ func TestProcessPublishesQueuedDraft(t *testing.T) {
 	if publisher.calls != 1 || store.job.Status != PublishCompleted || store.job.RemoteMediaID != "wechat-draft-media" {
 		t.Fatalf("publisher calls=%d, job=%#v", publisher.calls, store.job)
 	}
+	if publisher.draft.EditorDocument == nil || len(publisher.draft.Assets) != 1 || !strings.Contains(publisher.draft.ContentHTML, `style=`) || store.updateCalls != 0 {
+		t.Fatalf("published draft = %#v", publisher.draft)
+	}
 }
 
-func TestProcessCanResumePublishingJobAfterWorkerRestart(t *testing.T) {
+func TestPublishProcessCanResumePublishingJobAfterWorkerRestart(t *testing.T) {
+	coverID := uint64(8)
 	store := &fakeEditorialStore{
-		job:   PublishJob{ID: 9, DraftID: 4, Status: PublishPublishing, Attempts: 1},
-		draft: Draft{ID: 4, Status: StatusPublishing},
+		job:    PublishJob{ID: 9, DraftID: 4, Status: PublishPublishing, Attempts: 1},
+		draft:  Draft{ID: 4, Status: StatusPublishing, Title: "标题", ContentHTML: `<p>正文</p>`, CoverAssetID: &coverID},
+		assets: []DraftAsset{{ID: 8, DraftID: 4, ObjectKey: "cover.png", MediaType: "image/png", ByteSize: 8, BodyEligible: true, CoverEligible: true}},
 	}
 	publisher := &fakePublisher{result: PublishResult{RemoteMediaID: "resumed-media"}}
 	service := New(store, &fakeArticleStore{}, nil, publisher, nil, true)
@@ -66,12 +73,14 @@ func TestPublishRejectsDraftThatFailsPreflight(t *testing.T) {
 
 type fakePublisher struct {
 	calls  int
+	draft  Draft
 	result PublishResult
 	err    error
 }
 
-func (p *fakePublisher) Publish(context.Context, Draft) (PublishResult, error) {
+func (p *fakePublisher) Publish(_ context.Context, draft Draft) (PublishResult, error) {
 	p.calls++
+	p.draft = draft
 	return p.result, p.err
 }
 
@@ -89,6 +98,10 @@ func (s *fakeArticleStore) GetAsset(context.Context, uint64) (workspace.Asset, e
 }
 
 type fakeEditorialStore struct {
+	updated            UpdateInput
+	historical         DraftVersion
+	updateCalls        int
+	statusCalls        int
 	job                PublishJob
 	draft              Draft
 	assets             []DraftAsset
@@ -115,19 +128,36 @@ func (s *fakeEditorialStore) ListDraftVersions(context.Context, uint64) ([]Draft
 }
 
 func (s *fakeEditorialStore) GetDraftVersion(context.Context, uint64, uint) (DraftVersion, error) {
-	return DraftVersion{}, errors.New("not implemented")
+	return s.historical, nil
 }
 
-func (s *fakeEditorialStore) UpdateDraft(context.Context, uint64, uint64, UpdateInput) (Draft, error) {
-	return Draft{}, errors.New("not implemented")
+func (s *fakeEditorialStore) UpdateDraft(_ context.Context, _ uint64, _ uint64, input UpdateInput) (Draft, error) {
+	if input.ExpectedVersion != s.draft.CurrentVersion {
+		return Draft{}, ErrDraftVersionConflict
+	}
+	s.updateCalls++
+	s.updated = input
+	s.draft.Title, s.draft.Author, s.draft.Digest = input.Title, input.Author, input.Digest
+	s.draft.EditorDocument, s.draft.ContentHTML = input.EditorDocument, input.ContentHTML
+	s.draft.ThemeID, s.draft.ThemeVersion, s.draft.CoverAssetID = input.ThemeID, input.ThemeVersion, input.CoverAssetID
+	s.draft.CurrentVersion++
+	return s.draft, nil
 }
 
-func (s *fakeEditorialStore) RestoreDraftVersion(context.Context, uint64, uint64, uint, uint) (Draft, error) {
-	return Draft{}, errors.New("not implemented")
+func (s *fakeEditorialStore) RestoreDraftVersion(ctx context.Context, id, userID uint64, input RestoreInput) (Draft, error) {
+	if input.TargetVersion >= s.draft.CurrentVersion {
+		return Draft{}, ErrDraftVersionConflict
+	}
+	return s.UpdateDraft(ctx, id, userID, UpdateInput{Title: input.Title, Author: input.Author, Digest: input.Digest, EditorDocument: input.EditorDocument, ThemeID: input.ThemeID, ThemeVersion: input.ThemeVersion, ContentHTML: input.ContentHTML, CoverAssetID: input.CoverAssetID, ExpectedVersion: input.ExpectedVersion})
 }
 
-func (s *fakeEditorialStore) SetDraftStatus(context.Context, uint64, uint64, string, string, string) (Draft, error) {
-	return Draft{}, errors.New("not implemented")
+func (s *fakeEditorialStore) SetDraftStatus(_ context.Context, _ uint64, _ uint64, from, to, _ string) (Draft, error) {
+	if s.draft.Status != from {
+		return Draft{}, ErrDraftStateConflict
+	}
+	s.statusCalls++
+	s.draft.Status = to
+	return s.draft, nil
 }
 
 func (s *fakeEditorialStore) EnsureArticleAssets(context.Context, uint64, uint64, uint64) error {
@@ -311,5 +341,193 @@ func TestDraftAssetServiceUsesDraftAssetStore(t *testing.T) {
 	}
 	if themes := service.Themes(); len(themes) != 6 {
 		t.Fatalf("Themes() count = %d", len(themes))
+	}
+}
+
+func savedDocument(t *testing.T, body string) *Document {
+	t.Helper()
+	doc, err := ParseDocument([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &doc
+}
+
+func TestUpdateRendersTrustedDocument(t *testing.T) {
+	store := &fakeEditorialStore{draft: Draft{ID: 1, Status: StatusEditing, CurrentVersion: 1}}
+	doc := savedDocument(t, `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"正文"}]}]}`)
+	service := New(store, &fakeArticleStore{}, nil, nil, nil, false)
+	saved, err := service.Update(context.Background(), 1, 7, UpdateInput{Title: "标题", EditorDocument: doc, ThemeID: "clear-blue", ThemeVersion: 99, ContentHTML: "<p>客户端 HTML</p>", ExpectedVersion: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(saved.ContentHTML, `style=`) || !strings.Contains(saved.ContentHTML, "正文") || strings.Contains(saved.ContentHTML, "客户端") || saved.ThemeVersion != 1 || saved.CurrentVersion != 2 {
+		t.Fatalf("saved = %#v", saved)
+	}
+	if saved.ContentHTML != store.updated.ContentHTML {
+		t.Fatal("response must use server render")
+	}
+	_, err = service.Update(context.Background(), 1, 7, UpdateInput{Title: "标题", EditorDocument: doc, ThemeID: "clear-blue", ExpectedVersion: 1})
+	if !errors.Is(err, ErrDraftVersionConflict) || store.updateCalls != 1 {
+		t.Fatalf("conflict = %v, writes = %d", err, store.updateCalls)
+	}
+}
+
+func TestGetLegacyHydratesWithoutSaving(t *testing.T) {
+	articleAssetID := uint64(9)
+	store := &fakeEditorialStore{draft: Draft{ID: 1, CurrentVersion: 2, ContentHTML: `<p>旧稿</p><img data-weavepress-asset-id="9">`}, assets: []DraftAsset{{ID: 81, DraftID: 1, ArticleAssetID: &articleAssetID, ObjectKey: "body.png", MediaType: "image/png", ByteSize: 1, BodyEligible: true, CoverEligible: true}}}
+	got, err := New(store, &fakeArticleStore{}, nil, nil, nil, false).Get(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EditorDocument == nil || !got.MigrationNeeded || got.ThemeID != DefaultThemeID || len(got.Assets) != 1 {
+		t.Fatalf("draft = %#v", got)
+	}
+	if ids := ReferencedDraftAssetIDs(*got.EditorDocument); len(ids) != 1 || ids[0] != 81 {
+		t.Fatalf("image IDs = %v", ids)
+	}
+	if !strings.Contains(got.ContentHTML, `data-weavepress-draft-asset-id="81"`) || store.draft.EditorDocument != nil || store.updateCalls != 0 || store.draft.CurrentVersion != 2 {
+		t.Fatalf("hydrate mutated saved draft: %#v", store.draft)
+	}
+}
+
+func TestGetLegacyConversionFailureIsReadOnly(t *testing.T) {
+	store := &fakeEditorialStore{draft: Draft{ID: 1, ContentHTML: `<p> </p>`}}
+	got, err := New(store, &fakeArticleStore{}, nil, nil, nil, false).Get(context.Background(), 1)
+	if err != nil || got.EditorDocument != nil || !got.MigrationNeeded || len(got.MigrationWarnings) == 0 || got.ContentHTML != `<p> </p>` || store.updateCalls != 0 {
+		t.Fatalf("draft = %#v, err = %v", got, err)
+	}
+}
+
+func TestUpdateValidatesDraftAssets(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		asset DraftAsset
+		image bool
+		want  error
+	}{
+		{"foreign", DraftAsset{ID: 8, DraftID: 2, ObjectKey: "a.png", MediaType: "image/png", BodyEligible: true, CoverEligible: true}, true, ErrDraftAssetInvalid},
+		{"body too large", DraftAsset{ID: 8, DraftID: 1, ObjectKey: "a.webp", MediaType: "image/webp", ByteSize: WeChatMaxContentImageSize + 1, CoverEligible: true}, true, ErrDraftAssetTooLarge},
+		{"large cover", DraftAsset{ID: 8, DraftID: 1, ObjectKey: "a.webp", MediaType: "image/webp", ByteSize: WeChatMaxContentImageSize + 1, CoverEligible: true}, false, nil},
+		{"unavailable", DraftAsset{ID: 8, DraftID: 1, MediaType: "image/png", BodyEligible: true, CoverEligible: true}, true, ErrDraftAssetInvalid},
+		{"invalid cover", DraftAsset{ID: 8, DraftID: 1, ObjectKey: "a.png", MediaType: "image/png"}, false, ErrDraftAssetInvalid},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &fakeEditorialStore{draft: Draft{ID: 1, CurrentVersion: 1}, assets: []DraftAsset{test.asset}}
+			doc := savedDocument(t, `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"正文"}]}]}`)
+			if test.image {
+				doc.Content = append(doc.Content, imageNode(8))
+			}
+			cover := uint64(8)
+			_, err := New(store, &fakeArticleStore{}, nil, nil, nil, false).Update(context.Background(), 1, 7, UpdateInput{Title: "标题", EditorDocument: doc, ThemeID: DefaultThemeID, CoverAssetID: &cover, ExpectedVersion: 1})
+			if !errors.Is(err, test.want) {
+				t.Fatalf("error = %v, want %v", err, test.want)
+			}
+			if test.want != nil && store.updateCalls != 0 {
+				t.Fatal("invalid input saved")
+			}
+		})
+	}
+}
+
+func TestRestoreLegacyCreatesStructuredVersion(t *testing.T) {
+	coverID := uint64(8)
+	store := &fakeEditorialStore{draft: Draft{ID: 1, CurrentVersion: 3}, historical: DraftVersion{DraftID: 1, Version: 1, Title: "历史标题", Author: "历史作者", Digest: "历史摘要", ContentHTML: `<p>历史正文</p>`, CoverAssetID: &coverID}, assets: []DraftAsset{{ID: 8, DraftID: 1, ObjectKey: "cover.webp", MediaType: "image/webp", ByteSize: 8, BodyEligible: true, CoverEligible: true}}}
+	got, err := New(store, &fakeArticleStore{}, nil, nil, nil, false).RestoreVersion(context.Background(), 1, 7, 1, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EditorDocument == nil || got.ThemeID != DefaultThemeID || got.ThemeVersion != 1 || got.CurrentVersion != 4 || got.Title != "历史标题" || got.Author != "历史作者" || got.Digest != "历史摘要" || got.CoverAssetID == nil || *got.CoverAssetID != 8 || !strings.Contains(got.ContentHTML, `style=`) {
+		t.Fatalf("restored = %#v", got)
+	}
+}
+
+func TestRestoreLegacyRejectsUnconvertibleAndStaleVersions(t *testing.T) {
+	store := &fakeEditorialStore{draft: Draft{ID: 1, CurrentVersion: 3}, historical: DraftVersion{DraftID: 1, Version: 1, ContentHTML: `<p> </p>`}}
+	service := New(store, &fakeArticleStore{}, nil, nil, nil, false)
+	if _, err := service.RestoreVersion(context.Background(), 1, 7, 1, 2); !errors.Is(err, ErrDraftVersionConflict) {
+		t.Fatalf("stale restore = %v", err)
+	}
+	if _, err := service.RestoreVersion(context.Background(), 1, 7, 1, 3); !errors.Is(err, ErrLegacyConvertFailed) {
+		t.Fatalf("invalid legacy restore = %v", err)
+	}
+	if store.updateCalls != 0 || store.draft.CurrentVersion != 3 {
+		t.Fatal("failed restore changed draft")
+	}
+}
+
+func TestRestoreUsesExactHistoricalTheme(t *testing.T) {
+	doc := savedDocument(t, `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"历史正文"}]}]}`)
+	store := &fakeEditorialStore{draft: Draft{ID: 1, CurrentVersion: 3}, historical: DraftVersion{DraftID: 1, Version: 1, Title: "标题", EditorDocument: doc, ThemeID: "clear-blue", ThemeVersion: 2, ContentHTML: "untrusted"}}
+	service := New(store, &fakeArticleStore{}, nil, nil, nil, false)
+	if _, err := service.RestoreVersion(context.Background(), 1, 7, 1, 3); !errors.Is(err, ErrThemeNotFound) || store.updateCalls != 0 {
+		t.Fatalf("unknown historical theme = %v", err)
+	}
+	store.historical.ThemeVersion = 1
+	got, err := service.RestoreVersion(context.Background(), 1, 7, 1, 3)
+	if err != nil || got.ThemeID != "clear-blue" || !strings.Contains(got.ContentHTML, "历史正文") || strings.Contains(got.ContentHTML, "untrusted") {
+		t.Fatalf("restored = %#v, %v", got, err)
+	}
+}
+
+func TestPreflightSubmitReviewUsesSavedDraftAssets(t *testing.T) {
+	cover := uint64(8)
+	store := &fakeEditorialStore{draft: Draft{ID: 1, Title: "标题", Status: StatusEditing, ContentHTML: `<p>正文</p>`, CoverAssetID: &cover}, assets: []DraftAsset{{ID: 8, DraftID: 1, ObjectKey: "a.gif", MediaType: "image/gif", ByteSize: 3, BodyEligible: true, CoverEligible: true}}}
+	service := New(store, &fakeArticleStore{}, nil, nil, nil, false)
+	result, err := service.Preflight(context.Background(), 1)
+	if err != nil || !result.Valid {
+		t.Fatalf("preflight = %#v, %v", result, err)
+	}
+	assets := store.assets
+	store.assets = nil
+	if _, err = service.SubmitReview(context.Background(), 1, 7); !errors.Is(err, ErrDraftPreflightFailed) || store.statusCalls != 0 {
+		t.Fatalf("review error = %v, transitions = %d", err, store.statusCalls)
+	}
+	store.assets = assets
+	got, err := service.SubmitReview(context.Background(), 1, 7)
+	if err != nil || got.Status != StatusInReview || store.statusCalls != 1 {
+		t.Fatalf("review = %#v, %v", got, err)
+	}
+}
+
+func TestPublishProcessRejectsInvalidSavedDraft(t *testing.T) {
+	store := &fakeEditorialStore{draft: Draft{ID: 1, Title: "标题", ContentHTML: "<p> </p>"}, job: PublishJob{ID: 8, DraftID: 1, Status: PublishQueued}}
+	publisher := &fakePublisher{}
+	err := New(store, &fakeArticleStore{}, nil, publisher, nil, true).process(context.Background(), 8)
+	if !errors.Is(err, ErrDraftPreflightFailed) || publisher.calls != 0 {
+		t.Fatalf("process error = %v, publishes = %d", err, publisher.calls)
+	}
+	if _, _, retryable := classifyPublish(err); retryable {
+		t.Fatal("invalid saved draft must not be retried")
+	}
+}
+
+func TestUpdateRequiresDocumentAndKnownTheme(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		doc   *Document
+		theme string
+		want  error
+	}{
+		{"HTML only", nil, DefaultThemeID, ErrDocumentInvalid},
+		{"unknown theme", &Document{Type: "doc"}, "unknown", ErrThemeNotFound},
+		{"invalid document", &Document{Type: "script"}, DefaultThemeID, ErrDocumentInvalid},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &fakeEditorialStore{draft: Draft{ID: 1, CurrentVersion: 1}}
+			_, err := New(store, &fakeArticleStore{}, nil, nil, nil, false).Update(context.Background(), 1, 7, UpdateInput{Title: "标题", ContentHTML: "<p>不能直存</p>", EditorDocument: test.doc, ThemeID: test.theme, ExpectedVersion: 1})
+			if !errors.Is(err, test.want) || store.updateCalls != 0 {
+				t.Fatalf("error = %v, writes = %d", err, store.updateCalls)
+			}
+		})
+	}
+}
+
+func TestGetLegacyPreviewDoesNotSignArticleIDsAsDraftAssets(t *testing.T) {
+	preview := DraftPreviewHTML(`<p>正文</p><img data-weavepress-asset-id="11"><img data-weavepress-draft-asset-id="12">`, func(id uint64) string {
+		return fmt.Sprintf("/draft-assets/%d", id)
+	})
+	if strings.Contains(preview, `/draft-assets/11`) || !strings.Contains(preview, `src="/draft-assets/12"`) {
+		t.Fatalf("preview = %s", preview)
 	}
 }

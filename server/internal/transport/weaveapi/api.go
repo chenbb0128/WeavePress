@@ -1,6 +1,7 @@
 package weaveapi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -450,13 +451,14 @@ func (a *API) getDraft(c *gin.Context) {
 }
 
 type updateDraftInput struct {
-	Title           string  `json:"title"`
-	Author          string  `json:"author"`
-	Digest          string  `json:"digest"`
-	ContentHTML     string  `json:"contentHtml"`
-	CoverAssetID    *uint64 `json:"coverAssetId"`
-	ExpectedVersion uint    `json:"expectedVersion"`
-	ChangeNote      string  `json:"changeNote"`
+	Title           string          `json:"title"`
+	Author          string          `json:"author"`
+	Digest          string          `json:"digest"`
+	EditorDocument  json.RawMessage `json:"editorDocument"`
+	ThemeID         string          `json:"themeId"`
+	CoverAssetID    *uint64         `json:"coverAssetId"`
+	ExpectedVersion uint            `json:"expectedVersion"`
+	ChangeNote      string          `json:"changeNote"`
 }
 
 func (i updateDraftInput) Validate() []response.ValidationDetail {
@@ -464,8 +466,8 @@ func (i updateDraftInput) Validate() []response.ValidationDetail {
 	if strings.TrimSpace(i.Title) == "" {
 		details = append(details, response.ValidationDetail{Field: "title", Reason: "required"})
 	}
-	if strings.TrimSpace(i.ContentHTML) == "" {
-		details = append(details, response.ValidationDetail{Field: "contentHtml", Reason: "required"})
+	if len(i.EditorDocument) == 0 {
+		details = append(details, response.ValidationDetail{Field: "editorDocument", Reason: "required"})
 	}
 	if i.ExpectedVersion == 0 {
 		details = append(details, response.ValidationDetail{Field: "expectedVersion", Reason: "required"})
@@ -484,9 +486,14 @@ func (a *API) updateDraft(c *gin.Context) {
 		response.Error(c, bindErr)
 		return
 	}
+	document, err := editorial.ParseDocument(input.EditorDocument)
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
 	user, _ := a.currentUser(c)
 	draft, err := a.editorial.Update(c.Request.Context(), id, user.ID, editorial.UpdateInput{
-		Title: input.Title, Author: input.Author, Digest: input.Digest, ContentHTML: input.ContentHTML,
+		Title: input.Title, Author: input.Author, Digest: input.Digest, EditorDocument: &document, ThemeID: input.ThemeID,
 		CoverAssetID: input.CoverAssetID, ExpectedVersion: input.ExpectedVersion, ChangeNote: input.ChangeNote,
 	})
 	if err != nil {
@@ -749,8 +756,14 @@ func (a *API) decorateDraft(draft *editorial.Draft) {
 			}
 		}
 	}
-	draft.PreviewHTML = editorial.PreviewHTML(draft.ContentHTML, func(id uint64) string {
-		return a.content.SignMedia("assets", id)
+	if draft.EditorDocument == nil {
+		draft.PreviewHTML = editorial.PreviewHTML(draft.ContentHTML, func(id uint64) string {
+			return a.content.SignMedia("assets", id)
+		})
+		return
+	}
+	draft.PreviewHTML = editorial.DraftPreviewHTML(draft.ContentHTML, func(id uint64) string {
+		return a.content.SignMedia("draft-assets", id)
 	})
 }
 
@@ -932,12 +945,18 @@ func (a *API) writeError(c *gin.Context, err error) {
 		response.Error(c, response.Conflict("任务当前不能重试", err))
 	case errors.Is(err, editorial.ErrDraftNotEditable):
 		response.Error(c, response.Conflict("稿件当前不能编辑", err))
+	case errors.Is(err, editorial.ErrDocumentInvalid):
+		response.Error(c, response.BadRequest("稿件结构化正文无效", err))
+	case errors.Is(err, editorial.ErrThemeNotFound):
+		response.Error(c, response.BadRequest("排版主题或主题版本不存在", err))
+	case errors.Is(err, editorial.ErrLegacyConvertFailed):
+		response.Error(c, response.BadRequest("旧稿正文转换失败，无法恢复", err))
 	case errors.Is(err, editorial.ErrDraftAssetType):
 		response.Error(c, response.BadRequest("图片格式不支持", err))
 	case errors.Is(err, editorial.ErrDraftAssetInvalid):
 		response.Error(c, response.BadRequest("图片内容无效", err))
 	case errors.Is(err, editorial.ErrDraftAssetTooLarge):
-		response.Error(c, response.NewError(response.CodePayloadTooLarge, http.StatusRequestEntityTooLarge, "图片超过 10 MiB 限制", err))
+		response.Error(c, response.NewError(response.CodePayloadTooLarge, http.StatusRequestEntityTooLarge, "图片超过大小限制：正文最大 1 MiB，封面及上传最大 10 MiB", err))
 	case errors.Is(err, editorial.ErrDraftVersionConflict):
 		response.Error(c, response.Conflict("稿件已被其他人更新，请刷新后重试", err))
 	case errors.Is(err, editorial.ErrDraftStateConflict):

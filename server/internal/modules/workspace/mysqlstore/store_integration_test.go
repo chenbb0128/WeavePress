@@ -181,7 +181,7 @@ func TestDraftLayoutPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored, err := store.RestoreDraftVersion(ctx, draft.ID, user.ID, 2, changed.CurrentVersion)
+	restored, err := store.RestoreDraftVersion(ctx, draft.ID, user.ID, editorial.RestoreInput{TargetVersion: 2, ExpectedVersion: changed.CurrentVersion, Title: v2BeforeRestore.Title, Author: v2BeforeRestore.Author, Digest: v2BeforeRestore.Digest, EditorDocument: v2BeforeRestore.EditorDocument, ThemeID: v2BeforeRestore.ThemeID, ThemeVersion: v2BeforeRestore.ThemeVersion, ContentHTML: v2BeforeRestore.ContentHTML, CoverAssetID: v2BeforeRestore.CoverAssetID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +424,7 @@ func TestMySQLIntegrationEditorialWorkflow(t *testing.T) {
 	if err != nil || updated.CurrentVersion != 2 {
 		t.Fatalf("updated version = %d, err=%v", updated.CurrentVersion, err)
 	}
-	restored, err := store.RestoreDraftVersion(ctx, draft.ID, user.ID, 1, updated.CurrentVersion)
+	restored, err := store.RestoreDraftVersion(ctx, draft.ID, user.ID, editorial.RestoreInput{TargetVersion: 1, ExpectedVersion: updated.CurrentVersion, Title: draft.Title, Author: draft.Author, Digest: draft.Digest, EditorDocument: draft.EditorDocument, ThemeID: draft.ThemeID, ThemeVersion: draft.ThemeVersion, ContentHTML: draft.ContentHTML, CoverAssetID: draft.CoverAssetID})
 	if err != nil || restored.CurrentVersion != 3 || restored.Title != draft.Title {
 		t.Fatalf("restored draft = %#v, err=%v", restored, err)
 	}
@@ -432,7 +432,7 @@ func TestMySQLIntegrationEditorialWorkflow(t *testing.T) {
 	if err != nil || restoredVersion.ChangeNote != "恢复自 v1" {
 		t.Fatalf("restored version = %#v, err=%v", restoredVersion, err)
 	}
-	if _, err := store.RestoreDraftVersion(ctx, draft.ID, user.ID, 2, updated.CurrentVersion); !errors.Is(err, editorial.ErrDraftVersionConflict) {
+	if _, err := store.RestoreDraftVersion(ctx, draft.ID, user.ID, editorial.RestoreInput{TargetVersion: 2, ExpectedVersion: updated.CurrentVersion}); !errors.Is(err, editorial.ErrDraftVersionConflict) {
 		t.Fatalf("stale restore error = %v", err)
 	}
 	if _, err := store.UpdateDraft(ctx, draft.ID, user.ID, editorial.UpdateInput{Title: "过期保存", ContentHTML: contentHTML, ExpectedVersion: 1}); !errors.Is(err, editorial.ErrDraftVersionConflict) {

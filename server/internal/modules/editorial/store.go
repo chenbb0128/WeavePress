@@ -22,7 +22,7 @@ type Store interface {
 	ListDraftVersions(context.Context, uint64) ([]DraftVersion, error)
 	GetDraftVersion(context.Context, uint64, uint) (DraftVersion, error)
 	UpdateDraft(context.Context, uint64, uint64, UpdateInput) (Draft, error)
-	RestoreDraftVersion(context.Context, uint64, uint64, uint, uint) (Draft, error)
+	RestoreDraftVersion(context.Context, uint64, uint64, RestoreInput) (Draft, error)
 	SetDraftStatus(context.Context, uint64, uint64, string, string, string) (Draft, error)
 	EnsureArticleAssets(context.Context, uint64, uint64, uint64) error
 	ListDraftAssets(context.Context, uint64) ([]DraftAsset, error)

@@ -60,12 +60,18 @@ func TestPublishUploadsImagesCoverAndCreatesDraft(t *testing.T) {
 	store := &memoryStore{objects: map[string][]byte{"body.jpg": []byte("body"), "cover.png": []byte("cover")}}
 	client := New(config.WeChatConfig{Enabled: true, AppID: "app", AppSecret: "secret", APIBase: server.URL, RequestTimeout: time.Second}, store)
 	bodyID, coverID := uint64(11), uint64(12)
+	doc, err := editorial.ParseDocument([]byte(`{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"正文"}]},{"type":"image","attrs":{"draftAssetId":11,"width":100,"align":"center","alt":"配图","caption":""}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	draft := editorial.Draft{
-		Title: "测试稿件", Author: "作者", Digest: "摘要", ContentHTML: `<p>正文</p><img data-weavepress-asset-id="11" alt="配图">`, CoverAssetID: &coverID,
-		SourceArticle: &workspace.Article{CanonicalURL: "https://mp.weixin.qq.com/s/example", Assets: []workspace.Asset{
-			{ID: bodyID, ArticleID: 1, ObjectKey: "body.jpg", MediaType: "image/jpeg", ByteSize: 4, DownloadStatus: "completed"},
-			{ID: coverID, ArticleID: 1, ObjectKey: "cover.png", MediaType: "image/png", ByteSize: 5, DownloadStatus: "completed"},
-		}},
+		ID: 1, EditorDocument: &doc,
+		Title: "测试稿件", Author: "作者", Digest: "摘要", ContentHTML: `<p style="color:#222">正文</p><img data-weavepress-draft-asset-id="11" alt="配图"><img data-weavepress-draft-asset-id="11">`, CoverAssetID: &coverID,
+		SourceArticle: &workspace.Article{CanonicalURL: "https://mp.weixin.qq.com/s/example", Assets: []workspace.Asset{{ID: 11, ObjectKey: "wrong.jpg"}}},
+		Assets: []editorial.DraftAsset{
+			{ID: bodyID, DraftID: 1, Origin: "upload", ObjectKey: "body.jpg", MediaType: "image/webp", ByteSize: 4, BodyEligible: true, CoverEligible: true},
+			{ID: coverID, DraftID: 1, Origin: "upload", ObjectKey: "cover.png", MediaType: "image/gif", ByteSize: 5, BodyEligible: true, CoverEligible: true},
+		},
 	}
 	result, err := client.Publish(context.Background(), draft)
 	if err != nil {
@@ -86,7 +92,7 @@ func TestPublishUploadsImagesCoverAndCreatesDraft(t *testing.T) {
 		t.Fatalf("draft payload = %s, err=%v", draftBody, err)
 	}
 	article := payload.Articles[0]
-	if article.ThumbMediaID != "cover-media" || !strings.Contains(article.Content, `src="https://mmbiz.qpic.cn/remote-body.jpg"`) || strings.Contains(article.Content, "data-weavepress-asset-id") {
+	if article.ThumbMediaID != "cover-media" || !strings.Contains(article.Content, `style="color:#222"`) || !strings.Contains(article.Content, `src="https://mmbiz.qpic.cn/remote-body.jpg"`) || strings.Contains(article.Content, "data-weavepress-") {
 		t.Fatalf("unexpected draft article: %#v", article)
 	}
 }
@@ -98,13 +104,70 @@ func TestPublishMapsCredentialErrorAsPermanent(t *testing.T) {
 	defer server.Close()
 	client := New(config.WeChatConfig{Enabled: true, AppID: "app", AppSecret: "bad", APIBase: server.URL, RequestTimeout: time.Second}, &memoryStore{})
 	coverID := uint64(1)
+	doc, parseErr := editorial.ParseDocument([]byte(`{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"正文"}]}]}`))
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
 	_, err := client.Publish(context.Background(), editorial.Draft{
+		ID: 1, EditorDocument: &doc,
 		Title: "测试稿件", ContentHTML: "<p>正文</p>", CoverAssetID: &coverID,
-		SourceArticle: &workspace.Article{Assets: []workspace.Asset{{ID: coverID, ObjectKey: "cover.jpg", MediaType: "image/jpeg", ByteSize: 5, DownloadStatus: "completed"}}},
+		Assets: []editorial.DraftAsset{{ID: coverID, DraftID: 1, ObjectKey: "cover.jpg", MediaType: "image/jpeg", ByteSize: 5, BodyEligible: true, CoverEligible: true}},
 	})
 	var publishErr *editorial.PublishError
 	if !errors.As(err, &publishErr) || publishErr.Code != "WECHAT_40125" || publishErr.Retryable {
 		t.Fatalf("Publish() error = %#v", err)
+	}
+}
+
+func TestPublishContentImagesRejectLegacyPlaceholder(t *testing.T) {
+	client := New(config.WeChatConfig{}, &memoryStore{})
+	_, err := client.uploadContentImages(context.Background(), "token", `<img data-weavepress-asset-id="11">`, map[uint64]editorial.DraftAsset{11: {ID: 11}})
+	var publishErr *editorial.PublishError
+	if !errors.As(err, &publishErr) || publishErr.Code != "DRAFT_IMAGE_INVALID" || publishErr.Retryable {
+		t.Fatalf("error = %#v", err)
+	}
+}
+
+func TestPublishAssetSizeLimits(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		material bool
+		declared uint64
+		actual   int
+		wantErr  bool
+	}{
+		{"body exact limit", false, maxContentImageBytes, maxContentImageBytes, false},
+		{"body metadata over", false, maxContentImageBytes + 1, 1, true},
+		{"body stream over", false, 1, maxContentImageBytes + 1, true},
+		{"cover exact limit", true, maxMaterialBytes, maxMaterialBytes, false},
+		{"cover metadata over", true, maxMaterialBytes + 1, 1, true},
+		{"cover stream over", true, 1, maxMaterialBytes + 1, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := New(config.WeChatConfig{}, &memoryStore{objects: map[string][]byte{"image.webp": make([]byte, test.actual)}})
+			_, err := client.readAsset(context.Background(), editorial.DraftAsset{ID: 1, ObjectKey: "image.webp", MediaType: "image/webp", ByteSize: test.declared}, test.material)
+			if test.wantErr {
+				var publishErr *editorial.PublishError
+				if !errors.As(err, &publishErr) || publishErr.Code != "WECHAT_ASSET_TOO_LARGE" || publishErr.Retryable {
+					t.Fatalf("error = %#v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestPublishPreservesWechatUnsupportedImageError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, `{"errcode":40005,"errmsg":"invalid file type"}`)
+	}))
+	defer server.Close()
+	client := New(config.WeChatConfig{APIBase: server.URL, RequestTimeout: time.Second}, &memoryStore{objects: map[string][]byte{"body.gif": []byte("gif")}})
+	_, err := client.uploadAsset(context.Background(), "token", "/cgi-bin/media/uploadimg", "", editorial.DraftAsset{ID: 1, ObjectKey: "body.gif", MediaType: "image/gif", ByteSize: 3}, false)
+	var publishErr *editorial.PublishError
+	if !errors.As(err, &publishErr) || publishErr.Code != "WECHAT_40005" || publishErr.Retryable {
+		t.Fatalf("error = %#v", err)
 	}
 }
 

@@ -6,8 +6,6 @@ import (
 	"unicode/utf8"
 
 	xhtml "golang.org/x/net/html"
-
-	"github.com/chenbb0128/weavepress/server/internal/modules/workspace"
 )
 
 // ValidateWeChatDraft validates only deterministic WeChat draft rules. It does
@@ -35,35 +33,32 @@ func ValidateWeChatDraft(draft Draft) PreflightResult {
 		add("WECHAT_CONTENT_REQUIRED", "微信公众号稿件正文不能为空", "contentHtml")
 	}
 
-	if draft.SourceArticle == nil {
-		add("WECHAT_SOURCE_MISSING", "稿件来源文章不存在", "sourceArticleId")
-		result.Valid = false
-		return result
+	if draft.EditorDocument == nil || ValidateDocument(*draft.EditorDocument) != nil || !documentHasBody(*draft.EditorDocument) {
+		add("EDITOR_DOCUMENT_REQUIRED", "请保存有效的结构化正文后再提交", "editorDocument")
 	}
-	assets := make(map[uint64]workspace.Asset, len(draft.SourceArticle.Assets))
-	for _, asset := range draft.SourceArticle.Assets {
+	assets := make(map[uint64]DraftAsset, len(draft.Assets))
+	for _, asset := range draft.Assets {
 		assets[asset.ID] = asset
 	}
 
 	if draft.CoverAssetID == nil {
 		add("WECHAT_COVER_REQUIRED", "发布到微信公众号前必须选择封面", "coverAssetId")
-	} else if cover, ok := assets[*draft.CoverAssetID]; !ok {
-		add("WECHAT_COVER_INVALID", "封面素材不属于稿件来源文章", "coverAssetId")
-	} else {
-		validateWeChatAsset(&result, cover, true, "coverAssetId")
+	} else if cover, ok := assets[*draft.CoverAssetID]; !ok || cover.DraftID != draft.ID || !cover.CoverEligible || cover.ByteSize > WeChatMaxCoverImageSize || strings.TrimSpace(cover.ObjectKey) == "" || !isWeChatImageType(cover.MediaType, true) {
+		add("COVER_ASSET_INVALID", "封面素材不可用或不属于当前稿件", "coverAssetId")
 	}
 
-	ids, err := ReferencedAssetIDs(draft.ContentHTML)
-	if err != nil {
-		add("WECHAT_IMAGE_INVALID", "正文图片必须使用已归档素材", "contentHtml")
-	} else {
-		for _, id := range ids {
+	if draft.EditorDocument != nil {
+		for _, id := range ReferencedDraftAssetIDs(*draft.EditorDocument) {
 			asset, ok := assets[id]
-			if !ok {
-				add("WECHAT_IMAGE_INVALID", fmt.Sprintf("正文素材 #%d 不属于稿件来源文章", id), "contentHtml")
+			if !ok || asset.DraftID != draft.ID || strings.TrimSpace(asset.ObjectKey) == "" {
+				add("DRAFT_ASSET_MISSING", fmt.Sprintf("正文素材 #%d 不可用或不属于当前稿件", id), "editorDocument")
 				continue
 			}
-			validateWeChatAsset(&result, asset, false, "contentHtml")
+			if asset.ByteSize > WeChatMaxContentImageSize {
+				add("CONTENT_IMAGE_TOO_LARGE", fmt.Sprintf("正文素材 #%d 超过 1 MiB 限制", id), "editorDocument")
+			} else if !asset.BodyEligible || !isWeChatImageType(asset.MediaType, false) {
+				add("DRAFT_ASSET_MISSING", fmt.Sprintf("正文素材 #%d 不可用于正文", id), "editorDocument")
+			}
 		}
 	}
 
@@ -71,35 +66,10 @@ func ValidateWeChatDraft(draft Draft) PreflightResult {
 	return result
 }
 
-func validateWeChatAsset(result *PreflightResult, asset workspace.Asset, cover bool, field string) {
-	label := fmt.Sprintf("正文素材 #%d", asset.ID)
-	limit := uint64(WeChatMaxContentImageSize)
-	if cover {
-		label = fmt.Sprintf("封面素材 #%d", asset.ID)
-		limit = uint64(WeChatMaxCoverImageSize)
-	}
-	if asset.DownloadStatus != "completed" || strings.TrimSpace(asset.ObjectKey) == "" {
-		result.Issues = append(result.Issues, PreflightIssue{Code: "WECHAT_ASSET_UNAVAILABLE", Message: label + "尚未完成归档", Field: field})
-		return
-	}
-	if !isWeChatImageType(asset.MediaType, cover) {
-		message := label + "格式不受微信公众号支持"
-		if !cover {
-			message += "，正文图片仅支持 JPEG/PNG"
-		}
-		result.Issues = append(result.Issues, PreflightIssue{Code: "WECHAT_ASSET_TYPE_UNSUPPORTED", Message: message, Field: field})
-	}
-	if asset.ByteSize > limit {
-		result.Issues = append(result.Issues, PreflightIssue{Code: "WECHAT_ASSET_TOO_LARGE", Message: fmt.Sprintf("%s超过 %d MiB 限制", label, limit>>20), Field: field})
-	}
-}
-
 func isWeChatImageType(mediaType string, cover bool) bool {
 	switch strings.ToLower(strings.TrimSpace(strings.Split(mediaType, ";")[0])) {
-	case "image/jpeg", "image/png":
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
 		return true
-	case "image/gif":
-		return cover
 	default:
 		return false
 	}
