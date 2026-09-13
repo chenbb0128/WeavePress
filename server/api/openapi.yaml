@@ -145,8 +145,82 @@ paths:
       security: [ { bearerAuth: [] } ]
       requestBody:
         required: true
-        content: { application/json: { schema: { $ref: "#/components/schemas/UpdateDraftInput" } } }
+        content: { application/json: { schema: { $ref: "#/components/schemas/UpdateDraftRequest" } } }
       responses: { "200": { description: OK }, "409": { $ref: "#/components/responses/Error" } }
+  /api/wechat-layout/themes:
+    get:
+      summary: 微信排版主题列表
+      security: [ { bearerAuth: [] } ]
+      responses:
+        "200":
+          description: 主题列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, message, data]
+                properties:
+                  code: { type: integer, example: 0 }
+                  message: { type: string, example: success }
+                  data: { type: array, items: { $ref: "#/components/schemas/ThemeSummary" } }
+  /api/drafts/{id}/assets:
+    parameters: [ { $ref: "#/components/parameters/ID" } ]
+    get:
+      summary: 稿件素材列表
+      security: [ { bearerAuth: [] } ]
+      responses:
+        "200":
+          description: 稿件素材列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, message, data]
+                properties:
+                  code: { type: integer, example: 0 }
+                  message: { type: string, example: success }
+                  data: { type: array, items: { $ref: "#/components/schemas/DraftAsset" } }
+        "404": { $ref: "#/components/responses/Error" }
+    post:
+      summary: 上传稿件素材
+      security: [ { bearerAuth: [] } ]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "201":
+          description: 素材上传成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, message, data]
+                properties:
+                  code: { type: integer, example: 0 }
+                  message: { type: string, example: success }
+                  data: { $ref: "#/components/schemas/DraftAsset" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+  /media/draft-assets/{id}:
+    get:
+      summary: 签名稿件素材访问
+      parameters:
+        - { $ref: "#/components/parameters/ID" }
+        - { name: expires, in: query, required: true, schema: { type: integer, format: int64 } }
+        - { name: signature, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: 稿件素材文件 }
+        "307": { description: 重定向到七牛私有下载地址 }
+        "403": { description: 签名无效或过期 }
+        "404": { $ref: "#/components/responses/Error" }
   /api/drafts/{id}/versions:
     get:
       summary: 稿件版本列表
@@ -415,14 +489,124 @@ components:
     PublishJobStatus:
       type: string
       enum: [queued, publishing, completed, failed]
-    UpdateDraftInput:
+    EditorDocument:
       type: object
-      required: [title, contentHtml, expectedVersion]
+      required: [type]
+      properties:
+        type: { type: string, enum: [doc] }
+        content: { type: array, items: { $ref: "#/components/schemas/EditorNode" } }
+    EditorNode:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, enum: [paragraph, heading, blockquote, bulletList, orderedList, listItem, text, hardBreak, image, horizontalRule] }
+        attrs:
+          type: object
+          description: image 节点使用 draftAssetId、width、align、alt、caption 属性。
+          properties:
+            draftAssetId: { type: integer, format: int64, minimum: 1 }
+            width: { type: integer, enum: [50, 75, 100] }
+            align: { type: string, enum: [center] }
+            alt: { type: string }
+            caption: { type: string }
+          additionalProperties: true
+        content: { type: array, items: { $ref: "#/components/schemas/EditorNode" } }
+        text: { type: string }
+        marks: { type: array, items: { $ref: "#/components/schemas/EditorMark" } }
+    EditorMark:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, enum: [bold, italic, underline, link] }
+        attrs: { type: object, additionalProperties: true }
+    DraftAsset:
+      type: object
+      required: [id, draftId, origin, mediaType, byteSize, width, height, uploadedBy, createdAt, mediaUrl, bodyEligible, coverEligible]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        draftId: { type: integer, format: int64, minimum: 1 }
+        origin: { type: string, enum: [article, upload] }
+        articleAssetId: { type: integer, format: int64, minimum: 1, nullable: true }
+        mediaType: { type: string }
+        byteSize: { type: integer, format: int64, minimum: 1 }
+        width: { type: integer, minimum: 1 }
+        height: { type: integer, minimum: 1 }
+        uploadedBy: { type: integer, format: int64, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        mediaUrl: { type: string }
+        bodyEligible: { type: boolean }
+        coverEligible: { type: boolean }
+    ThemeTokens:
+      type: object
+      required: [accent, text, muted, surface, border, heading, fontFamily]
+      properties:
+        accent: { type: string }
+        text: { type: string }
+        muted: { type: string }
+        surface: { type: string }
+        border: { type: string }
+        heading: { type: string }
+        fontFamily: { type: string }
+    ThemeSummary:
+      type: object
+      required: [id, version, name, preview, tokens]
+      properties:
+        id: { type: string }
+        version: { type: integer, minimum: 1 }
+        name: { type: string }
+        preview: { type: string }
+        tokens: { $ref: "#/components/schemas/ThemeTokens" }
+    Draft:
+      type: object
+      required: [id, sourceArticleId, title, author, digest, contentHtml, status, currentVersion, createdBy, updatedBy, createdAt, updatedAt, themeId, themeVersion, migrationNeeded]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        sourceArticleId: { type: integer, format: int64, minimum: 1 }
+        title: { type: string }
+        author: { type: string }
+        digest: { type: string }
+        contentHtml: { type: string }
+        previewHtml: { type: string }
+        coverAssetId: { type: integer, format: int64, minimum: 1, nullable: true }
+        status: { $ref: "#/components/schemas/DraftStatus" }
+        currentVersion: { type: integer, minimum: 1 }
+        createdBy: { type: integer, format: int64, minimum: 1 }
+        updatedBy: { type: integer, format: int64, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        editorDocument: { $ref: "#/components/schemas/EditorDocument" }
+        themeId: { type: string }
+        themeVersion: { type: integer, minimum: 1 }
+        migrationNeeded: { type: boolean }
+        migrationWarnings: { type: array, items: { type: string } }
+    DraftVersion:
+      type: object
+      required: [id, draftId, version, title, author, digest, contentHtml, changeNote, createdBy, createdAt, themeId, themeVersion]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        draftId: { type: integer, format: int64, minimum: 1 }
+        version: { type: integer, minimum: 1 }
+        title: { type: string }
+        author: { type: string }
+        digest: { type: string }
+        contentHtml: { type: string }
+        coverAssetId: { type: integer, format: int64, minimum: 1, nullable: true }
+        changeNote: { type: string }
+        createdBy: { type: integer, format: int64, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        editorDocument: { $ref: "#/components/schemas/EditorDocument" }
+        themeId: { type: string }
+        themeVersion: { type: integer, minimum: 1 }
+    UpdateDraftRequest:
+      type: object
+      required: [title, editorDocument, themeId, expectedVersion]
       properties:
         title: { type: string, minLength: 1, maxLength: 255 }
         author: { type: string, maxLength: 64 }
         digest: { type: string, maxLength: 255 }
-        contentHtml: { type: string, minLength: 1 }
+        editorDocument: { $ref: "#/components/schemas/EditorDocument" }
+        themeId: { type: string, minLength: 1 }
+        themeVersion: { type: integer, minimum: 1 }
         coverAssetId: { type: integer, format: int64, minimum: 1, nullable: true }
         expectedVersion: { type: integer, minimum: 1 }
         changeNote: { type: string, maxLength: 255 }
