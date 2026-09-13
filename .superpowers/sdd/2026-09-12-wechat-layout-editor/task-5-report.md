@@ -165,3 +165,42 @@
 - 新增两个真实行为回归用例，声明长度均随截断同步调整，测试不会只命中 RIFF 外层长度检查。
 - 最小生产改动仅收紧 VP8/VP8L 的合法位流下界；无无关重构。
 - 未新增生产依赖；一次性诊断文件及临时 `go.sum` 已清理。
+
+## Fix round 3/5
+
+### 实现与依赖
+
+- `draftWebPDimensions` 保留实际 MIME 识别之后的 RIFF/WEBP 签名、RIFF 声明总长以及逐 chunk 数据与 padding 边界校验；位流语义改由 `golang.org/x/image/webp.Decode` 完整解码，并从解码结果读取宽高。
+- 删除手写的 VP8 首分区/token 最小长度、VP8L 最小 payload、VP8X/ALPH 语义及尺寸解析，避免用固定阈值代替完整位流验证。
+- 新增直接生产依赖 `golang.org/x/image v0.45.0`；该版本声明 `go 1.25.0`，与当前 server 模块一致。`go mod tidy` 仅新增对应校验和，并将项目已直接使用、版本未变化的 `golang.org/x/net v0.58.0` 从 indirect 分组归入直接依赖。
+- 未修改媒体代理或其他已通过范围。
+
+### 修改与测试文件
+
+- 生产：`server/internal/modules/editorial/assets.go`
+- 依赖：`server/go.mod`、`server/go.sum`
+- 测试：`server/internal/modules/editorial/assets_test.go`
+- 测试数据：`server/internal/modules/editorial/testdata/blue-purple-pink.lossy.webp.b64`、`server/internal/modules/editorial/testdata/gopher-doc.1bpp.lossless.webp.b64`
+- 报告：`.superpowers/sdd/2026-09-12-wechat-layout-editor/task-5-report.md`
+
+### TDD RED
+
+- `cd server; go test -count=1 ./internal/modules/editorial -run 'TestInspectDraftImage'`
+  - 退出码 `1`；旧实现错误接受 RIFF 与图像 chunk 长度均同步修正的三种截断样本：2450 字节真实 VP8 fixture 截去 64 字节、442 字节真实 VP8L fixture 截去 16 字节，以及由同一真实 VP8 位流封装的合法 VP8X fixture 截去 64 字节；三个子测试均得到 `<nil>`，期望 `ErrDraftAssetInvalid`。
+
+### GREEN 与依赖整理
+
+- `cd server; GOPROXY=off GOSUMDB=off go mod tidy`
+  - 退出码 `0`，无输出；仅使用本机模块缓存。
+- `cd server; go test -count=1 ./internal/modules/editorial -run 'TestInspectDraftImage'`
+  - `ok github.com/chenbb0128/weavepress/server/internal/modules/editorial 0.065s`
+- 最终重复同一目标测试：`ok github.com/chenbb0128/weavepress/server/internal/modules/editorial 0.064s`，退出码 `0`。
+- `git diff --check`
+  - 退出码 `0`；仅提示报告文件工作区换行将在 Git 后续操作时由 LF 转为 CRLF，无 whitespace error。
+
+### 覆盖与自查
+
+- 现有真实 1×1 VP8、VP8L、VP8X 正向 fixture 继续通过完整解码。
+- 较长 VP8、VP8L、VP8X fixture 的截断测试保留数百至数千字节 payload，不依赖“小于固定最小长度”触发拒绝。
+- 只有 VP8X canvas、错误 RIFF 总长、错误 chunk 长度的既有拒绝测试继续保留并通过。
+- 新增且仅新增 `golang.org/x/image` 生产依赖；官方测试 fixture 以 Base64 文本固化，测试不访问网络。

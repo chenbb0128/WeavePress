@@ -2,12 +2,15 @@ package editorial
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"image"
 	"image/color"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"os"
 	"testing"
 )
 
@@ -54,8 +57,9 @@ func TestInspectDraftImageRejectsInvalidInput(t *testing.T) {
 		{name: "zero dimensions", mediaType: "image/webp", body: zeroWidthDraftWebP(), want: ErrDraftAssetInvalid},
 		{name: "vp8x canvas without image", mediaType: "image/webp", body: draftWebPCanvasOnly(), want: ErrDraftAssetInvalid},
 		{name: "truncated image payload", mediaType: "image/webp", body: validDraftWebPVP8()[:len(validDraftWebPVP8())-1], want: ErrDraftAssetInvalid},
-		{name: "truncated vp8 bitstream with consistent lengths", mediaType: "image/webp", body: truncatedDraftWebPVP8(), want: ErrDraftAssetInvalid},
-		{name: "truncated vp8l bitstream with consistent lengths", mediaType: "image/webp", body: truncatedDraftWebPVP8L(), want: ErrDraftAssetInvalid},
+		{name: "long vp8 bitstream truncated with consistent lengths", mediaType: "image/webp", body: truncatedDraftWebPFixture(t, "blue-purple-pink.lossy.webp", 64, false), want: ErrDraftAssetInvalid},
+		{name: "long vp8l bitstream truncated with consistent lengths", mediaType: "image/webp", body: truncatedDraftWebPFixture(t, "gopher-doc.1bpp.lossless.webp", 16, false), want: ErrDraftAssetInvalid},
+		{name: "long vp8x bitstream truncated with consistent lengths", mediaType: "image/webp", body: truncatedDraftWebPFixture(t, "blue-purple-pink.lossy.webp", 64, true), want: ErrDraftAssetInvalid},
 		{name: "wrong riff length", mediaType: "image/webp", body: draftWebPWithWrongRIFFLength(), want: ErrDraftAssetInvalid},
 		{name: "wrong chunk length", mediaType: "image/webp", body: draftWebPWithWrongChunkLength(), want: ErrDraftAssetInvalid},
 		{name: "too large", mediaType: "image/png", body: make([]byte, WeChatMaxCoverImageSize+1), want: ErrDraftAssetTooLarge},
@@ -129,20 +133,6 @@ func validDraftWebPVP8L() []byte {
 	}
 }
 
-func truncatedDraftWebPVP8() []byte {
-	body := append([]byte(nil), validDraftWebPVP8()[:len(validDraftWebPVP8())-2]...)
-	body[4] = 0x22
-	body[16] = 0x16
-	return body
-}
-
-func truncatedDraftWebPVP8L() []byte {
-	body := append([]byte(nil), validDraftWebPVP8L()[:len(validDraftWebPVP8L())-2]...)
-	body[4] = 0x12
-	body[16] = 0x06
-	return body
-}
-
 func validDraftWebPVP8X() []byte {
 	return []byte{
 		'R', 'I', 'F', 'F', 0x40, 0, 0, 0, 'W', 'E', 'B', 'P',
@@ -153,6 +143,61 @@ func validDraftWebPVP8X() []byte {
 		0x30, 0x01, 0x00, 0x9d, 0x01, 0x2a, 0x01, 0x00, 0x01, 0x00, 0x02, 0x00,
 		0x34, 0x25, 0xa4, 0x00, 0x03, 0x70, 0x00, 0xfe, 0xfb, 0xfd, 0x50, 0x00,
 	}
+}
+
+func truncatedDraftWebPFixture(t *testing.T, name string, cut int, extended bool) []byte {
+	t.Helper()
+	body := readDraftWebPFixture(t, name)
+	if extended {
+		body = extendedDraftWebPVP8(body)
+	}
+	for offset := 12; offset+8 <= len(body); {
+		chunkSize := int(binary.LittleEndian.Uint32(body[offset+4 : offset+8]))
+		chunkEnd := offset + 8 + chunkSize
+		paddedEnd := chunkEnd + chunkSize&1
+		if chunkEnd > len(body) || paddedEnd > len(body) {
+			t.Fatalf("invalid WebP fixture %q", name)
+		}
+		chunkID := string(body[offset : offset+4])
+		if (chunkID == "VP8 " || chunkID == "VP8L") && paddedEnd == len(body) {
+			if cut <= 0 || cut >= chunkSize || cut&1 != 0 {
+				t.Fatalf("invalid truncation %d for WebP fixture %q", cut, name)
+			}
+			body = append([]byte(nil), body[:len(body)-cut]...)
+			binary.LittleEndian.PutUint32(body[4:8], uint32(len(body)-8))
+			binary.LittleEndian.PutUint32(body[offset+4:offset+8], uint32(chunkSize-cut))
+			return body
+		}
+		offset = paddedEnd
+	}
+	t.Fatalf("WebP fixture %q has no final image chunk", name)
+	return nil
+}
+
+func readDraftWebPFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	encoded, err := os.ReadFile("testdata/" + name + ".b64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := base64.StdEncoding.DecodeString(string(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func extendedDraftWebPVP8(body []byte) []byte {
+	extended := make([]byte, len(body)+18)
+	copy(extended[:4], "RIFF")
+	binary.LittleEndian.PutUint32(extended[4:8], uint32(len(extended)-8))
+	copy(extended[8:12], "WEBP")
+	copy(extended[12:16], "VP8X")
+	binary.LittleEndian.PutUint32(extended[16:20], 10)
+	extended[24] = 149
+	extended[27] = 99
+	copy(extended[30:], body[12:])
+	return extended
 }
 
 func draftWebPWithWrongRIFFLength() []byte {
