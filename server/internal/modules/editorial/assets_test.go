@@ -120,6 +120,45 @@ func TestInspectDraftImageRejectsGIFFrameMetadataBudget(t *testing.T) {
 	}
 }
 
+func TestDraftGIFPlainTextExtension(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		headerSize byte
+		frames     int
+		want       bool
+	}{
+		{"standard header", 12, 2, true},
+		{"standard header at frame limit", 12, 1024, true},
+		{"standard header over frame limit", 12, 1025, false},
+		{"short declared header", 11, 2, false},
+		{"long declared header", 13, 2, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			original := transparentPaletteDraftGIF(t, test.frames)
+			const headerEnd = 13 + 256*3
+			// A tiny local robustness fixture: one text extension before ordinary frames.
+			body := append([]byte(nil), original[:headerEnd]...)
+			body = append(body, 0x21, 0x01, test.headerSize)
+			body = append(body, make([]byte, int(test.headerSize))...)
+			body = append(body, 1, 'x', 0)
+			body = append(body, original[headerEnd:]...)
+			if test.headerSize == 12 {
+				decoded, err := gif.DecodeAll(bytes.NewReader(body))
+				if err != nil || len(decoded.Image) != test.frames {
+					t.Fatalf("standard text extension changed decoded frame count: %v", err)
+				}
+			}
+			if got := draftGIFWithinPixelBudget(body); got != test.want {
+				t.Fatalf("pre-decode validation = %t, want %t for text header size %d", got, test.want, test.headerSize)
+			}
+			_, err := InspectDraftImage(body, "image/gif")
+			if test.want && err != nil || !test.want && !errors.Is(err, ErrDraftAssetInvalid) {
+				t.Fatalf("InspectDraftImage() = %v, accepted = %t", err, test.want)
+			}
+		})
+	}
+}
+
 func transparentPaletteDraftGIF(t *testing.T, frames int) []byte {
 	t.Helper()
 	palette := make(color.Palette, 256)

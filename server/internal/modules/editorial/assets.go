@@ -88,7 +88,19 @@ func draftGIFWithinPixelBudget(body []byte) bool {
 		case 0x3b: // Trailer.
 			return pixels > 0
 		case 0x21: // Extension label, followed by data sub-blocks.
+			if offset >= len(body) {
+				return false
+			}
+			label := body[offset]
 			offset++
+			if label == 0x01 { // Plain Text has a fixed 12-byte header.
+				// DecodeAll consumes size + 12 bytes regardless of the size value.
+				// Reject nonstandard sizes so both passes see the same data blocks.
+				if len(body)-offset < 13 || body[offset] != 12 {
+					return false
+				}
+				offset += 13
+			}
 		case 0x2c: // Image descriptor and optional local color table.
 			if frames >= maxDraftGIFFrames {
 				return false
