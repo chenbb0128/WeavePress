@@ -23,7 +23,8 @@ type Store interface {
 	GetDraftVersion(context.Context, uint64, uint) (DraftVersion, error)
 	UpdateDraft(context.Context, uint64, uint64, UpdateInput) (Draft, error)
 	RestoreDraftVersion(context.Context, uint64, uint64, RestoreInput) (Draft, error)
-	SetDraftStatus(context.Context, uint64, uint64, string, string, string) (Draft, error)
+	// A nonzero expectedVersion must match under the same lock as the status change.
+	SetDraftStatus(context.Context, uint64, uint64, string, string, string, uint) (Draft, error)
 	EnsureArticleAssets(context.Context, uint64, uint64, uint64) error
 	ListDraftAssets(context.Context, uint64) ([]DraftAsset, error)
 	GetDraftAsset(context.Context, uint64, uint64) (DraftAsset, error)

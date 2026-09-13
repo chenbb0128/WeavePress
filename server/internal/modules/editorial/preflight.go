@@ -33,7 +33,7 @@ func ValidateWeChatDraft(draft Draft) PreflightResult {
 		add("WECHAT_CONTENT_REQUIRED", "微信公众号稿件正文不能为空", "contentHtml")
 	}
 
-	if draft.EditorDocument == nil || ValidateDocument(*draft.EditorDocument) != nil || !documentHasBody(*draft.EditorDocument) {
+	if draft.MigrationNeeded || draft.EditorDocument == nil || ValidateDocument(*draft.EditorDocument) != nil || !documentHasBody(*draft.EditorDocument) {
 		add("EDITOR_DOCUMENT_REQUIRED", "请保存有效的结构化正文后再提交", "editorDocument")
 	}
 	assets := make(map[uint64]DraftAsset, len(draft.Assets))

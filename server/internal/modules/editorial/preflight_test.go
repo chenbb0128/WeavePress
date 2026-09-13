@@ -82,6 +82,19 @@ func TestPreflightErrorUnwraps(t *testing.T) {
 	}
 }
 
+func TestPreflightRejectsTemporaryMigratedDocument(t *testing.T) {
+	coverID := uint64(8)
+	draft := Draft{ID: 1, Title: "标题", ContentHTML: `<p>正文</p>`,
+		EditorDocument:  savedDocument(t, `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"正文"}]}]}`),
+		MigrationNeeded: true, CoverAssetID: &coverID,
+		Assets: []DraftAsset{{ID: 8, DraftID: 1, ObjectKey: "cover.png", MediaType: "image/png", ByteSize: 8, BodyEligible: true, CoverEligible: true}},
+	}
+	result := ValidateWeChatDraft(draft)
+	if result.Valid || !hasIssue(result, "EDITOR_DOCUMENT_REQUIRED") {
+		t.Fatalf("temporary document passed preflight: %#v", result)
+	}
+}
+
 func hasIssue(result PreflightResult, code string) bool {
 	for _, issue := range result.Issues {
 		if issue.Code == code {

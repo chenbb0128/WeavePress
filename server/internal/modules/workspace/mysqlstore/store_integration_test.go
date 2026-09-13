@@ -140,7 +140,7 @@ func TestDraftLayoutPersistence(t *testing.T) {
 	if err != nil || loadedUpload.ID != uploaded.ID {
 		t.Fatalf("loaded upload = %#v, err=%v", loadedUpload, err)
 	}
-	if _, err := store.SetDraftStatus(ctx, otherDraft.ID, user.ID, editorial.StatusEditing, editorial.StatusInReview, "锁定上传"); err != nil {
+	if _, err := store.SetDraftStatus(ctx, otherDraft.ID, user.ID, editorial.StatusEditing, editorial.StatusInReview, "锁定上传", otherDraft.CurrentVersion); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.CreateUploadedDraftAsset(ctx, otherDraft.ID, user.ID, editorial.NewDraftAsset{ObjectKey: "drafts/locked.png", MediaType: "image/png", ByteSize: 1, SHA256: uploadHash}); !errors.Is(err, editorial.ErrDraftNotEditable) {
@@ -438,10 +438,10 @@ func TestMySQLIntegrationEditorialWorkflow(t *testing.T) {
 	if _, err := store.UpdateDraft(ctx, draft.ID, user.ID, editorial.UpdateInput{Title: "过期保存", ContentHTML: contentHTML, ExpectedVersion: 1}); !errors.Is(err, editorial.ErrDraftVersionConflict) {
 		t.Fatalf("stale update error = %v", err)
 	}
-	if _, err = store.SetDraftStatus(ctx, draft.ID, user.ID, editorial.StatusEditing, editorial.StatusInReview, "提交审核"); err != nil {
+	if _, err = store.SetDraftStatus(ctx, draft.ID, user.ID, editorial.StatusEditing, editorial.StatusInReview, "提交审核", restored.CurrentVersion); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.SetDraftStatus(ctx, draft.ID, user.ID, editorial.StatusInReview, editorial.StatusApproved, "审核通过"); err != nil {
+	if _, err = store.SetDraftStatus(ctx, draft.ID, user.ID, editorial.StatusInReview, editorial.StatusApproved, "审核通过", 0); err != nil {
 		t.Fatal(err)
 	}
 	publishJob, err := store.CreatePublishJob(ctx, draft.ID, user.ID)

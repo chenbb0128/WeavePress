@@ -248,7 +248,7 @@ func (s *Service) SubmitReview(ctx context.Context, id, userID uint64) (Draft, e
 	if result := ValidateWeChatDraft(draft); !result.Valid {
 		return Draft{}, &PreflightError{Result: result}
 	}
-	return s.store.SetDraftStatus(ctx, id, userID, StatusEditing, StatusInReview, "提交审核")
+	return s.store.SetDraftStatus(ctx, id, userID, StatusEditing, StatusInReview, "提交审核", draft.CurrentVersion)
 }
 
 func (s *Service) Review(ctx context.Context, id, userID uint64, approved bool, note string) (Draft, error) {
@@ -259,7 +259,7 @@ func (s *Service) Review(ctx context.Context, id, userID uint64, approved bool, 
 	if note = strings.TrimSpace(note); note != "" {
 		action += "：" + truncate(note, 200)
 	}
-	return s.store.SetDraftStatus(ctx, id, userID, StatusInReview, target, action)
+	return s.store.SetDraftStatus(ctx, id, userID, StatusInReview, target, action, 0)
 }
 
 func (s *Service) Publish(ctx context.Context, id, userID uint64) (PublishJob, error) {
@@ -356,17 +356,17 @@ func (s *Service) process(ctx context.Context, jobID uint64) error {
 	if job.Status != PublishQueued && job.Status != PublishPublishing {
 		return nil
 	}
-	if job.Status == PublishQueued {
-		if err := s.store.SetPublishJobPublishing(ctx, jobID); err != nil {
-			return err
-		}
-	}
 	draft, err := s.Get(ctx, job.DraftID)
 	if err != nil {
 		return err
 	}
 	if result := ValidateWeChatDraft(draft); !result.Valid {
 		return &PreflightError{Result: result}
+	}
+	if job.Status == PublishQueued {
+		if err := s.store.SetPublishJobPublishing(ctx, jobID); err != nil {
+			return err
+		}
 	}
 	result, err := s.publisher.Publish(ctx, draft)
 	if err != nil {

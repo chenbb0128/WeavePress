@@ -298,20 +298,24 @@ func (s *Store) RestoreDraftVersion(ctx context.Context, id, userID uint64, inpu
 	return s.GetDraft(ctx, id, true)
 }
 
-func (s *Store) SetDraftStatus(ctx context.Context, id, userID uint64, from, to, note string) (editorial.Draft, error) {
+func (s *Store) SetDraftStatus(ctx context.Context, id, userID uint64, from, to, note string, expectedVersion uint) (editorial.Draft, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return editorial.Draft{}, err
 	}
 	defer tx.Rollback()
 	var current string
-	if err = tx.QueryRowContext(ctx, `SELECT status FROM drafts WHERE id = ? FOR UPDATE`, id).Scan(&current); errors.Is(err, sql.ErrNoRows) {
+	var currentVersion uint
+	if err = tx.QueryRowContext(ctx, `SELECT status, current_version FROM drafts WHERE id = ? FOR UPDATE`, id).Scan(&current, &currentVersion); errors.Is(err, sql.ErrNoRows) {
 		return editorial.Draft{}, workspace.ErrNotFound
 	} else if err != nil {
 		return editorial.Draft{}, err
 	}
 	if current != from {
 		return editorial.Draft{}, editorial.ErrDraftStateConflict
+	}
+	if expectedVersion != 0 && currentVersion != expectedVersion {
+		return editorial.Draft{}, editorial.ErrDraftVersionConflict
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE drafts SET status = ?, updated_by = ? WHERE id = ?`, to, userID, id); err != nil {
 		return editorial.Draft{}, err

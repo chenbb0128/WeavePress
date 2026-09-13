@@ -15,7 +15,7 @@ func TestPublishProcessPublishesQueuedDraft(t *testing.T) {
 	coverID := uint64(8)
 	store := &fakeEditorialStore{
 		job:    PublishJob{ID: 8, DraftID: 3, Status: PublishQueued},
-		draft:  Draft{ID: 3, Status: StatusPublishing, Title: "标题", ContentHTML: `<p>旧稿正文</p>`, CoverAssetID: &coverID},
+		draft:  Draft{ID: 3, Status: StatusPublishing, CurrentVersion: 2, Title: "标题", ContentHTML: `<p style="color:#222">已保存正文</p>`, CoverAssetID: &coverID, EditorDocument: savedDocument(t, `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"已保存正文"}]}]}`), ThemeID: DefaultThemeID, ThemeVersion: 1},
 		assets: []DraftAsset{{ID: 8, DraftID: 3, ObjectKey: "cover.webp", MediaType: "image/webp", ByteSize: 8, BodyEligible: true, CoverEligible: true}},
 	}
 	publisher := &fakePublisher{result: PublishResult{RemoteMediaID: "wechat-draft-media"}}
@@ -36,7 +36,7 @@ func TestPublishProcessCanResumePublishingJobAfterWorkerRestart(t *testing.T) {
 	coverID := uint64(8)
 	store := &fakeEditorialStore{
 		job:    PublishJob{ID: 9, DraftID: 4, Status: PublishPublishing, Attempts: 1},
-		draft:  Draft{ID: 4, Status: StatusPublishing, Title: "标题", ContentHTML: `<p>正文</p>`, CoverAssetID: &coverID},
+		draft:  Draft{ID: 4, Status: StatusPublishing, CurrentVersion: 2, Title: "标题", ContentHTML: `<p>正文</p>`, CoverAssetID: &coverID, EditorDocument: savedDocument(t, `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"正文"}]}]}`), ThemeID: DefaultThemeID, ThemeVersion: 1},
 		assets: []DraftAsset{{ID: 8, DraftID: 4, ObjectKey: "cover.png", MediaType: "image/png", ByteSize: 8, BodyEligible: true, CoverEligible: true}},
 	}
 	publisher := &fakePublisher{result: PublishResult{RemoteMediaID: "resumed-media"}}
@@ -102,6 +102,7 @@ type fakeEditorialStore struct {
 	historical         DraftVersion
 	updateCalls        int
 	statusCalls        int
+	beforeStatus       func()
 	job                PublishJob
 	draft              Draft
 	assets             []DraftAsset
@@ -151,9 +152,15 @@ func (s *fakeEditorialStore) RestoreDraftVersion(ctx context.Context, id, userID
 	return s.UpdateDraft(ctx, id, userID, UpdateInput{Title: input.Title, Author: input.Author, Digest: input.Digest, EditorDocument: input.EditorDocument, ThemeID: input.ThemeID, ThemeVersion: input.ThemeVersion, ContentHTML: input.ContentHTML, CoverAssetID: input.CoverAssetID, ExpectedVersion: input.ExpectedVersion})
 }
 
-func (s *fakeEditorialStore) SetDraftStatus(_ context.Context, _ uint64, _ uint64, from, to, _ string) (Draft, error) {
+func (s *fakeEditorialStore) SetDraftStatus(_ context.Context, _ uint64, _ uint64, from, to, _ string, expectedVersion uint) (Draft, error) {
+	if s.beforeStatus != nil {
+		s.beforeStatus()
+	}
 	if s.draft.Status != from {
 		return Draft{}, ErrDraftStateConflict
+	}
+	if expectedVersion != 0 && s.draft.CurrentVersion != expectedVersion {
+		return Draft{}, ErrDraftVersionConflict
 	}
 	s.statusCalls++
 	s.draft.Status = to
@@ -472,7 +479,7 @@ func TestRestoreUsesExactHistoricalTheme(t *testing.T) {
 
 func TestPreflightSubmitReviewUsesSavedDraftAssets(t *testing.T) {
 	cover := uint64(8)
-	store := &fakeEditorialStore{draft: Draft{ID: 1, Title: "标题", Status: StatusEditing, ContentHTML: `<p>正文</p>`, CoverAssetID: &cover}, assets: []DraftAsset{{ID: 8, DraftID: 1, ObjectKey: "a.gif", MediaType: "image/gif", ByteSize: 3, BodyEligible: true, CoverEligible: true}}}
+	store := &fakeEditorialStore{draft: Draft{ID: 1, Title: "标题", Status: StatusEditing, CurrentVersion: 2, ContentHTML: `<p>正文</p>`, CoverAssetID: &cover, EditorDocument: savedDocument(t, `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"正文"}]}]}`), ThemeID: DefaultThemeID, ThemeVersion: 1}, assets: []DraftAsset{{ID: 8, DraftID: 1, ObjectKey: "a.gif", MediaType: "image/gif", ByteSize: 3, BodyEligible: true, CoverEligible: true}}}
 	service := New(store, &fakeArticleStore{}, nil, nil, nil, false)
 	result, err := service.Preflight(context.Background(), 1)
 	if err != nil || !result.Valid {
@@ -529,5 +536,65 @@ func TestGetLegacyPreviewDoesNotSignArticleIDsAsDraftAssets(t *testing.T) {
 	})
 	if strings.Contains(preview, `/draft-assets/11`) || !strings.Contains(preview, `src="/draft-assets/12"`) {
 		t.Fatalf("preview = %s", preview)
+	}
+}
+
+func TestPreflightLegacyRequiresSaveBeforeReviewAndPublish(t *testing.T) {
+	for _, action := range []string{"preflight", "review", "process", "publish"} {
+		t.Run(action, func(t *testing.T) {
+			coverID := uint64(8)
+			store := &fakeEditorialStore{draft: Draft{ID: 1, Title: "标题", Status: StatusEditing, CurrentVersion: 1, ContentHTML: `<p>可转换旧正文</p>`, CoverAssetID: &coverID},
+				assets: []DraftAsset{{ID: 8, DraftID: 1, ObjectKey: "cover.png", MediaType: "image/png", ByteSize: 8, BodyEligible: true, CoverEligible: true}},
+				job:    PublishJob{ID: 9, DraftID: 1, Status: PublishQueued},
+			}
+			publisher := &fakePublisher{}
+			service := New(store, &fakeArticleStore{}, nil, publisher, nil, true)
+			var result PreflightResult
+			var err error
+			switch action {
+			case "preflight":
+				result, err = service.Preflight(context.Background(), 1)
+			case "review":
+				_, err = service.SubmitReview(context.Background(), 1, 7)
+			case "process":
+				err = service.process(context.Background(), 9)
+			case "publish":
+				_, err = service.Publish(context.Background(), 1, 7)
+			}
+			if action != "preflight" {
+				var preflightErr *PreflightError
+				if !errors.As(err, &preflightErr) {
+					t.Fatalf("expected preflight rejection, got %v", err)
+				}
+				result = preflightErr.Result
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if result.Valid || !hasIssue(result, "EDITOR_DOCUMENT_REQUIRED") {
+				t.Fatalf("result = %#v", result)
+			}
+			if store.draft.Status != StatusEditing || store.draft.CurrentVersion != 1 || store.updateCalls != 0 || store.statusCalls != 0 || store.job.Status != PublishQueued || store.setPublishingCalls != 0 || store.createPublishCalls != 0 || publisher.calls != 0 {
+				t.Fatalf("rejected legacy draft changed state: draft=%#v, job=%#v, publisher=%d", store.draft, store.job, publisher.calls)
+			}
+		})
+	}
+}
+
+func TestSubmitReviewRejectsConcurrentSaveAfterPreflight(t *testing.T) {
+	coverID := uint64(8)
+	store := &fakeEditorialStore{draft: Draft{ID: 1, Title: "标题", Status: StatusEditing, CurrentVersion: 2, ContentHTML: `<p>已保存正文</p>`, CoverAssetID: &coverID,
+		EditorDocument: savedDocument(t, `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"已保存正文"}]}]}`)},
+		assets: []DraftAsset{{ID: 8, DraftID: 1, ObjectKey: "cover.png", MediaType: "image/png", ByteSize: 8, BodyEligible: true, CoverEligible: true}},
+	}
+	store.beforeStatus = func() {
+		store.draft.CurrentVersion = 3
+		store.draft.Title = "并发保存的新标题"
+	}
+	_, err := New(store, &fakeArticleStore{}, nil, nil, nil, false).SubmitReview(context.Background(), 1, 7)
+	if !errors.Is(err, ErrDraftVersionConflict) {
+		t.Fatalf("expected version conflict, got %v", err)
+	}
+	if store.draft.Status != StatusEditing || store.statusCalls != 0 || store.draft.CurrentVersion != 3 || store.draft.Title != "并发保存的新标题" {
+		t.Fatalf("unchecked version was reviewed or overwritten: %#v", store.draft)
 	}
 }
