@@ -1,16 +1,26 @@
 <script lang="ts" setup>
 /* eslint-disable vue/html-closing-bracket-newline, vue/multiline-html-element-content-newline */
 import type {
-  Asset,
   Draft,
+  DraftAsset,
   DraftStatus,
   DraftVersion,
+  EditorDocument,
+  EditorNode,
   PreflightResult,
+  WeChatLayoutTheme,
   WeChatStatus,
 } from '#/api';
 
-import { computed, nextTick, onMounted, reactive, ref } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
+import {
+  onBeforeRouteLeave,
+  onBeforeRouteUpdate,
+  useRoute,
+  useRouter,
+} from 'vue-router';
+import { useAccess } from '@vben/access';
+import { useEventListener } from '@vueuse/core';
 
 import dayjs from 'dayjs';
 import {
@@ -31,37 +41,93 @@ import {
   ElTag,
   ElTimeline,
   ElTimelineItem,
+  ElTooltip,
 } from 'element-plus';
 
 import {
   getDraftApi,
+  getDraftAssetsApi,
   getDraftPreflightApi,
   getDraftVersionsApi,
+  getWeChatLayoutThemesApi,
   getWeChatStatusApi,
   publishDraftApi,
   restoreDraftVersionApi,
   reviewDraftApi,
   submitDraftReviewApi,
   updateDraftApi,
+  uploadDraftAssetApi,
 } from '#/api';
+import {
+  documentFingerprint,
+  normalizeDocument,
+  renderPreviewHtml,
+} from '#/components/wechat-layout/document';
+import LayoutEditor from '#/components/wechat-layout/layout-editor.vue';
+import PhonePreview from '#/components/wechat-layout/phone-preview.vue';
 
 defineOptions({ name: 'DraftDetail' });
 const route = useRoute();
 const router = useRouter();
+const { hasAccessByCodes } = useAccess();
 const draft = ref<Draft>();
 const versions = ref<DraftVersion[]>([]);
+const themes = ref<WeChatLayoutTheme[]>([]);
+const assets = ref<DraftAsset[]>([]);
 const wechat = ref<WeChatStatus>({ appConfigured: false, enabled: false });
 const preflight = ref<PreflightResult>({ issues: [], valid: false });
-const editorContainer = ref<HTMLElement>();
 const loading = ref(true);
 const submitting = ref(false);
+const uploading = ref(false);
+const conflict = ref(false);
+const savedFingerprint = ref('');
+let loadEpoch = 0;
 const form = reactive({
-  author: '',
-  changeNote: '',
-  contentHtml: '',
-  coverAssetId: undefined as number | undefined,
-  digest: '',
   title: '',
+  author: '',
+  digest: '',
+  changeNote: '',
+  coverAssetId: undefined as number | undefined,
+  editorDocument: { type: 'doc', content: [] } as EditorDocument,
+  themeId: 'minimal-business',
+});
+const metadata = computed(() => ({
+  title: form.title,
+  author: form.author,
+  digest: form.digest,
+  coverAssetId: form.coverAssetId,
+}));
+const dirty = computed(
+  () =>
+    Boolean(savedFingerprint.value) &&
+    documentFingerprint(form.editorDocument, form.themeId, metadata.value) !==
+      savedFingerprint.value,
+);
+const migrationFailed = computed(() =>
+  Boolean(draft.value && !draft.value.editorDocument),
+);
+const editable = computed(
+  () =>
+    draft.value?.status === 'editing' &&
+    hasAccessByCodes(['draft:update']) &&
+    !migrationFailed.value &&
+    !submitting.value &&
+    !uploading.value,
+);
+const cover = computed(() =>
+  assets.value.find((asset) => asset.id === form.coverAssetId),
+);
+const previewHtml = computed(() => {
+  if (migrationFailed.value || !dirty.value)
+    return draft.value?.previewHtml ?? '';
+  const theme = themes.value.find((item) => item.id === form.themeId);
+  return theme
+    ? renderPreviewHtml(
+        form.editorDocument,
+        theme,
+        new Map(assets.value.map((asset) => [asset.id, asset.mediaUrl])),
+      )
+    : '';
 });
 const statusLabels: Record<DraftStatus, string> = {
   editing: '编辑中',
@@ -71,18 +137,6 @@ const statusLabels: Record<DraftStatus, string> = {
   published: '已写入草稿箱',
   publish_failed: '发布失败',
 };
-const assets = computed(() =>
-  (draft.value?.sourceArticle?.assets || []).filter(
-    (asset) => asset.downloadStatus === 'completed',
-  ),
-);
-const cover = computed(() =>
-  assets.value.find((asset) => asset.id === form.coverAssetId),
-);
-const previewDocument = computed(
-  () => `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src http: https: data:; style-src 'unsafe-inline'"><style>
-body{max-width:680px;margin:0 auto;padding:28px 24px;color:#1f2937;font:16px/1.85 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}h2,h3,h4{line-height:1.4;margin:1.8em 0 .8em}img{display:block;max-width:100%;height:auto;margin:1.4em auto}figure{margin:1.4em 0}figcaption{text-align:center;color:#6b7280;font-size:13px}blockquote{margin:1.4em 0;padding:10px 18px;border-left:4px solid #07c160;background:#f6f7f8}pre{overflow:auto;padding:14px;background:#111827;color:#f9fafb;border-radius:6px}a{color:#2563eb}</style></head><body>${draft.value?.previewHtml || ''}</body></html>`,
-);
 
 function statusType(status: DraftStatus) {
   if (status === 'published' || status === 'approved') return 'success';
@@ -94,45 +148,105 @@ function fillForm(value: Draft) {
   Object.assign(form, {
     author: value.author,
     changeNote: '',
-    contentHtml: value.contentHtml,
+    editorDocument: normalizeDocument(
+      value.editorDocument ?? { type: 'doc', content: [] },
+    ),
     coverAssetId: value.coverAssetId,
     digest: value.digest,
+    themeId: value.themeId || 'minimal-business',
     title: value.title,
   });
+  savedFingerprint.value = documentFingerprint(
+    form.editorDocument,
+    form.themeId,
+    metadata.value,
+  );
+  conflict.value = false;
 }
 async function load() {
   const id = Number(route.params.id);
+  const epoch = ++loadEpoch;
   loading.value = true;
+  draft.value = undefined;
+  savedFingerprint.value = '';
   try {
-    const [draftData, versionData, status, preflightData] = await Promise.all([
+    const [
+      draftData,
+      versionData,
+      status,
+      preflightData,
+      themeData,
+      assetData,
+    ] = await Promise.all([
       getDraftApi(id),
       getDraftVersionsApi(id),
       getWeChatStatusApi(),
       getDraftPreflightApi(id),
+      getWeChatLayoutThemesApi(),
+      getDraftAssetsApi(id),
     ]);
+    if (epoch !== loadEpoch) return;
     draft.value = draftData;
     versions.value = versionData;
     wechat.value = status;
     preflight.value = preflightData;
+    themes.value = themeData;
+    assets.value = assetData;
     fillForm(draftData);
+  } catch {
+    if (epoch === loadEpoch) ElMessage.error('稿件加载失败，请刷新重试');
   } finally {
-    loading.value = false;
+    if (epoch === loadEpoch) loading.value = false;
   }
 }
 async function refresh() {
-  const id = Number(route.params.id);
-  const [draftData, versionData, preflightData] = await Promise.all([
-    getDraftApi(id),
-    getDraftVersionsApi(id),
-    getDraftPreflightApi(id),
-  ]);
-  draft.value = draftData;
-  versions.value = versionData;
-  preflight.value = preflightData;
-  fillForm(draftData);
+  if (!draft.value) return;
+  const updated = await getDraftApi(draft.value.id);
+  draft.value = updated;
+  fillForm(updated);
+  await refreshSavedDetails(updated.id);
+}
+async function refreshSavedDetails(id: number) {
+  try {
+    const [versionData, preflightData, assetData] = await Promise.all([
+      getDraftVersionsApi(id),
+      getDraftPreflightApi(id),
+      getDraftAssetsApi(id),
+    ]);
+    versions.value = versionData;
+    preflight.value = preflightData;
+    assets.value = assetData;
+  } catch {
+    preflight.value = { issues: [], valid: false };
+    ElMessage.warning('稿件操作已成功，版本或预检信息刷新失败，请稍后刷新');
+  }
+}
+function hasBody(nodes: EditorNode[] = []): boolean {
+  return nodes.some(
+    (node) =>
+      node.type === 'image' ||
+      Boolean(node.text?.trim()) ||
+      hasBody(node.content),
+  );
+}
+function reportSaveError(error: unknown) {
+  const failure = error as
+    | { code?: number; response?: { status?: number }; status?: number }
+    | undefined;
+  // RequestClient 将 HTTP 错误解包为响应正文；30001 对应 HTTP 409。
+  if (
+    failure?.code === 30001 ||
+    (failure?.response?.status ?? failure?.status) === 409
+  ) {
+    conflict.value = true;
+    ElMessage.warning('稿件已被其他人更新，可复制当前内容后刷新');
+  } else {
+    ElMessage.error('操作失败，当前排版已保留，请稍后重试');
+  }
 }
 async function save() {
-  if (!draft.value || !form.title.trim() || !form.contentHtml.trim()) {
+  if (!draft.value || !editable.value) return;
+  if (!form.title.trim() || !hasBody(form.editorDocument.content)) {
     ElMessage.warning('标题和正文不能为空');
     return;
   }
@@ -141,26 +255,46 @@ async function save() {
     const updated = await updateDraftApi(draft.value.id, {
       author: form.author,
       changeNote: form.changeNote,
-      contentHtml: form.contentHtml,
+      editorDocument: normalizeDocument(form.editorDocument),
+      themeId: form.themeId,
       coverAssetId: form.coverAssetId,
       digest: form.digest,
       expectedVersion: draft.value.currentVersion,
       title: form.title,
     });
     draft.value = updated;
-    versions.value = await getDraftVersionsApi(updated.id);
-    preflight.value = await getDraftPreflightApi(updated.id);
     fillForm(updated);
     ElMessage.success('稿件已保存并生成新版本');
+    await refreshSavedDetails(updated.id);
+  } catch (error) {
+    reportSaveError(error);
   } finally {
     submitting.value = false;
   }
 }
+async function upload(file: File) {
+  if (!draft.value || !editable.value) return;
+  uploading.value = true;
+  try {
+    const asset = await uploadDraftAssetApi(draft.value.id, file);
+    assets.value = [...assets.value, asset];
+    ElMessage.success('图片上传成功');
+  } catch {
+    ElMessage.error('图片上传失败，当前排版已保留');
+  } finally {
+    uploading.value = false;
+  }
+}
 async function submitReview() {
-  if (!draft.value) return;
-  await submitDraftReviewApi(draft.value.id);
-  ElMessage.success('稿件已提交审核');
-  await refresh();
+  if (!draft.value || !editable.value || dirty.value) return;
+  submitting.value = true;
+  try {
+    await submitDraftReviewApi(draft.value.id);
+    ElMessage.success('稿件已提交审核');
+    await refresh();
+  } finally {
+    submitting.value = false;
+  }
 }
 async function approve() {
   if (!draft.value) return;
@@ -203,50 +337,19 @@ async function publish() {
   ElMessage.success('发布任务已进入队列');
   await router.push(`/wechat/publish-jobs?job=${job.id}`);
 }
-function escapeHTML(value: string) {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
-}
-function insertHTML(before: string, after = '', placeholder = '') {
-  if (!draft.value || draft.value.status !== 'editing') return;
-  const textarea = editorContainer.value?.querySelector('textarea');
-  const start = textarea?.selectionStart ?? form.contentHtml.length;
-  const end = textarea?.selectionEnd ?? start;
-  const selected = form.contentHtml.slice(start, end) || placeholder;
-  form.contentHtml = `${form.contentHtml.slice(0, start)}${before}${selected}${after}${form.contentHtml.slice(end)}`;
-  nextTick(() => {
-    const cursor = start + before.length + selected.length + after.length;
-    textarea?.focus();
-    textarea?.setSelectionRange(cursor, cursor);
-  });
-}
-async function insertAsset(asset: Asset) {
-  if (!draft.value || draft.value.status !== 'editing') return;
+async function restoreVersion(version: number) {
+  if (!draft.value || !editable.value || version >= draft.value.currentVersion)
+    return;
   try {
-    const result = await ElMessageBox.prompt(
-      '可选：填写图片说明，留空则只插入图片。',
-      `插入素材 #${asset.id}`,
-      { inputPlaceholder: '图片说明' },
-    );
-    const caption = result.value.trim();
-    const escaped = escapeHTML(caption);
-    insertHTML(
-      `<figure><img data-weavepress-asset-id="${asset.id}" alt="${escaped}">`,
-      `${caption ? `<figcaption>${escaped}</figcaption>` : ''}</figure>`,
+    await ElMessageBox.confirm(
+      `将 v${version} 的内容复制为新版本，现有版本不会删除。${dirty.value ? '当前未保存修改将被替换。' : ''}`,
+      '恢复历史版本',
+      { type: 'warning' },
     );
   } catch {
-    // 用户取消操作。
+    return;
   }
-}
-async function restoreVersion(version: number) {
-  if (!draft.value || version >= draft.value.currentVersion) return;
-  await ElMessageBox.confirm(
-    `将 v${version} 的内容复制为新版本，现有版本不会删除。`,
-    '恢复历史版本',
-  );
+  if (!draft.value || !editable.value) return;
   submitting.value = true;
   try {
     const updated = await restoreDraftVersionApi(
@@ -255,19 +358,39 @@ async function restoreVersion(version: number) {
       draft.value.currentVersion,
     );
     draft.value = updated;
-    versions.value = await getDraftVersionsApi(updated.id);
-    preflight.value = await getDraftPreflightApi(updated.id);
     fillForm(updated);
     ElMessage.success(`已从 v${version} 生成新版本`);
+    await refreshSavedDetails(updated.id);
+  } catch (error) {
+    reportSaveError(error);
   } finally {
     submitting.value = false;
   }
 }
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+async function confirmLeave() {
+  if (!dirty.value) return true;
+  try {
+    await ElMessageBox.confirm('当前排版尚未保存，确认离开吗？', '未保存修改', {
+      type: 'warning',
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
+onBeforeRouteLeave(confirmLeave);
+onBeforeRouteUpdate(confirmLeave);
+useEventListener(window, 'beforeunload', (event) => {
+  if (!dirty.value) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
+watch(
+  () => route.params.id,
+  (id, previous) => {
+    if (id && id !== previous) void load();
+  },
+);
 onMounted(load);
 </script>
 
@@ -302,17 +425,27 @@ onMounted(load);
             >
             <ElButton
               v-if="draft.status === 'editing'"
+              v-access:code="'draft:update'"
               :loading="submitting"
+              :disabled="!editable"
               type="primary"
               @click="save"
               >保存新版本</ElButton
             >
-            <ElButton
+            <ElTooltip
               v-if="draft.status === 'editing'"
-              type="warning"
-              @click="submitReview"
-              >提交审核</ElButton
+              :disabled="!dirty"
+              content="请先保存当前排版后再提交审核"
             >
+              <span v-access:code="'draft:update'">
+                <ElButton
+                  :disabled="dirty || !editable"
+                  type="warning"
+                  @click="submitReview"
+                  >提交审核</ElButton
+                >
+              </span>
+            </ElTooltip>
             <ElButton
               v-if="draft.status === 'in_review'"
               v-access:code="'draft:review'"
@@ -372,180 +505,121 @@ onMounted(load);
         </ul>
       </ElAlert>
 
-      <div class="mt-4 grid gap-4 xl:grid-cols-2">
-        <ElCard shadow="never">
-          <template #header><strong>稿件内容</strong></template>
-          <ElForm label-position="top">
-            <ElFormItem label="标题">
-              <ElInput
-                v-model="form.title"
-                :disabled="draft.status !== 'editing'"
-                maxlength="64"
-                show-word-limit
-              />
-            </ElFormItem>
-            <div class="grid gap-3 sm:grid-cols-2">
-              <ElFormItem label="作者">
-                <ElInput
-                  v-model="form.author"
-                  :disabled="draft.status !== 'editing'"
-                  maxlength="8"
-                  show-word-limit
-                />
-              </ElFormItem>
-              <ElFormItem label="封面素材">
-                <ElSelect
-                  v-model="form.coverAssetId"
-                  :disabled="draft.status !== 'editing'"
-                  class="w-full"
-                  clearable
-                  placeholder="请选择归档图片"
-                >
-                  <ElOption
-                    v-for="asset in assets"
-                    :key="asset.id"
-                    :label="`素材 #${asset.id}${asset.isCover ? '（原文封面）' : ''}`"
-                    :value="asset.id"
-                  />
-                </ElSelect>
-              </ElFormItem>
-            </div>
-            <ElFormItem label="摘要">
-              <ElInput
-                v-model="form.digest"
-                :disabled="draft.status !== 'editing'"
-                maxlength="120"
-                :rows="3"
-                show-word-limit
-                type="textarea"
-              />
-            </ElFormItem>
-            <ElFormItem
-              label="正文 HTML（图片使用 data-weavepress-asset-id 占位）"
+      <ElAlert
+        v-if="draft.migrationWarnings?.length"
+        class="mt-4"
+        :closable="false"
+        title="旧稿件转换提示"
+        type="warning"
+      >
+        <ul class="mt-2 list-disc pl-5">
+          <li v-for="warning in draft.migrationWarnings" :key="warning">
+            {{ warning }}
+          </li>
+        </ul>
+      </ElAlert>
+      <ElAlert
+        v-if="migrationFailed"
+        class="mt-4"
+        :closable="false"
+        title="旧稿件转换失败，当前为只读模式，保留原稿预览。"
+        type="error"
+      />
+      <ElAlert
+        v-if="conflict"
+        class="mt-4"
+        :closable="false"
+        title="稿件已被其他人更新，可复制当前内容后刷新"
+        type="warning"
+      />
+      <ElCard class="mt-4" shadow="never">
+        <template #header>
+          <div class="flex items-center gap-3">
+            <strong>稿件内容</strong>
+            <ElTag :type="dirty ? 'warning' : 'info'">{{
+              dirty ? '有未保存修改，请先保存再提交审核' : '已保存'
+            }}</ElTag>
+            <span v-if="uploading" class="text-muted-foreground text-sm"
+              >图片上传中…</span
             >
-              <div class="w-full">
-                <div
-                  v-if="draft.status === 'editing'"
-                  class="mb-2 flex flex-wrap gap-2"
-                >
-                  <ElButton
-                    size="small"
-                    @click="insertHTML('<p>', '</p>', '段落')"
-                    >段落</ElButton
-                  >
-                  <ElButton
-                    size="small"
-                    @click="insertHTML('<h2>', '</h2>', '二级标题')"
-                    >H2</ElButton
-                  >
-                  <ElButton
-                    size="small"
-                    @click="insertHTML('<h3>', '</h3>', '三级标题')"
-                    >H3</ElButton
-                  >
-                  <ElButton
-                    size="small"
-                    @click="insertHTML('<strong>', '</strong>', '加粗文字')"
-                    >加粗</ElButton
-                  >
-                  <ElButton
-                    size="small"
-                    @click="
-                      insertHTML('<blockquote>', '</blockquote>', '引用内容')
-                    "
-                    >引用</ElButton
-                  >
-                  <ElButton size="small" @click="insertHTML('<br>')"
-                    >换行</ElButton
-                  >
-                </div>
-                <div ref="editorContainer">
-                  <ElInput
-                    v-model="form.contentHtml"
-                    :disabled="draft.status !== 'editing'"
-                    :rows="22"
-                    resize="vertical"
-                    type="textarea"
-                  />
-                </div>
-              </div>
+          </div>
+        </template>
+        <ElForm label-position="top">
+          <ElFormItem label="标题">
+            <ElInput
+              v-model="form.title"
+              :disabled="!editable"
+              maxlength="64"
+              show-word-limit
+            />
+          </ElFormItem>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <ElFormItem label="作者">
+              <ElInput
+                v-model="form.author"
+                :disabled="!editable"
+                maxlength="8"
+                show-word-limit
+              />
             </ElFormItem>
-            <ElFormItem label="来源素材图库">
-              <div
-                v-if="assets.length"
-                class="grid w-full gap-3 sm:grid-cols-2"
+            <ElFormItem label="封面素材">
+              <ElSelect
+                v-model="form.coverAssetId"
+                :disabled="!editable"
+                class="w-full"
+                clearable
+                placeholder="请选择稿件素材"
+                @clear="form.coverAssetId = undefined"
               >
-                <div
+                <ElOption
                   v-for="asset in assets"
                   :key="asset.id"
-                  class="rounded border p-3"
-                >
-                  <img
-                    :src="asset.mediaUrl"
-                    :alt="`素材 #${asset.id}`"
-                    class="h-32 w-full rounded bg-gray-50 object-contain"
-                  />
-                  <div
-                    class="mt-2 flex items-center justify-between gap-2 text-sm"
-                  >
-                    <span
-                      >#{{ asset.id }} · {{ formatBytes(asset.byteSize) }}</span
-                    >
-                    <ElTag v-if="asset.isCover" size="small" type="success"
-                      >原文封面</ElTag
-                    >
-                  </div>
-                  <div
-                    v-if="draft.status === 'editing'"
-                    class="mt-2 flex gap-2"
-                  >
-                    <ElButton
-                      size="small"
-                      type="primary"
-                      plain
-                      @click="insertAsset(asset)"
-                      >插入正文</ElButton
-                    >
-                    <ElButton size="small" @click="form.coverAssetId = asset.id"
-                      >设为封面</ElButton
-                    >
-                  </div>
-                </div>
-              </div>
-              <ElEmpty v-else description="暂无可用的归档素材" />
+                  :label="`素材 #${asset.id}`"
+                  :value="asset.id"
+                  :disabled="!asset.coverEligible"
+                />
+              </ElSelect>
             </ElFormItem>
-            <ElFormItem v-if="draft.status === 'editing'" label="本次修改说明">
-              <ElInput
-                v-model="form.changeNote"
-                maxlength="255"
-                placeholder="例如：调整标题和段落结构"
-              />
-            </ElFormItem>
-          </ElForm>
-        </ElCard>
-
-        <div class="space-y-4">
-          <ElCard shadow="never">
-            <template #header
-              ><strong>微信正文预览（最近保存版本）</strong></template
-            >
-            <div v-if="cover?.mediaUrl" class="mb-4">
-              <p class="text-muted-foreground mb-2 text-sm">封面</p>
-              <img
-                :src="cover.mediaUrl"
-                alt="稿件封面"
-                class="max-h-48 rounded object-cover"
-              />
-            </div>
-            <iframe
-              :srcdoc="previewDocument"
-              class="h-[680px] w-full rounded border"
-              sandbox=""
-              title="微信稿件预览"
-            ></iframe>
-          </ElCard>
-        </div>
-      </div>
+          </div>
+          <ElFormItem label="摘要">
+            <ElInput
+              v-model="form.digest"
+              :disabled="!editable"
+              maxlength="120"
+              :rows="2"
+              show-word-limit
+              type="textarea"
+            />
+          </ElFormItem>
+          <ElFormItem v-if="draft.status === 'editing'" label="本次修改说明">
+            <ElInput
+              v-model="form.changeNote"
+              :disabled="!editable"
+              maxlength="255"
+              placeholder="例如：调整标题和段落结构"
+            />
+          </ElFormItem>
+        </ElForm>
+      </ElCard>
+      <LayoutEditor
+        class="mt-4"
+        v-model:document="form.editorDocument"
+        v-model:theme-id="form.themeId"
+        :assets="assets"
+        :editable="editable"
+        :metadata="metadata"
+        :themes="themes"
+        @cover-change="form.coverAssetId = $event"
+        @upload="upload"
+      >
+        <template #preview>
+          <PhonePreview
+            v-bind="metadata"
+            :cover-url="cover?.mediaUrl"
+            :body-html="previewHtml"
+          />
+        </template>
+      </LayoutEditor>
 
       <div class="mt-4 grid gap-4 xl:grid-cols-2">
         <ElCard shadow="never">
@@ -569,6 +643,8 @@ onMounted(load);
               <template #default="{ row }">
                 <ElButton
                   v-if="row.version < draft.currentVersion"
+                  v-access:code="'draft:update'"
+                  :disabled="!editable"
                   :loading="submitting"
                   link
                   type="primary"
