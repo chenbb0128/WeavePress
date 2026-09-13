@@ -290,8 +290,8 @@ export function getDraftsApi(params: {
 }) {
   return requestClient.get<PageResult<Draft>>('/drafts', { params });
 }
-export function getDraftApi(id: number) {
-  return requestClient.get<Draft>(`/drafts/${id}`);
+export function getDraftApi(id: number, signal?: AbortSignal) {
+  return requestClient.get<Draft>(`/drafts/${id}`, { signal });
 }
 export function updateDraftApi(
   id: number,
@@ -305,48 +305,80 @@ export function updateDraftApi(
     themeId: string;
     title: string;
   },
+  signal?: AbortSignal,
 ) {
-  return requestClient.put<Draft>(`/drafts/${id}`, input);
+  return requestClient.put<Draft>(`/drafts/${id}`, input, { signal });
 }
-export function getWeChatLayoutThemesApi() {
-  return requestClient.get<WeChatLayoutTheme[]>('/wechat-layout/themes');
+export function getWeChatLayoutThemesApi(signal?: AbortSignal) {
+  return requestClient.get<WeChatLayoutTheme[]>('/wechat-layout/themes', {
+    signal,
+  });
 }
-export function getDraftAssetsApi(id: number) {
-  return requestClient.get<DraftAsset[]>(`/drafts/${id}/assets`);
+export function getDraftAssetsApi(id: number, signal?: AbortSignal) {
+  return requestClient.get<DraftAsset[]>(`/drafts/${id}/assets`, { signal });
 }
-export function uploadDraftAssetApi(id: number, file: File) {
-  return requestClient.upload<DraftAsset>(`/drafts/${id}/assets`, { file });
+export function uploadDraftAssetApi(
+  id: number,
+  file: File,
+  signal?: AbortSignal,
+) {
+  return requestClient.upload<DraftAsset>(
+    `/drafts/${id}/assets`,
+    { file },
+    { signal },
+  );
 }
-export function getDraftVersionsApi(id: number) {
-  return requestClient.get<DraftVersion[]>(`/drafts/${id}/versions`);
+export function getDraftVersionsApi(id: number, signal?: AbortSignal) {
+  return requestClient.get<DraftVersion[]>(`/drafts/${id}/versions`, {
+    signal,
+  });
 }
 export function restoreDraftVersionApi(
   id: number,
   version: number,
   expectedVersion: number,
+  signal?: AbortSignal,
 ) {
   return requestClient.post<Draft>(
     `/drafts/${id}/versions/${version}/restore`,
     { expectedVersion },
+    { signal },
   );
 }
-export function getDraftPreflightApi(id: number) {
-  return requestClient.get<PreflightResult>(`/drafts/${id}/preflight`);
-}
-export function submitDraftReviewApi(id: number) {
-  return requestClient.post<Draft>(`/drafts/${id}/submit-review`);
-}
-export function reviewDraftApi(id: number, approved: boolean, note = '') {
-  return requestClient.post<Draft>(`/drafts/${id}/review`, {
-    approved,
-    note,
+export function getDraftPreflightApi(id: number, signal?: AbortSignal) {
+  return requestClient.get<PreflightResult>(`/drafts/${id}/preflight`, {
+    signal,
   });
 }
-export function publishDraftApi(id: number) {
-  return requestClient.post<WeChatPublishJob>(`/drafts/${id}/publish`);
+export function submitDraftReviewApi(id: number, signal?: AbortSignal) {
+  return requestClient.post<Draft>(`/drafts/${id}/submit-review`, undefined, {
+    signal,
+  });
 }
-export function getWeChatStatusApi() {
-  return requestClient.get<WeChatStatus>('/wechat/status');
+export function reviewDraftApi(
+  id: number,
+  approved: boolean,
+  note = '',
+  signal?: AbortSignal,
+) {
+  return requestClient.post<Draft>(
+    `/drafts/${id}/review`,
+    {
+      approved,
+      note,
+    },
+    { signal },
+  );
+}
+export function publishDraftApi(id: number, signal?: AbortSignal) {
+  return requestClient.post<WeChatPublishJob>(
+    `/drafts/${id}/publish`,
+    undefined,
+    { signal },
+  );
+}
+export function getWeChatStatusApi(signal?: AbortSignal) {
+  return requestClient.get<WeChatStatus>('/wechat/status', { signal });
 }
 export function getWeChatPublishJobsApi(params: {
   page: number;

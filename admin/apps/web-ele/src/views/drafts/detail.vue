@@ -12,7 +12,14 @@ import type {
   WeChatStatus,
 } from '#/api';
 
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import {
+  computed,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  watch,
+} from 'vue';
 import {
   onBeforeRouteLeave,
   onBeforeRouteUpdate,
@@ -82,6 +89,38 @@ const uploading = ref(false);
 const conflict = ref(false);
 const savedFingerprint = ref('');
 let loadEpoch = 0;
+let disposed = false;
+let requests = new AbortController();
+interface DraftContext {
+  id: number;
+  epoch: number;
+  signal: AbortSignal;
+}
+function invalidateContext() {
+  loadEpoch += 1;
+  requests.abort();
+  requests = new AbortController();
+  submitting.value = false;
+  uploading.value = false;
+}
+function isCurrent(context: DraftContext) {
+  return (
+    !disposed &&
+    context.epoch === loadEpoch &&
+    context.id === Number(route.params.id) &&
+    !context.signal.aborted
+  );
+}
+function captureContext(): DraftContext | undefined {
+  if (
+    disposed ||
+    loading.value ||
+    !draft.value ||
+    draft.value.id !== Number(route.params.id)
+  )
+    return;
+  return { id: draft.value.id, epoch: loadEpoch, signal: requests.signal };
+}
 const form = reactive({
   title: '',
   author: '',
@@ -164,8 +203,10 @@ function fillForm(value: Draft) {
   conflict.value = false;
 }
 async function load() {
+  if (disposed) return;
+  invalidateContext();
   const id = Number(route.params.id);
-  const epoch = ++loadEpoch;
+  const context = { id, epoch: loadEpoch, signal: requests.signal };
   loading.value = true;
   draft.value = undefined;
   savedFingerprint.value = '';
@@ -178,14 +219,14 @@ async function load() {
       themeData,
       assetData,
     ] = await Promise.all([
-      getDraftApi(id),
-      getDraftVersionsApi(id),
-      getWeChatStatusApi(),
-      getDraftPreflightApi(id),
-      getWeChatLayoutThemesApi(),
-      getDraftAssetsApi(id),
+      getDraftApi(id, context.signal),
+      getDraftVersionsApi(id, context.signal),
+      getWeChatStatusApi(context.signal),
+      getDraftPreflightApi(id, context.signal),
+      getWeChatLayoutThemesApi(context.signal),
+      getDraftAssetsApi(id, context.signal),
     ]);
-    if (epoch !== loadEpoch) return;
+    if (!isCurrent(context)) return;
     draft.value = draftData;
     versions.value = versionData;
     wechat.value = status;
@@ -194,29 +235,33 @@ async function load() {
     assets.value = assetData;
     fillForm(draftData);
   } catch {
-    if (epoch === loadEpoch) ElMessage.error('稿件加载失败，请刷新重试');
+    if (isCurrent(context)) ElMessage.error('稿件加载失败，请刷新重试');
   } finally {
-    if (epoch === loadEpoch) loading.value = false;
+    if (isCurrent(context)) loading.value = false;
   }
 }
-async function refresh() {
-  if (!draft.value) return;
-  const updated = await getDraftApi(draft.value.id);
+async function refresh(context: DraftContext) {
+  if (!isCurrent(context)) return;
+  const updated = await getDraftApi(context.id, context.signal);
+  if (!isCurrent(context)) return;
   draft.value = updated;
   fillForm(updated);
-  await refreshSavedDetails(updated.id);
+  await refreshSavedDetails(context);
 }
-async function refreshSavedDetails(id: number) {
+async function refreshSavedDetails(context: DraftContext) {
+  if (!isCurrent(context)) return;
   try {
     const [versionData, preflightData, assetData] = await Promise.all([
-      getDraftVersionsApi(id),
-      getDraftPreflightApi(id),
-      getDraftAssetsApi(id),
+      getDraftVersionsApi(context.id, context.signal),
+      getDraftPreflightApi(context.id, context.signal),
+      getDraftAssetsApi(context.id, context.signal),
     ]);
+    if (!isCurrent(context)) return;
     versions.value = versionData;
     preflight.value = preflightData;
     assets.value = assetData;
   } catch {
+    if (!isCurrent(context)) return;
     preflight.value = { issues: [], valid: false };
     ElMessage.warning('稿件操作已成功，版本或预检信息刷新失败，请稍后刷新');
   }
@@ -229,7 +274,8 @@ function hasBody(nodes: EditorNode[] = []): boolean {
       hasBody(node.content),
   );
 }
-function reportSaveError(error: unknown) {
+function reportSaveError(error: unknown, context: DraftContext) {
+  if (!isCurrent(context)) return;
   const failure = error as
     | { code?: number; response?: { status?: number }; status?: number }
     | undefined;
@@ -246,68 +292,99 @@ function reportSaveError(error: unknown) {
 }
 async function save() {
   if (!draft.value || !editable.value) return;
+  const context = captureContext();
+  if (!context) return;
   if (!form.title.trim() || !hasBody(form.editorDocument.content)) {
     ElMessage.warning('标题和正文不能为空');
     return;
   }
   submitting.value = true;
   try {
-    const updated = await updateDraftApi(draft.value.id, {
-      author: form.author,
-      changeNote: form.changeNote,
-      editorDocument: normalizeDocument(form.editorDocument),
-      themeId: form.themeId,
-      coverAssetId: form.coverAssetId,
-      digest: form.digest,
-      expectedVersion: draft.value.currentVersion,
-      title: form.title,
-    });
+    const updated = await updateDraftApi(
+      context.id,
+      {
+        author: form.author,
+        changeNote: form.changeNote,
+        editorDocument: normalizeDocument(form.editorDocument),
+        themeId: form.themeId,
+        coverAssetId: form.coverAssetId,
+        digest: form.digest,
+        expectedVersion: draft.value.currentVersion,
+        title: form.title,
+      },
+      context.signal,
+    );
+    if (!isCurrent(context)) return;
     draft.value = updated;
     fillForm(updated);
     ElMessage.success('稿件已保存并生成新版本');
-    await refreshSavedDetails(updated.id);
+    await refreshSavedDetails(context);
   } catch (error) {
-    reportSaveError(error);
+    reportSaveError(error, context);
   } finally {
-    submitting.value = false;
+    if (isCurrent(context)) submitting.value = false;
   }
 }
 async function upload(file: File) {
   if (!draft.value || !editable.value) return;
+  const context = captureContext();
+  if (!context) return;
   uploading.value = true;
   try {
-    const asset = await uploadDraftAssetApi(draft.value.id, file);
+    const asset = await uploadDraftAssetApi(context.id, file, context.signal);
+    if (!isCurrent(context)) return;
     assets.value = [...assets.value, asset];
     ElMessage.success('图片上传成功');
   } catch {
-    ElMessage.error('图片上传失败，当前排版已保留');
+    if (isCurrent(context)) ElMessage.error('图片上传失败，当前排版已保留');
   } finally {
-    uploading.value = false;
+    if (isCurrent(context)) uploading.value = false;
   }
 }
 async function submitReview() {
   if (!draft.value || !editable.value || dirty.value) return;
+  const context = captureContext();
+  if (!context) return;
   submitting.value = true;
   try {
-    await submitDraftReviewApi(draft.value.id);
+    await submitDraftReviewApi(context.id, context.signal);
+    if (!isCurrent(context)) return;
     ElMessage.success('稿件已提交审核');
-    await refresh();
+    await refresh(context);
+  } catch (error) {
+    reportSaveError(error, context);
   } finally {
-    submitting.value = false;
+    if (isCurrent(context)) submitting.value = false;
   }
 }
 async function approve() {
-  if (!draft.value) return;
-  await ElMessageBox.confirm(
-    '确认该稿件可以写入微信公众号草稿箱吗？',
-    '审核通过',
-  );
-  await reviewDraftApi(draft.value.id, true);
-  ElMessage.success('稿件已审核通过');
-  await refresh();
+  const context = captureContext();
+  if (!context || submitting.value || uploading.value) return;
+  submitting.value = true;
+  try {
+    try {
+      await ElMessageBox.confirm(
+        '确认该稿件可以写入微信公众号草稿箱吗？',
+        '审核通过',
+      );
+    } catch {
+      return;
+    }
+    if (!isCurrent(context)) return;
+    await reviewDraftApi(context.id, true, '', context.signal);
+    if (!isCurrent(context)) return;
+    ElMessage.success('稿件已审核通过');
+    await refresh(context);
+  } catch (error) {
+    reportSaveError(error, context);
+  } finally {
+    if (isCurrent(context)) submitting.value = false;
+  }
 }
 async function reject() {
-  if (!draft.value) return;
+  const context = captureContext();
+  if (!context || submitting.value || uploading.value) return;
+  submitting.value = true;
   try {
     const result = await ElMessageBox.prompt(
       '请填写需要修改的内容',
@@ -316,55 +393,78 @@ async function reject() {
         inputValidator: (value) => Boolean(value.trim()) || '请填写退回原因',
       },
     );
-    await reviewDraftApi(draft.value.id, false, result.value);
+    if (!isCurrent(context)) return;
+    await reviewDraftApi(context.id, false, result.value, context.signal);
+    if (!isCurrent(context)) return;
     ElMessage.success('稿件已退回编辑');
-    await refresh();
+    await refresh(context);
   } catch {
     // 用户取消操作。
+  } finally {
+    if (isCurrent(context)) submitting.value = false;
   }
 }
 async function publish() {
-  if (!draft.value) return;
+  const context = captureContext();
+  if (!context || submitting.value || uploading.value) return;
   if (!form.coverAssetId) {
     ElMessage.warning('请先选择封面并保存');
     return;
   }
-  await ElMessageBox.confirm(
-    '系统将上传正文图片和封面，并创建微信公众号草稿；不会自动群发。',
-    '写入公众号草稿箱',
-  );
-  const job = await publishDraftApi(draft.value.id);
-  ElMessage.success('发布任务已进入队列');
-  await router.push(`/wechat/publish-jobs?job=${job.id}`);
+  submitting.value = true;
+  try {
+    try {
+      await ElMessageBox.confirm(
+        '系统将上传正文图片和封面，并创建微信公众号草稿；不会自动群发。',
+        '写入公众号草稿箱',
+      );
+    } catch {
+      return;
+    }
+    if (!isCurrent(context)) return;
+    const job = await publishDraftApi(context.id, context.signal);
+    if (!isCurrent(context)) return;
+    ElMessage.success('发布任务已进入队列');
+    await router.push(`/wechat/publish-jobs?job=${job.id}`);
+  } catch (error) {
+    reportSaveError(error, context);
+  } finally {
+    if (isCurrent(context)) submitting.value = false;
+  }
 }
 async function restoreVersion(version: number) {
   if (!draft.value || !editable.value || version >= draft.value.currentVersion)
     return;
-  try {
-    await ElMessageBox.confirm(
-      `将 v${version} 的内容复制为新版本，现有版本不会删除。${dirty.value ? '当前未保存修改将被替换。' : ''}`,
-      '恢复历史版本',
-      { type: 'warning' },
-    );
-  } catch {
-    return;
-  }
-  if (!draft.value || !editable.value) return;
+  const context = captureContext();
+  if (!context) return;
+  const expectedVersion = draft.value.currentVersion;
   submitting.value = true;
   try {
+    try {
+      await ElMessageBox.confirm(
+        `将 v${version} 的内容复制为新版本，现有版本不会删除。${dirty.value ? '当前未保存修改将被替换。' : ''}`,
+        '恢复历史版本',
+        { type: 'warning' },
+      );
+    } catch {
+      return;
+    }
+    if (!isCurrent(context)) return;
     const updated = await restoreDraftVersionApi(
-      draft.value.id,
+      context.id,
       version,
-      draft.value.currentVersion,
+      expectedVersion,
+      context.signal,
     );
+    if (!isCurrent(context)) return;
     draft.value = updated;
     fillForm(updated);
     ElMessage.success(`已从 v${version} 生成新版本`);
-    await refreshSavedDetails(updated.id);
+    await refreshSavedDetails(context);
   } catch (error) {
-    reportSaveError(error);
+    reportSaveError(error, context);
   } finally {
-    submitting.value = false;
+    if (isCurrent(context)) submitting.value = false;
   }
 }
 async function confirmLeave() {
@@ -388,9 +488,16 @@ useEventListener(window, 'beforeunload', (event) => {
 watch(
   () => route.params.id,
   (id, previous) => {
-    if (id && id !== previous) void load();
+    if (id === previous) return;
+    if (id) void load();
+    else invalidateContext();
   },
+  { flush: 'sync' },
 );
+onBeforeUnmount(() => {
+  disposed = true;
+  invalidateContext();
+});
 onMounted(load);
 </script>
 
