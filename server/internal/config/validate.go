@@ -81,9 +81,6 @@ func (c Config) Validate() error {
 	if err := c.WeChat.Validate(env); err != nil {
 		return err
 	}
-	if err := c.AI.Validate(env); err != nil {
-		return err
-	}
 	if err := c.Observability.Validate(); err != nil {
 		return err
 	}

@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDefaultWorkerQueuesIncludeAI(t *testing.T) {
 	cfg, err := Load("")
@@ -11,6 +14,21 @@ func TestDefaultWorkerQueuesIncludeAI(t *testing.T) {
 	for queue, weight := range want {
 		if cfg.Worker.Queues[queue] != weight {
 			t.Fatalf("worker queue %q weight = %d, want %d; queues=%#v", queue, cfg.Worker.Queues[queue], weight, cfg.Worker.Queues)
+		}
+	}
+}
+
+func TestLoadIgnoresLegacyAIEnvironmentVariables(t *testing.T) {
+	t.Setenv("WEAVEPRESS_AI_ENABLED", "true")
+	t.Setenv("WEAVEPRESS_AI_API_KEY", "must-not-load")
+	t.Setenv("WEAVEPRESS_AI_REQUEST_TIMEOUT", "1s")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key := range cfg.SanitizedSummary() {
+		if strings.HasPrefix(key, "ai_") {
+			t.Fatalf("legacy AI config remains: %s", key)
 		}
 	}
 }

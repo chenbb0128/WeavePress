@@ -20,7 +20,7 @@ WeavePress 的 Go 服务端，负责内部账号、鉴权、文章采集任务�
 Copy-Item configs/config.example.yaml configs/config.yaml
 ```
 
-默认需要 MySQL `127.0.0.1:3306` 和 Redis `127.0.0.1:6379`。也可以使用 `WEAVEPRESS_*` 环境变量覆盖任意配置项。
+默认需要 MySQL `127.0.0.1:3306` 和 Redis `127.0.0.1:6379`。除 AI 服务设置外，也可以使用 `WEAVEPRESS_*` 环境变量覆盖运行配置。
 
 执行迁移并创建管理员：
 
@@ -40,33 +40,11 @@ go run ./cmd/worker
 
 ## AI 运行配置
 
-首版仅支持 OpenAI-compatible provider。以下配置均可通过同名 `WEAVEPRESS_*` 环境变量覆盖；API 和 Worker 必须使用一致的 AI 配置，生产环境应通过部署平台的环境变量或 Secret 分别注入，不能把 API Key 写进 Git、配置示例、数据库或日志。
+AI 服务设置全部由管理员在管理端“AI 设置”页面维护，支持智谱 GLM、OpenAI 和自定义 OpenAI-compatible 服务。各服务商的 Base URL、Model 和 API Key 分别保存；Key 使用 AES-256-GCM 密文入库，页面和 GET 接口只显示是否已配置，不回显 Key。
 
-| 环境变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `WEAVEPRESS_AI_ENABLED` | `false` | 是否启用 AI 分析、生成和失败任务重试 |
-| `WEAVEPRESS_AI_PROVIDER` | `openai-compatible` | 当前唯一支持的 provider |
-| `WEAVEPRESS_AI_BASE_URL` | 空 | OpenAI-compatible 服务的 API 根地址或带版本的 API 根地址；不要包含完整的 Chat Completions 路径 |
-| `WEAVEPRESS_AI_API_KEY` | 空 | 仅以环境变量或 Secret 注入的服务端凭据 |
-| `WEAVEPRESS_AI_MODEL` | 空 | Provider 提供的模型名 |
-| `WEAVEPRESS_AI_REQUEST_TIMEOUT` | `120s` | 单次模型请求超时 |
-| `WEAVEPRESS_AI_MAX_INPUT_CHARS` | `60000` | 输入字符上限，超限会拒绝任务而不是静默截断 |
-| `WEAVEPRESS_AI_MAX_OUTPUT_TOKENS` | `6000` | 单次请求的最大输出 Token 数 |
-| `WEAVEPRESS_AI_TEMPERATURE` | `0.4` | 生成温度，允许范围为 `0` 到 `2` |
+智谱和 OpenAI 使用服务端固定官方地址；自定义兼容服务必须填写公网 HTTPS 地址，服务端在保存和请求时阻断 localhost、内网、云元数据、DNS Rebinding 和重定向。Key 留空保存表示保留原值。启用 AI 后，API 与 Worker 每次从数据库动态读取，无需重启。
 
-启用时 `base_url`、`api_key` 和 `model` 都是必填项；生产环境的 `base_url` 必须使用 HTTPS。按所用服务商的 OpenAI-compatible 文档填写 API 根地址或版本根地址，但不要填写完整 Chat Completions endpoint。未带版本的根地址会追加 `/v1/chat/completions`；以 `/v1`、`/v4` 等版本段结尾的地址会追加 `/chat/completions`。
-
-智谱 GLM 可直接使用官方 OpenAI-compatible 根地址：
-
-```dotenv
-WEAVEPRESS_AI_ENABLED=true
-WEAVEPRESS_AI_PROVIDER=openai-compatible
-WEAVEPRESS_AI_BASE_URL=https://open.bigmodel.cn/api/paas/v4
-WEAVEPRESS_AI_API_KEY=通过服务器Secret录入
-WEAVEPRESS_AI_MODEL=glm-5.3-flash
-```
-
-`glm-5.3-flash` 是生产模板的默认模型，也可以替换为智谱账号实际可用的其他文本模型。当前分析依赖 Chat Completions 的 `response_format: {"type":"json_object"}` 能力。
+内部运行限制固定为单次请求 120 秒、输入 60000 字符、最大输出 6000 Token、Temperature 0.4，不提供 `WEAVEPRESS_AI_*` 环境变量覆盖。当前分析依赖 Chat Completions 的 `response_format: {"type":"json_object"}` 能力。
 
 Worker 必须监听 `ai` 队列，否则任务会一直停留在排队状态。推荐在 `configs/config.yaml` 使用与默认配置一致的优先级：
 

@@ -162,7 +162,6 @@ func TestSanitizedSummaryRedactsSecrets(t *testing.T) {
 	cfg := validConfig()
 	cfg.Database.DSN = "user:secret@tcp(127.0.0.1:3306)/weavepress"
 	cfg.Redis.Password = "redis-secret"
-	cfg.AI.APIKey = "ai-secret"
 
 	summary := cfg.SanitizedSummary()
 	if summary["database_dsn"] == cfg.Database.DSN {
@@ -171,49 +170,10 @@ func TestSanitizedSummaryRedactsSecrets(t *testing.T) {
 	if summary["redis_password"] == cfg.Redis.Password {
 		t.Fatal("SanitizedSummary leaked redis password")
 	}
-	if summary["ai_api_key"] != "<redacted>" {
-		t.Fatalf("SanitizedSummary ai_api_key = %v, want <redacted>", summary["ai_api_key"])
-	}
-	for _, key := range []string{"ai_enabled", "ai_provider", "ai_model", "ai_api_key"} {
-		if _, ok := summary[key]; !ok {
-			t.Fatalf("SanitizedSummary missing %q", key)
+	for key := range summary {
+		if strings.HasPrefix(key, "ai_") {
+			t.Fatalf("SanitizedSummary exposed legacy AI config %q", key)
 		}
-	}
-	if _, ok := summary["ai_base_url"]; ok {
-		t.Fatal("SanitizedSummary exposed ai_base_url")
-	}
-}
-
-func TestLoadAIDefaults(t *testing.T) {
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.AI.Enabled || cfg.AI.Provider != "openai-compatible" || cfg.AI.RequestTimeout != 120*time.Second || cfg.AI.MaxInputChars != 60000 || cfg.AI.MaxOutputTokens != 6000 || cfg.AI.Temperature != 0.4 {
-		t.Fatalf("AI defaults = %#v", cfg.AI)
-	}
-	if cfg.SanitizedSummary()["ai_api_key"] != "" {
-		t.Fatalf("empty ai_api_key should remain empty, got %v", cfg.SanitizedSummary()["ai_api_key"])
-	}
-}
-
-func TestLoadAIEnvironment(t *testing.T) {
-	t.Setenv("WEAVEPRESS_AI_ENABLED", "true")
-	t.Setenv("WEAVEPRESS_AI_PROVIDER", "openai-compatible")
-	t.Setenv("WEAVEPRESS_AI_BASE_URL", "https://llm.example.com")
-	t.Setenv("WEAVEPRESS_AI_API_KEY", "secret")
-	t.Setenv("WEAVEPRESS_AI_MODEL", "test-model")
-	t.Setenv("WEAVEPRESS_AI_REQUEST_TIMEOUT", "45s")
-	t.Setenv("WEAVEPRESS_AI_MAX_INPUT_CHARS", "12345")
-	t.Setenv("WEAVEPRESS_AI_MAX_OUTPUT_TOKENS", "2345")
-	t.Setenv("WEAVEPRESS_AI_TEMPERATURE", "0.7")
-
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.AI.Enabled || cfg.AI.BaseURL != "https://llm.example.com" || cfg.AI.APIKey != "secret" || cfg.AI.Model != "test-model" || cfg.AI.RequestTimeout != 45*time.Second || cfg.AI.MaxInputChars != 12345 || cfg.AI.MaxOutputTokens != 2345 || cfg.AI.Temperature != 0.7 {
-		t.Fatalf("AI environment config = %#v", cfg.AI)
 	}
 }
 
@@ -314,14 +274,6 @@ func validConfig() Config {
 			ImageConcurrency: 4, MaxRedirects: 5, UserAgent: "WeavePress-Test",
 		},
 		WeChat: WeChatConfig{APIBase: "https://api.weixin.qq.com", RequestTimeout: 30 * time.Second},
-		AI: AIConfig{
-			Enabled:         false,
-			Provider:        "openai-compatible",
-			RequestTimeout:  120 * time.Second,
-			MaxInputChars:   60000,
-			MaxOutputTokens: 6000,
-			Temperature:     0.4,
-		},
 		Observability: ObservabilityConfig{
 			Metrics: MetricsConfig{
 				Enabled:   true,

@@ -761,30 +761,32 @@ test_external_validators_and_lock() {
   new_case external-happy
   write_runtime_env
   command_line="env PATH='$mock_bin:$PATH' MOCK_LOG='$LOG_FILE' MOCK_STATE_DIR='$STATE_DIR' WEAVEPRESS_APP_DIR='$APP_DIR' WEAVEPRESS_LOCK_FILE='$LOCK_FILE' WEAVEPRESS_METADATA_DIR='$METADATA_DIR' '$external'"
-  printf '%s\n' QiniuAK_123 QiniuSK_123 bucket-1 https://cdn.example.invalid '' '' ZhipuKey_123 glm-5.3-flash \
+  printf '%s\n' QiniuAK_123 QiniuSK_123 bucket-1 https://cdn.example.invalid '' '' \
     | script -qec "$command_line" /dev/null > "$CASE_DIR/output" 2>&1 || fail 'external installer happy path failed under a TTY'
   [[ -e "$LOCK_FILE" ]] || fail 'external installer did not acquire the shared deploy lock'
   grep -Fxq 'WEAVEPRESS_APP_ENV=production' "$APP_DIR/.env" || fail 'external installer did not set production mode'
-  grep -Fxq 'WEAVEPRESS_AI_ENABLED=true' "$APP_DIR/.env" || fail 'external installer did not enable AI'
-  grep -Fxq "WEAVEPRESS_AI_BASE_URL='https://open.bigmodel.cn/api/paas/v4'" "$APP_DIR/.env" || fail 'external installer did not configure the Zhipu API root'
-  grep -Fxq "WEAVEPRESS_AI_MODEL='glm-5.3-flash'" "$APP_DIR/.env" || fail 'external installer did not configure the Zhipu model'
-  if grep -Fq 'ZhipuKey_123' "$LOG_FILE"; then fail 'external installer exposed the Zhipu API key in command logs'; fi
+  if grep -q '^WEAVEPRESS_AI_' "$APP_DIR/.env"; then fail 'external installer retained legacy AI environment keys'; fi
   if grep -Eq ' compose .* (up|run|restart|start) ' "$LOG_FILE"; then fail 'external installer started a service'; fi
 
   new_case external-legacy-env-upgrade
   write_runtime_env
-  sed -i '/^WEAVEPRESS_AI_/d' "$APP_DIR/.env"
+  printf '%s\n' \
+    'WEAVEPRESS_AI_ENABLED=true' \
+    'WEAVEPRESS_AI_PROVIDER=openai-compatible' \
+    'WEAVEPRESS_AI_BASE_URL=https://open.bigmodel.cn/api/paas/v4' \
+    'WEAVEPRESS_AI_API_KEY=LegacyKey_123' \
+    'WEAVEPRESS_AI_MODEL=glm-5.3-flash' >> "$APP_DIR/.env"
   command_line="env PATH='$mock_bin:$PATH' MOCK_LOG='$LOG_FILE' MOCK_STATE_DIR='$STATE_DIR' WEAVEPRESS_APP_DIR='$APP_DIR' WEAVEPRESS_LOCK_FILE='$LOCK_FILE' WEAVEPRESS_METADATA_DIR='$METADATA_DIR' '$external'"
-  printf '%s\n' QiniuAK_123 QiniuSK_123 bucket-1 https://cdn.example.invalid '' '' ZhipuKey_123 glm-5.3-flash \
-    | script -qec "$command_line" /dev/null > "$CASE_DIR/output" 2>&1 || fail 'external installer did not upgrade the legacy environment contract'
+  printf '%s\n' QiniuAK_123 QiniuSK_123 bucket-1 https://cdn.example.invalid '' '' \
+    | script -qec "$command_line" /dev/null > "$CASE_DIR/output" 2>&1 || fail 'external installer did not remove the legacy AI environment contract'
   assert_env_contract "$APP_DIR/.env"
-  grep -Fxq 'WEAVEPRESS_AI_ENABLED=true' "$APP_DIR/.env" || fail 'legacy environment upgrade did not enable AI'
+  if grep -q '^WEAVEPRESS_AI_' "$APP_DIR/.env"; then fail 'legacy environment upgrade retained AI keys'; fi
 
   new_case external-compose-failure
   write_runtime_env
   cp "$APP_DIR/.env" "$CASE_DIR/env-before"
   command_line="env PATH='$mock_bin:$PATH' MOCK_LOG='$LOG_FILE' MOCK_STATE_DIR='$STATE_DIR' MOCK_COMPOSE_CONFIG_FAIL=1 WEAVEPRESS_APP_DIR='$APP_DIR' WEAVEPRESS_LOCK_FILE='$LOCK_FILE' WEAVEPRESS_METADATA_DIR='$METADATA_DIR' '$external'"
-  if printf '%s\n' QiniuAK_123 QiniuSK_123 bucket-1 https://cdn.example.invalid '' '' ZhipuKey_123 glm-5.3-flash \
+  if printf '%s\n' QiniuAK_123 QiniuSK_123 bucket-1 https://cdn.example.invalid '' '' \
     | script -qec "$command_line" /dev/null > "$CASE_DIR/output" 2>&1; then
     fail 'external installer accepted a staged environment that failed Compose validation'
   fi
@@ -799,7 +801,7 @@ test_external_validators_and_lock() {
   printf 'lowercase_extra=must-be-rejected\n' >> "$APP_DIR/.env"
   cp "$APP_DIR/.env" "$CASE_DIR/env-before"
   command_line="env PATH='$mock_bin:$PATH' MOCK_LOG='$LOG_FILE' MOCK_STATE_DIR='$STATE_DIR' WEAVEPRESS_APP_DIR='$APP_DIR' WEAVEPRESS_LOCK_FILE='$LOCK_FILE' WEAVEPRESS_METADATA_DIR='$METADATA_DIR' '$external'"
-  if printf '%s\n' QiniuAK_123 QiniuSK_123 bucket-1 https://cdn.example.invalid '' '' ZhipuKey_123 glm-5.3-flash \
+  if printf '%s\n' QiniuAK_123 QiniuSK_123 bucket-1 https://cdn.example.invalid '' '' \
     | script -qec "$command_line" /dev/null > "$CASE_DIR/output" 2>&1; then
     fail 'external installer accepted an extra lowercase dotenv assignment'
   fi

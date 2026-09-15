@@ -44,8 +44,8 @@ Gateway 发布前要求现有 `weavepress-api` 为 healthy；切换 Gateway 时�
 
 数据库备份位于 `backup/mysql/weavepress-<UTC>.<mktemp-unique>.sql.gz`。恢复前先停止应用写入，执行 `gzip -t`，在独立环境验证 dump，并经过变更审批后再导入。环境文件备份位于 `backup/env/.env.<UTC>.<mktemp-unique>`；唯一后缀避免同一秒内的并发备份互相覆盖。恢复时先验证 14 个键、权限与 Compose config，再原子替换 `.env`，随后显式发布 Server。任何备份都不得复制到聊天、构建日志或仓库。
 
-## 切换七牛、微信与智谱 GLM
+## 切换七牛、微信与 AI 服务
 
-首发保持 `staging + local storage + WeChat disabled + AI disabled`。正式素材写入前先完成本地素材盘点/迁移，再在 root 的交互终端运行 `weavepress-external-secrets-install`。七牛 AK、SK、Bucket、Domain 必填；微信 AppID/AppSecret 必须同时填写或同时留空；智谱 API Key 留空时关闭 AI，填写时使用输入的模型名，默认 `glm-5.3-flash`。所有凭据只通过隐藏输入终端录入。
+首发保持 `staging + local storage + WeChat disabled + AI disabled`。正式素材写入前先完成本地素材盘点/迁移，再在 root 的交互终端运行 `weavepress-external-secrets-install`。七牛 AK、SK、Bucket、Domain 必填；微信 AppID/AppSecret 必须同时填写或同时留空。AI 服务不再使用环境变量：Server 发布并完成数据库迁移后，由管理员登录管理端“AI 设置”分别录入智谱 GLM、OpenAI 或自定义 OpenAI-compatible 配置。
 
-安装器会先备份 `.env`，用临时文件生成严格 19 键的 `production + qiniu` 配置并执行 Compose config 校验，校验通过才原子替换；现有 14 键环境会在本次录入时安全升级。它不会 restart、recreate 或 deploy；复核后必须由操作员显式发布 Server。微信启用前还需完成出口 IP 白名单与接口连通性验证，AI 启用后应先用一篇已就绪文章验证分析结果。
+安装器会先备份 `.env`，用临时文件生成严格 14 键的 `production + qiniu` 配置并执行 Compose config 校验，校验通过才原子替换；旧的 19 键环境会在本次录入时移除五个 AI 环境项。它不会 restart、recreate 或 deploy；复核后必须由操作员显式发布 Server。微信启用前还需完成出口 IP 白名单与接口连通性验证；后台启用 AI 后应先用一篇已就绪文章验证分析结果。
