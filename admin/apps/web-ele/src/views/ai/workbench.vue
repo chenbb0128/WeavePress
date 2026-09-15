@@ -130,12 +130,10 @@ const assetURLs = computed(
         .map((asset) => [asset.id, asset.mediaUrl]),
     ),
 );
-const analysisAngles = computed(
-  () => [
-    faithfulReplicationAngle,
-    ...(selectedAnalysis.value?.angles.slice(0, 3) ?? []),
-  ],
-);
+const analysisAngles = computed(() => [
+  faithfulReplicationAngle,
+  ...(selectedAnalysis.value?.angles.slice(0, 3) ?? []),
+]);
 const analysisPolling = computed(() =>
   analysisJob.value ? shouldPoll(analysisJob.value.status) : false,
 );
