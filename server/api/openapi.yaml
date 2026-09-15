@@ -657,7 +657,11 @@ components:
       additionalProperties: false
       required: [angleId, audience, tone, targetWords, idempotencyKey]
       properties:
-        angleId: { type: string, minLength: 1, pattern: '.*\S.*' }
+        angleId:
+          type: string
+          minLength: 1
+          pattern: '.*\S.*'
+          description: 使用分析结果中的角度 ID；传 SOURCE 时按原文总体意思执行忠实复刻。
         audience: { type: string, minLength: 1, maxLength: 100, pattern: '.*\S.*' }
         tone: { type: string, enum: [professional, plain, analytical, storytelling, warm] }
         targetWords: { type: integer, minimum: 300, maximum: 5000 }
@@ -799,7 +803,9 @@ components:
         id: { type: integer, format: int64, minimum: 1 }
         jobId: { type: integer, format: int64, minimum: 1 }
         analysisId: { type: integer, format: int64, minimum: 1 }
-        angleId: { type: string }
+        angleId:
+          type: string
+          description: 分析角度 ID；SOURCE 表示忠实复刻模式。
         audience: { type: string, minLength: 1, maxLength: 100 }
         tone: { type: string, enum: [professional, plain, analytical, storytelling, warm] }
         targetWords: { type: integer, minimum: 300, maximum: 5000 }

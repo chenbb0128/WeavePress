@@ -4,6 +4,8 @@ import { requestClient } from '#/api/request';
 
 export type AIJobStatus = 'completed' | 'failed' | 'queued' | 'running';
 export type AIJobType = 'analysis' | 'generation';
+
+export const FAITHFUL_SOURCE_ANGLE_ID = 'SOURCE';
 export type AITone =
   | 'analytical'
   | 'plain'

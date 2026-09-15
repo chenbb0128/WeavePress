@@ -75,6 +75,9 @@ func ValidateGenerationRequest(analysis Analysis, params GenerationParams) error
 	if err := ValidateGenerationParams(params); err != nil {
 		return err
 	}
+	if params.AngleID == FaithfulSourceAngleID {
+		return nil
+	}
 	for _, angle := range analysis.Angles {
 		if angle.ID == params.AngleID {
 			return nil

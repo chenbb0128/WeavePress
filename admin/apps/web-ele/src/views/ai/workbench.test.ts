@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('#/api', () => ({
+  FAITHFUL_SOURCE_ANGLE_ID: 'SOURCE',
   createDraftApi: mocks.createDraftApi,
   getAIAnalysesApi: mocks.getAIAnalysesApi,
   getAIAnalysisApi: mocks.getAIAnalysisApi,
@@ -289,6 +290,7 @@ describe('article detail AI entry', () => {
 
     const button = buttonByText(host, 'AI 分析');
     expect(button?.disabled).toBe(false);
+    expect(button?.textContent).toContain('AI 分析/复刻');
     button?.click();
     expect(mocks.push).toHaveBeenCalledWith('/ai/articles/7');
   });
@@ -356,6 +358,40 @@ describe('ai workbench', () => {
 
     expect(mocks.getArticleApi).toHaveBeenCalledWith(7);
     expect(host.textContent).not.toContain('文章 ID 无效');
+  });
+
+  it('defaults completed analysis to faithful replication', async () => {
+    const existing = analysis();
+    mocks.getAIAnalysesApi.mockResolvedValue({
+      items: [existing],
+      page: 1,
+      pageSize: 20,
+      total: 1,
+    });
+    mocks.getAIAnalysisApi.mockResolvedValue(existing);
+    mocks.startAIGenerationApi.mockReturnValue(new Promise(() => {}));
+
+    const { host } = mountComponent(AIWorkbench);
+    await settle();
+
+    expect(host.textContent).toContain('忠实复刻（推荐）');
+    expect(host.textContent).toContain('保持原文总体意思');
+    const audienceInput = host.querySelector<HTMLInputElement>(
+      'input[placeholder="例如：产品经理"]',
+    );
+    expect(audienceInput).toBeTruthy();
+    if (!audienceInput) return;
+    audienceInput.value = '原文目标读者';
+    audienceInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+
+    buttonByText(host, 'AI 复刻并生成稿件')?.click();
+    await settle();
+
+    expect(mocks.startAIGenerationApi).toHaveBeenCalledWith(
+      existing.id,
+      expect.objectContaining({ angleId: 'SOURCE' }),
+    );
   });
 
   it('unlocks generation and ignores its stale result after switching analysis', async () => {

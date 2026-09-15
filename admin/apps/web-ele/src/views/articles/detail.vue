@@ -118,7 +118,7 @@ async function createDraft() {
             >
               生成微信稿件 </ElButton
             ><ElButton :disabled="Boolean(aiDisabledReason)" @click="analyze">
-              AI 分析 </ElButton
+              AI 分析/复刻 </ElButton
             ><ElButton tag="a" :href="article.originalUrl" target="_blank">
               原文 </ElButton
             ><ElButton

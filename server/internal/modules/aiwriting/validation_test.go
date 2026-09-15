@@ -123,6 +123,15 @@ func TestValidateGenerationRequestAcceptsAnalysisAngle(t *testing.T) {
 	}
 }
 
+func TestValidateGenerationRequestAcceptsFaithfulSourceAngle(t *testing.T) {
+	params := validGenerationParams()
+	params.AngleID = "SOURCE"
+
+	if err := ValidateGenerationRequest(Analysis{AnalysisOutput: validAnalysisOutput()}, params); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestValidateAnalysisRejectsUnknownSourceBlock(t *testing.T) {
 	source := analysisSource()
 	output := validAnalysisOutput()

@@ -39,6 +39,7 @@ import {
 } from 'element-plus';
 
 import {
+  FAITHFUL_SOURCE_ANGLE_ID,
   getAIAnalysesApi,
   getAIAnalysisApi,
   getAIGenerationApi,
@@ -96,6 +97,17 @@ const toneOptions: { label: string; value: AITone }[] = [
   { label: '温暖', value: 'warm' },
 ];
 
+const faithfulReplicationAngle = {
+  id: FAITHFUL_SOURCE_ANGLE_ID,
+  outline: [
+    '保留核心主题、事实和总体结论',
+    '重新组织标题、文章结构和表达',
+    '不添加来源之外的新事实',
+  ],
+  thesis: '保持原文总体意思，用新的标题、结构和措辞生成一篇可编辑新稿。',
+  title: '忠实复刻（推荐）',
+};
+
 let destroyed = false;
 let loadEpoch = 0;
 let selectionEpoch = 0;
@@ -119,7 +131,10 @@ const assetURLs = computed(
     ),
 );
 const analysisAngles = computed(
-  () => selectedAnalysis.value?.angles.slice(0, 3) ?? [],
+  () => [
+    faithfulReplicationAngle,
+    ...(selectedAnalysis.value?.angles.slice(0, 3) ?? []),
+  ],
 );
 const analysisPolling = computed(() =>
   analysisJob.value ? shouldPoll(analysisJob.value.status) : false,
@@ -144,6 +159,9 @@ const generationAllowed = computed(
 );
 const generationButtonLabel = computed(() => {
   if (generationRequestError.value) return '重试提交';
+  if (generationForm.angleId === FAITHFUL_SOURCE_ANGLE_ID) {
+    return generation.value ? '重新生成 AI 复刻稿' : 'AI 复刻并生成稿件';
+  }
   return generation.value ? '重新生成' : '生成稿件';
 });
 
@@ -239,7 +257,7 @@ function resumeGenerationPolling() {
 function applyAnalysis(value: AIAnalysis) {
   selectedAnalysis.value = value;
   selectedAnalysisId.value = value.id;
-  generationForm.angleId = value.angles[0]?.id ?? '';
+  generationForm.angleId = FAITHFUL_SOURCE_ANGLE_ID;
 }
 
 async function loadAnalysis(id: number) {
@@ -582,7 +600,7 @@ onBeforeUnmount(() => {
             </div>
             <h1 class="text-2xl font-semibold">{{ article.title }}</h1>
             <p class="text-muted-foreground mt-2">
-              先核对资料包，再选择角度生成待审核稿件。
+              先核对资料包，再选择忠实复刻或采编角度生成待审核稿件。
             </p>
           </div>
           <div class="flex flex-wrap gap-2">
@@ -764,7 +782,9 @@ onBeforeUnmount(() => {
           </ElCard>
 
           <ElCard shadow="never">
-            <template #header><strong>角度（3 个）</strong></template>
+            <template #header>
+              <strong>生成方式（忠实复刻 + 3 个采编角度）</strong>
+            </template>
             <ElRadioGroup
               v-model="generationForm.angleId"
               class="w-full"
@@ -792,7 +812,7 @@ onBeforeUnmount(() => {
         </div>
 
         <ElCard shadow="never">
-          <template #header><strong>生成稿件</strong></template>
+          <template #header><strong>AI 复刻与稿件生成</strong></template>
           <ElForm label-position="top">
             <div class="grid gap-3 md:grid-cols-3">
               <ElFormItem label="目标读者">
