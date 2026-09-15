@@ -18,6 +18,7 @@ var (
 	ErrInvalidSettings       = errors.New("AI settings are invalid")
 	ErrNotConfigured         = errors.New("AI is not configured")
 	ErrProviderNotConfigured = errors.New("AI provider is not configured")
+	ErrSettingsConflict      = errors.New("AI settings changed concurrently")
 	ErrCipherUnavailable     = errors.New("AI settings cipher is unavailable")
 	ErrDecryptFailed         = errors.New("AI provider credential could not be decrypted")
 )
@@ -94,12 +95,15 @@ type StoredProvider struct {
 }
 
 type StoreUpdate struct {
-	Enabled        bool
-	ActiveProvider string
-	Provider       string
-	BaseURL        string
-	Model          string
-	APICiphertext  []byte
-	PreserveKey    bool
-	UpdatedBy      uint64
+	Enabled               bool
+	ActiveProvider        string
+	Provider              string
+	BaseURL               string
+	Model                 string
+	APICiphertext         []byte
+	PreserveKey           bool
+	CompareCredential     bool
+	ExpectedBaseURL       string
+	ExpectedAPICiphertext []byte
+	UpdatedBy             uint64
 }

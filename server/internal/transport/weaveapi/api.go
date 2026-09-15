@@ -933,6 +933,8 @@ func (a *API) writeError(c *gin.Context, err error) {
 		response.Error(c, response.NotFound())
 	case errors.Is(err, aisettings.ErrInvalidSettings):
 		response.Error(c, response.BadRequest("AI 设置不合法", err))
+	case errors.Is(err, aisettings.ErrSettingsConflict):
+		response.Error(c, response.Conflict("AI 设置已被其他请求修改，请刷新后重试", err))
 	case errors.Is(err, aiwriting.ErrNotConfigured):
 		response.Error(c, response.DependencyUnavailable(err))
 	case errors.Is(err, aiwriting.ErrInputTooLarge):

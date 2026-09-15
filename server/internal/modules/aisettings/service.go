@@ -76,36 +76,77 @@ func (s *Service) Update(ctx context.Context, userID uint64, input UpdateInput) 
 	baseURL := definition.BaseURL
 	if definition.BaseURLEditable {
 		baseURL = strings.TrimSpace(input.BaseURL)
-		if baseURL == "" || s.validateURL == nil || s.validateURL(ctx, baseURL) != nil {
+		if baseURL == "" || s.validateURL == nil {
 			return SettingsView{}, fmt.Errorf("%w: base URL is invalid", ErrInvalidSettings)
 		}
 	}
 	apiKey := strings.TrimSpace(input.APIKey)
 	preserveKey := apiKey == ""
+	compareCredential := false
+	var expectedBaseURL string
+	var expectedCiphertext []byte
+	var stored StoredProvider
+	storedFound := false
+	if preserveKey {
+		var err error
+		stored, err = s.store.GetProvider(ctx, definition.ID)
+		if err != nil && !errors.Is(err, ErrProviderNotConfigured) {
+			return SettingsView{}, err
+		}
+		storedFound = err == nil
+		if storedFound {
+			compareCredential = true
+			expectedBaseURL = stored.BaseURL
+			expectedCiphertext = append([]byte(nil), stored.APICiphertext...)
+		}
+	}
+	if definition.BaseURLEditable {
+		emergencyDisable := !input.Enabled && preserveKey && storedFound && stored.BaseURL == baseURL
+		if !emergencyDisable && s.validateURL(ctx, baseURL) != nil {
+			return SettingsView{}, fmt.Errorf("%w: base URL is invalid", ErrInvalidSettings)
+		}
+	}
 	var ciphertext []byte
 	if !preserveKey {
 		if len(apiKey) > 2048 {
 			return SettingsView{}, fmt.Errorf("%w: API key is too long", ErrInvalidSettings)
 		}
 		var err error
-		ciphertext, err = s.cipher.Encrypt([]byte(apiKey))
+		ciphertext, err = s.cipher.Encrypt(definition.ID, baseURL, []byte(apiKey))
 		if err != nil {
 			return SettingsView{}, err
 		}
 	}
-	if input.Enabled && preserveKey {
-		stored, err := s.store.GetProvider(ctx, definition.ID)
-		if err != nil || len(stored.APICiphertext) == 0 {
-			return SettingsView{}, fmt.Errorf("%w: API key is required", ErrInvalidSettings)
-		}
-		if _, err := s.cipher.Decrypt(stored.APICiphertext); err != nil {
-			return SettingsView{}, err
+	if preserveKey {
+		if !storedFound {
+			if input.Enabled {
+				return SettingsView{}, fmt.Errorf("%w: API key is required", ErrInvalidSettings)
+			}
+		} else if len(stored.APICiphertext) == 0 {
+			if input.Enabled {
+				return SettingsView{}, fmt.Errorf("%w: API key is required", ErrInvalidSettings)
+			}
+		} else if input.Enabled || stored.BaseURL != baseURL {
+			plain, err := s.cipher.Decrypt(stored.Provider, stored.BaseURL, stored.APICiphertext)
+			if err != nil {
+				return SettingsView{}, err
+			}
+			defer clear(plain)
+			if stored.BaseURL != baseURL {
+				ciphertext, err = s.cipher.Encrypt(definition.ID, baseURL, plain)
+				if err != nil {
+					return SettingsView{}, err
+				}
+				preserveKey = false
+			}
 		}
 	}
 	if err := s.store.Update(ctx, StoreUpdate{
 		Enabled: input.Enabled, ActiveProvider: definition.ID, Provider: definition.ID,
 		BaseURL: baseURL, Model: model, APICiphertext: ciphertext,
-		PreserveKey: preserveKey, UpdatedBy: userID,
+		PreserveKey: preserveKey, CompareCredential: compareCredential,
+		ExpectedBaseURL: expectedBaseURL, ExpectedAPICiphertext: expectedCiphertext,
+		UpdatedBy: userID,
 	}); err != nil {
 		return SettingsView{}, err
 	}
@@ -127,7 +168,7 @@ func (s *Service) Active(ctx context.Context) (RuntimeConfig, error) {
 		}
 		return RuntimeConfig{}, err
 	}
-	return s.runtimeConfig(provider, provider.Model)
+	return s.runtimeConfig(ctx, provider, provider.Model)
 }
 
 func (s *Service) Status(ctx context.Context) (RuntimeStatus, error) {
@@ -164,10 +205,10 @@ func (s *Service) ForJob(ctx context.Context, providerID, model string) (Runtime
 		}
 		return RuntimeConfig{}, err
 	}
-	return s.runtimeConfig(provider, model)
+	return s.runtimeConfig(ctx, provider, model)
 }
 
-func (s *Service) runtimeConfig(provider StoredProvider, model string) (RuntimeConfig, error) {
+func (s *Service) runtimeConfig(ctx context.Context, provider StoredProvider, model string) (RuntimeConfig, error) {
 	definition, ok := providerDefinition(provider.Provider)
 	if !ok || strings.TrimSpace(model) == "" || strings.TrimSpace(provider.BaseURL) == "" || len(provider.APICiphertext) == 0 {
 		return RuntimeConfig{}, ErrNotConfigured
@@ -175,7 +216,17 @@ func (s *Service) runtimeConfig(provider StoredProvider, model string) (RuntimeC
 	if !definition.BaseURLEditable && provider.BaseURL != definition.BaseURL {
 		return RuntimeConfig{}, ErrNotConfigured
 	}
-	plain, err := s.cipher.Decrypt(provider.APICiphertext)
+	if s.validateURL == nil {
+		return RuntimeConfig{}, ErrNotConfigured
+	}
+	if err := s.validateURL(ctx, provider.BaseURL); err != nil {
+		var unsafe interface{ UnsafeURL() bool }
+		if errors.As(err, &unsafe) && unsafe.UnsafeURL() {
+			return RuntimeConfig{}, ErrNotConfigured
+		}
+		return RuntimeConfig{}, err
+	}
+	plain, err := s.cipher.Decrypt(provider.Provider, provider.BaseURL, provider.APICiphertext)
 	if err != nil {
 		return RuntimeConfig{}, err
 	}

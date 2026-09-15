@@ -9,10 +9,16 @@ import (
 )
 
 type fakeStore struct {
-	runtime   StoredRuntime
-	providers map[string]StoredProvider
-	update    StoreUpdate
+	runtime      StoredRuntime
+	providers    map[string]StoredProvider
+	update       StoreUpdate
+	beforeUpdate func(*fakeStore)
 }
+
+type unsafeValidationError struct{ message string }
+
+func (e *unsafeValidationError) Error() string   { return e.message }
+func (e *unsafeValidationError) UnsafeURL() bool { return true }
 
 func (s *fakeStore) GetRuntime(context.Context) (StoredRuntime, error) {
 	return s.runtime, nil
@@ -37,6 +43,17 @@ func (s *fakeStore) GetProvider(_ context.Context, provider string) (StoredProvi
 }
 
 func (s *fakeStore) Update(_ context.Context, input StoreUpdate) error {
+	if s.beforeUpdate != nil {
+		beforeUpdate := s.beforeUpdate
+		s.beforeUpdate = nil
+		beforeUpdate(s)
+	}
+	if input.CompareCredential {
+		current := s.providers[input.Provider]
+		if current.BaseURL != input.ExpectedBaseURL || !bytes.Equal(current.APICiphertext, input.ExpectedAPICiphertext) {
+			return ErrSettingsConflict
+		}
+	}
 	s.update = input
 	provider := s.providers[input.Provider]
 	provider.Provider = input.Provider
@@ -64,7 +81,7 @@ func TestViewReturnsCatalogWithoutAPIKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	secret, err := cipher.Encrypt([]byte("api-key-sensitive"))
+	secret, err := cipher.Encrypt(ProviderZhipu, zhipuBaseURL, []byte("api-key-sensitive"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +111,7 @@ func TestUpdateEmptyKeyPreservesConfiguredKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	existing, err := cipher.Encrypt([]byte("existing-key"))
+	existing, err := cipher.Encrypt(ProviderZhipu, zhipuBaseURL, []byte("existing-key"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +129,127 @@ func TestUpdateEmptyKeyPreservesConfiguredKey(t *testing.T) {
 	}
 	if !store.update.PreserveKey || store.update.APICiphertext != nil {
 		t.Fatalf("update = %#v", store.update)
+	}
+}
+
+func TestUpdateReencryptsPreservedKeyWhenBaseURLChanges(t *testing.T) {
+	const oldBaseURL = "https://old.example/v1"
+	const newBaseURL = "https://new.example/v1"
+	cipher, err := NewCipher(strings.Repeat("m", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing, err := cipher.Encrypt(ProviderOpenAICompatible, oldBaseURL, []byte("existing-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{
+		runtime: StoredRuntime{Enabled: true, ActiveProvider: ProviderOpenAICompatible},
+		providers: map[string]StoredProvider{
+			ProviderOpenAICompatible: {
+				Provider: ProviderOpenAICompatible, BaseURL: oldBaseURL,
+				Model: "old-model", APICiphertext: existing,
+			},
+		},
+	}
+	service := newTestService(t, store)
+	_, err = service.Update(context.Background(), 7, UpdateInput{
+		Enabled: true, ActiveProvider: ProviderOpenAICompatible,
+		BaseURL: newBaseURL, Model: "new-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := service.ForJob(context.Background(), ProviderOpenAICompatible, "recorded-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.BaseURL != newBaseURL || runtime.APIKey != "existing-key" {
+		t.Fatalf("runtime = %#v", runtime)
+	}
+}
+
+func TestUpdateBaseURLDoesNotOverwriteConcurrentKeyRotation(t *testing.T) {
+	const oldBaseURL = "https://old.example/v1"
+	const newBaseURL = "https://new.example/v1"
+	cipher, err := NewCipher(strings.Repeat("m", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCiphertext, err := cipher.Encrypt(ProviderOpenAICompatible, oldBaseURL, []byte("old-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newCiphertext, err := cipher.Encrypt(ProviderOpenAICompatible, oldBaseURL, []byte("rotated-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{
+		runtime: StoredRuntime{Enabled: true, ActiveProvider: ProviderOpenAICompatible},
+		providers: map[string]StoredProvider{
+			ProviderOpenAICompatible: {
+				Provider: ProviderOpenAICompatible, BaseURL: oldBaseURL,
+				Model: "old-model", APICiphertext: oldCiphertext,
+			},
+		},
+		beforeUpdate: func(store *fakeStore) {
+			provider := store.providers[ProviderOpenAICompatible]
+			provider.APICiphertext = newCiphertext
+			store.providers[ProviderOpenAICompatible] = provider
+		},
+	}
+	_, err = newTestService(t, store).Update(context.Background(), 7, UpdateInput{
+		Enabled: true, ActiveProvider: ProviderOpenAICompatible,
+		BaseURL: newBaseURL, Model: "new-model",
+	})
+	if !errors.Is(err, ErrSettingsConflict) {
+		t.Fatalf("Update() error = %v, want %v", err, ErrSettingsConflict)
+	}
+	if !bytes.Equal(store.providers[ProviderOpenAICompatible].APICiphertext, newCiphertext) {
+		t.Fatal("concurrent key rotation was overwritten")
+	}
+}
+
+func TestUpdatePreservedKeyDoesNotRestoreStaleBaseURL(t *testing.T) {
+	const originalBaseURL = "https://original.example/v1"
+	const concurrentBaseURL = "https://concurrent.example/v1"
+	cipher, err := NewCipher(strings.Repeat("m", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalCiphertext, err := cipher.Encrypt(ProviderOpenAICompatible, originalBaseURL, []byte("original-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	concurrentCiphertext, err := cipher.Encrypt(ProviderOpenAICompatible, concurrentBaseURL, []byte("concurrent-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{
+		runtime: StoredRuntime{Enabled: true, ActiveProvider: ProviderOpenAICompatible},
+		providers: map[string]StoredProvider{
+			ProviderOpenAICompatible: {
+				Provider: ProviderOpenAICompatible, BaseURL: originalBaseURL,
+				Model: "original-model", APICiphertext: originalCiphertext,
+			},
+		},
+		beforeUpdate: func(store *fakeStore) {
+			provider := store.providers[ProviderOpenAICompatible]
+			provider.BaseURL = concurrentBaseURL
+			provider.APICiphertext = concurrentCiphertext
+			store.providers[ProviderOpenAICompatible] = provider
+		},
+	}
+	_, err = newTestService(t, store).Update(context.Background(), 7, UpdateInput{
+		Enabled: true, ActiveProvider: ProviderOpenAICompatible,
+		BaseURL: originalBaseURL, Model: "original-model",
+	})
+	if !errors.Is(err, ErrSettingsConflict) {
+		t.Fatalf("Update() error = %v, want %v", err, ErrSettingsConflict)
+	}
+	saved := store.providers[ProviderOpenAICompatible]
+	if saved.BaseURL != concurrentBaseURL || !bytes.Equal(saved.APICiphertext, concurrentCiphertext) {
+		t.Fatalf("concurrent credential pair was split: %#v", saved)
 	}
 }
 
@@ -145,12 +283,62 @@ func TestUpdateRequiresKeyBeforeEnabling(t *testing.T) {
 	}
 }
 
+func TestUpdateCanDisableAIWithoutDecryptingStoredCredential(t *testing.T) {
+	store := &fakeStore{
+		runtime: StoredRuntime{Enabled: true, ActiveProvider: ProviderOpenAI},
+		providers: map[string]StoredProvider{
+			ProviderOpenAI: {
+				Provider: ProviderOpenAI, BaseURL: openAIBaseURL,
+				Model: "gpt-5-mini", APICiphertext: []byte("damaged-ciphertext"),
+			},
+		},
+	}
+	_, err := newTestService(t, store).Update(context.Background(), 7, UpdateInput{
+		Enabled: false, ActiveProvider: ProviderOpenAI, Model: "gpt-5-mini",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.runtime.Enabled || !store.update.PreserveKey {
+		t.Fatalf("runtime = %#v update = %#v", store.runtime, store.update)
+	}
+}
+
+func TestUpdateCanDisableCustomProviderDuringDNSFailure(t *testing.T) {
+	const baseURL = "https://llm.example.com/v1"
+	store := &fakeStore{
+		runtime: StoredRuntime{Enabled: true, ActiveProvider: ProviderOpenAICompatible},
+		providers: map[string]StoredProvider{
+			ProviderOpenAICompatible: {
+				Provider: ProviderOpenAICompatible, BaseURL: baseURL,
+				Model: "custom-model", APICiphertext: []byte("damaged-ciphertext"),
+			},
+		},
+	}
+	service, err := New(store, strings.Repeat("m", 32), func(context.Context, string) error {
+		return errors.New("DNS unavailable")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Update(context.Background(), 7, UpdateInput{
+		Enabled: false, ActiveProvider: ProviderOpenAICompatible,
+		BaseURL: baseURL, Model: "custom-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.runtime.Enabled || !store.update.PreserveKey {
+		t.Fatalf("runtime = %#v update = %#v", store.runtime, store.update)
+	}
+}
+
 func TestForJobUsesRecordedModelAndLatestKey(t *testing.T) {
 	cipher, err := NewCipher(strings.Repeat("m", 32))
 	if err != nil {
 		t.Fatal(err)
 	}
-	secret, err := cipher.Encrypt([]byte("latest-key"))
+	secret, err := cipher.Encrypt(ProviderOpenAI, openAIBaseURL, []byte("latest-key"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +354,72 @@ func TestForJobUsesRecordedModelAndLatestKey(t *testing.T) {
 	}
 	if runtime.Model != "recorded-model" || runtime.APIKey != "latest-key" || runtime.Provider != ProviderOpenAI {
 		t.Fatalf("runtime = %#v", runtime)
+	}
+}
+
+func TestForJobRejectsStoredBaseURLThatFailsRuntimeValidation(t *testing.T) {
+	const unsafeBaseURL = "http://93.184.216.34:8080/v1"
+	cipher, err := NewCipher(strings.Repeat("m", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := cipher.Encrypt(ProviderOpenAICompatible, unsafeBaseURL, []byte("sensitive-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{
+		runtime: StoredRuntime{Enabled: true, ActiveProvider: ProviderOpenAICompatible},
+		providers: map[string]StoredProvider{
+			ProviderOpenAICompatible: {
+				Provider: ProviderOpenAICompatible, BaseURL: unsafeBaseURL,
+				Model: "custom-model", APICiphertext: secret,
+			},
+		},
+	}
+	service, err := New(store, strings.Repeat("m", 32), func(_ context.Context, raw string) error {
+		if strings.HasPrefix(raw, "https://") {
+			return nil
+		}
+		return &unsafeValidationError{message: "HTTPS required"}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.ForJob(context.Background(), ProviderOpenAICompatible, "recorded-model")
+	if !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("ForJob() error = %v, want %v", err, ErrNotConfigured)
+	}
+}
+
+func TestForJobPropagatesTransientURLValidationFailure(t *testing.T) {
+	const baseURL = "https://llm.example.com/v1"
+	dnsErr := errors.New("DNS temporarily unavailable")
+	cipher, err := NewCipher(strings.Repeat("m", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := cipher.Encrypt(ProviderOpenAICompatible, baseURL, []byte("sensitive-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{
+		runtime: StoredRuntime{Enabled: true, ActiveProvider: ProviderOpenAICompatible},
+		providers: map[string]StoredProvider{
+			ProviderOpenAICompatible: {
+				Provider: ProviderOpenAICompatible, BaseURL: baseURL,
+				Model: "custom-model", APICiphertext: secret,
+			},
+		},
+	}
+	service, err := New(store, strings.Repeat("m", 32), func(context.Context, string) error {
+		return dnsErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.ForJob(context.Background(), ProviderOpenAICompatible, "recorded-model")
+	if !errors.Is(err, dnsErr) {
+		t.Fatalf("ForJob() error = %v, want resolver error", err)
 	}
 }
 

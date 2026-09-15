@@ -647,6 +647,8 @@ func classifyAIError(err error) (string, string, bool) {
 	switch {
 	case errors.Is(err, ErrNotConfigured):
 		return "AI_NOT_CONFIGURED", "AI 服务尚未配置", false
+	case errors.Is(err, aisettings.ErrDecryptFailed), errors.Is(err, aisettings.ErrCipherUnavailable):
+		return "AI_SETTINGS_INVALID", "AI 服务凭据无法读取，请管理员重新保存配置", false
 	case errors.Is(err, ErrInputTooLarge):
 		return "AI_INPUT_TOO_LARGE", "来源文章超过 AI 输入长度限制", false
 	case errors.Is(err, ErrArticleNotReady):

@@ -76,6 +76,14 @@ func TestUpdateAISettingsUsesAuthenticatedAdminAndStrictJSON(t *testing.T) {
 	assertStatus(t, recorder, http.StatusUnprocessableEntity)
 }
 
+func TestUpdateAISettingsReturnsConflictForConcurrentChange(t *testing.T) {
+	api, token, settings := newAISettingsTestAPI(t, workspace.RoleAdmin)
+	settings.err = aisettings.ErrSettingsConflict
+	body := `{"enabled":true,"activeProvider":"openai","baseUrl":"","model":"gpt-5-mini","apiKey":""}`
+	recorder := performRequest(t, api, http.MethodPut, "/api/ai/settings", body, token)
+	assertStatus(t, recorder, http.StatusConflict)
+}
+
 func newAISettingsTestAPI(t *testing.T, role workspace.Role) (*API, string, *fakeAISettingsService) {
 	t.Helper()
 	const secret = "test-jwt-secret-that-is-at-least-32-characters"

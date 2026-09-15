@@ -65,17 +65,40 @@ func (s *AISettingsStore) Update(ctx context.Context, input aisettings.StoreUpda
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO ai_provider_settings
-		(provider, base_url, model, api_key_ciphertext, updated_by)
-		VALUES (?, ?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE
-		base_url = VALUES(base_url), model = VALUES(model),
-		api_key_ciphertext = IF(?, api_key_ciphertext, VALUES(api_key_ciphertext)),
-		updated_by = VALUES(updated_by)`,
-		input.Provider, input.BaseURL, input.Model, nullableBytes(input.APICiphertext), input.UpdatedBy, input.PreserveKey,
-	)
-	if err != nil {
-		return err
+	if input.CompareCredential {
+		var matched int
+		matchErr := tx.QueryRowContext(ctx, `SELECT 1 FROM ai_provider_settings
+			WHERE provider = ? AND base_url = ? AND api_key_ciphertext <=> ?
+			FOR UPDATE`, input.Provider, input.ExpectedBaseURL, input.ExpectedAPICiphertext).Scan(&matched)
+		if errors.Is(matchErr, sql.ErrNoRows) {
+			return aisettings.ErrSettingsConflict
+		}
+		if matchErr != nil {
+			return matchErr
+		}
+		_, updateErr := tx.ExecContext(ctx, `UPDATE ai_provider_settings
+			SET base_url = ?, model = ?,
+			api_key_ciphertext = IF(?, api_key_ciphertext, ?), updated_by = ?
+			WHERE provider = ?`,
+			input.BaseURL, input.Model, input.PreserveKey, nullableBytes(input.APICiphertext), input.UpdatedBy,
+			input.Provider,
+		)
+		if updateErr != nil {
+			return updateErr
+		}
+	} else {
+		_, err = tx.ExecContext(ctx, `INSERT INTO ai_provider_settings
+			(provider, base_url, model, api_key_ciphertext, updated_by)
+			VALUES (?, ?, ?, ?, ?)
+			ON DUPLICATE KEY UPDATE
+			base_url = VALUES(base_url), model = VALUES(model),
+			api_key_ciphertext = IF(?, api_key_ciphertext, VALUES(api_key_ciphertext)),
+			updated_by = VALUES(updated_by)`,
+			input.Provider, input.BaseURL, input.Model, nullableBytes(input.APICiphertext), input.UpdatedBy, input.PreserveKey,
+		)
+		if err != nil {
+			return err
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE ai_runtime_settings SET enabled = ?, active_provider = ?, updated_by = ? WHERE id = 1`, input.Enabled, input.ActiveProvider, input.UpdatedBy); err != nil {
 		return err

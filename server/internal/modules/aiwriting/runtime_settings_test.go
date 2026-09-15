@@ -87,6 +87,28 @@ func TestHandleAnalyzeTaskFailsPermanentlyWhenRuntimeDisabled(t *testing.T) {
 	}
 }
 
+func TestHandleAnalyzeTaskFailsPermanentlyWhenCredentialCannotBeUsed(t *testing.T) {
+	for _, settingsErr := range []error{aisettings.ErrDecryptFailed, aisettings.ErrCipherUnavailable} {
+		t.Run(settingsErr.Error(), func(t *testing.T) {
+			store := &fakeAIStore{job: Job{
+				ID: 9, Type: JobTypeAnalysis, ArticleID: 12, Status: JobQueued,
+				Provider: aisettings.ProviderOpenAI, Model: "gpt-5",
+			}}
+			settings := &fakeRuntimeSettings{forJobErr: settingsErr}
+			service := NewWithSettings(store, &fakeAIArticles{article: readyAIArticle()}, nil, settings, func(aisettings.RuntimeConfig) llm.Provider {
+				return &fakeAIProvider{}
+			}, DefaultLimits())
+			err := service.HandleAnalyzeTask(context.Background(), asynq.NewTask(TaskAnalyze, []byte(`{"jobId":9}`)))
+			if err == nil || len(store.failures) != 1 {
+				t.Fatalf("error = %v failures = %#v", err, store.failures)
+			}
+			if store.failures[0].Code != "AI_SETTINGS_INVALID" || store.failures[0].Retryable {
+				t.Fatalf("failure = %#v", store.failures[0])
+			}
+		})
+	}
+}
+
 func TestStatusReadsRuntimeSettings(t *testing.T) {
 	settings := &fakeRuntimeSettings{status: aisettings.RuntimeStatus{Enabled: true, Provider: aisettings.ProviderOpenAI, Model: "gpt-5-mini"}}
 	service := NewWithSettings(&fakeAIStore{}, &fakeAIArticles{}, nil, settings, nil, DefaultLimits())

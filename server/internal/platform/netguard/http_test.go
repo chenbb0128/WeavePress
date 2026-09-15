@@ -15,6 +15,12 @@ type fakeResolver struct {
 	err       error
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
 func (r *fakeResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
 	if r.err != nil {
 		return nil, r.err
@@ -33,8 +39,10 @@ func TestValidateHTTPSURLAllowsPublicHTTPS(t *testing.T) {
 
 func TestValidateHTTPSURLRejectsUnsafeTargets(t *testing.T) {
 	resolver := &fakeResolver{addresses: map[string][]netip.Addr{
-		"private.example": {netip.MustParseAddr("10.0.0.8")},
-		"public.example":  {netip.MustParseAddr("93.184.216.34")},
+		"private.example":    {netip.MustParseAddr("10.0.0.8")},
+		"public.example":     {netip.MustParseAddr("93.184.216.34")},
+		"special.example":    {netip.MustParseAddr("64:ff9b:1::c0a8:1")},
+		"site-local.example": {netip.MustParseAddr("fec0::1")},
 	}}
 	values := []string{
 		"http://public.example/v1",
@@ -45,7 +53,16 @@ func TestValidateHTTPSURLRejectsUnsafeTargets(t *testing.T) {
 		"https://localhost/v1",
 		"https://127.0.0.1/v1",
 		"https://169.254.169.254/latest/meta-data",
+		"https://192.31.196.1/v1",
+		"https://[64:ff9b::c0a8:1]/v1",
+		"https://[64:ff9b:1::c0a8:1]/v1",
+		"https://[100::1]/v1",
+		"https://[2001:2::1]/v1",
+		"https://[2002:c0a8:1::]/v1",
+		"https://[fec0::1]/v1",
 		"https://private.example/v1",
+		"https://site-local.example/v1",
+		"https://special.example/v1",
 	}
 	for _, raw := range values {
 		t.Run(raw, func(t *testing.T) {
@@ -64,13 +81,39 @@ func TestHTTPClientRejectsRedirects(t *testing.T) {
 	}
 }
 
+func TestGuardedTransportRejectsUnsafeURLBeforeSendingRequest(t *testing.T) {
+	called := false
+	transport := newGuardedTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return nil, errors.New("request was sent")
+	}), &fakeResolver{addresses: map[string][]netip.Addr{
+		"public.example": {netip.MustParseAddr("93.184.216.34")},
+	}})
+	request, err := http.NewRequest(http.MethodPost, "http://public.example/v1/chat/completions", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer sensitive-key")
+	_, err = transport.RoundTrip(request)
+	if err == nil {
+		t.Fatal("RoundTrip() accepted an unsafe URL")
+	}
+	if called {
+		t.Fatal("unsafe request reached the underlying transport")
+	}
+}
+
 func TestDialerRevalidatesDNSAndRejectsPrivateAddress(t *testing.T) {
 	client := NewHTTPClient(time.Second, &fakeResolver{addresses: map[string][]netip.Addr{
 		"rebind.example": {netip.MustParseAddr("127.0.0.1")},
 	}})
-	transport, ok := client.Transport.(*http.Transport)
+	guard, ok := client.Transport.(*guardedTransport)
 	if !ok {
 		t.Fatalf("transport type = %T", client.Transport)
+	}
+	transport, ok := guard.base.(*http.Transport)
+	if !ok {
+		t.Fatalf("base transport type = %T", guard.base)
 	}
 	_, err := transport.DialContext(context.Background(), "tcp", "rebind.example:443")
 	if err == nil {
@@ -83,6 +126,18 @@ func TestValidateHTTPSURLReturnsDNSFailure(t *testing.T) {
 	err := ValidateHTTPSURL(context.Background(), &fakeResolver{err: want}, "https://public.example/v1")
 	if err == nil || !errors.Is(err, want) {
 		t.Fatalf("ValidateHTTPSURL() error = %v", err)
+	}
+}
+
+func TestValidateHTTPSURLClassifiesPolicyButNotResolverFailure(t *testing.T) {
+	policyErr := ValidateHTTPSURL(context.Background(), &fakeResolver{}, "http://public.example/v1")
+	if !IsUnsafeURL(policyErr) {
+		t.Fatalf("policy error was not classified as unsafe: %v", policyErr)
+	}
+	dnsErr := errors.New("DNS temporarily unavailable")
+	resolveErr := ValidateHTTPSURL(context.Background(), &fakeResolver{err: dnsErr}, "https://public.example/v1")
+	if IsUnsafeURL(resolveErr) || !errors.Is(resolveErr, dnsErr) {
+		t.Fatalf("resolver error classification = %v", resolveErr)
 	}
 }
 
