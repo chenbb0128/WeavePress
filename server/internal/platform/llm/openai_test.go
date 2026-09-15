@@ -13,6 +13,15 @@ import (
 	"time"
 )
 
+func newTestOpenAICompatible(baseURL, apiKey, model string, timeout time.Duration) Provider {
+	return newOpenAICompatibleWithClient(baseURL, apiKey, model, &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	})
+}
+
 func TestOpenAIChatCompletionsEndpointSupportsVersionedBaseURL(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -91,7 +100,7 @@ func TestOpenAICompleteMapsRequestAndUsage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewOpenAICompatible(" "+server.URL+"/proxy/ ", "test-key", "test-model", time.Second)
+	provider := newTestOpenAICompatible(" "+server.URL+"/proxy/ ", "test-key", "test-model", time.Second)
 	got, err := provider.Complete(context.Background(), Request{
 		Messages:    []Message{{Role: "system", Content: "rules"}},
 		MaxTokens:   6000,
@@ -131,7 +140,7 @@ func TestOpenAICompleteMapsHTTPError(t *testing.T) {
 			}))
 			defer server.Close()
 
-			provider := NewOpenAICompatible(server.URL, "test-key", "test-model", time.Second)
+			provider := newTestOpenAICompatible(server.URL, "test-key", "test-model", time.Second)
 			_, err := provider.Complete(context.Background(), Request{})
 			assertProviderError(t, err, tt.code, tt.retryable)
 		})
@@ -172,7 +181,7 @@ func TestOpenAICompleteMapsTimeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewOpenAICompatible(server.URL, "test-key", "test-model", 20*time.Millisecond)
+	provider := newTestOpenAICompatible(server.URL, "test-key", "test-model", 20*time.Millisecond)
 	_, err := provider.Complete(context.Background(), Request{})
 	assertProviderError(t, err, ErrorCodeTimeout, true)
 }
@@ -195,7 +204,7 @@ func TestOpenAICompleteDoesNotFollowRedirects(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	provider := NewOpenAICompatible(origin.URL, "test-key", "test-model", time.Second)
+	provider := newTestOpenAICompatible(origin.URL, "test-key", "test-model", time.Second)
 	_, err := provider.Complete(context.Background(), Request{Messages: []Message{{Role: "user", Content: "secret body"}}})
 	assertProviderError(t, err, ErrorCodeRequestFailed, false)
 	if redirectedRequests.Load() != 0 || receivedAuthorization.Load() || receivedBody.Load() {
@@ -231,7 +240,7 @@ func TestOpenAICompleteMapsResponseBodyDeadline(t *testing.T) {
 	defer cancel()
 	result := make(chan error, 1)
 	go func() {
-		provider := NewOpenAICompatible(server.URL, "test-key", "test-model", time.Second)
+		provider := newTestOpenAICompatible(server.URL, "test-key", "test-model", time.Second)
 		_, err := provider.Complete(ctx, Request{})
 		result <- err
 	}()
@@ -317,7 +326,7 @@ func TestOpenAICompleteRejectsMalformedSuccessResponse(t *testing.T) {
 			}))
 			defer server.Close()
 
-			provider := NewOpenAICompatible(server.URL, "test-key", "test-model", time.Second)
+			provider := newTestOpenAICompatible(server.URL, "test-key", "test-model", time.Second)
 			_, err := provider.Complete(context.Background(), Request{JSON: true})
 			assertProviderError(t, err, ErrorCodeRequestFailed, false)
 		})
@@ -331,7 +340,7 @@ func TestOpenAICompleteReturnsNonJSONContentAndUsageForCallerValidation(t *testi
 	}))
 	defer server.Close()
 
-	provider := NewOpenAICompatible(server.URL, "test-key", "test-model", time.Second)
+	provider := newTestOpenAICompatible(server.URL, "test-key", "test-model", time.Second)
 	response, err := provider.Complete(context.Background(), Request{JSON: true})
 	if err != nil {
 		t.Fatal(err)

@@ -15,6 +15,7 @@ import (
 
 	"github.com/chenbb0128/weavepress/server/internal/collectors"
 	"github.com/chenbb0128/weavepress/server/internal/config"
+	"github.com/chenbb0128/weavepress/server/internal/modules/aisettings"
 	"github.com/chenbb0128/weavepress/server/internal/modules/aiwriting"
 	"github.com/chenbb0128/weavepress/server/internal/modules/authn"
 	"github.com/chenbb0128/weavepress/server/internal/modules/content"
@@ -27,16 +28,21 @@ import (
 const claimsKey = "weavepress.claims"
 
 type API struct {
-	store     workspace.Store
-	auth      *authn.Service
-	content   *content.Service
-	editorial *editorial.Service
-	ai        AIService
-	cfg       config.Config
+	store      workspace.Store
+	auth       *authn.Service
+	content    *content.Service
+	editorial  *editorial.Service
+	ai         AIService
+	aiSettings AISettingsService
+	cfg        config.Config
 }
 
 func New(store workspace.Store, auth *authn.Service, contentService *content.Service, editorialService *editorial.Service, aiService AIService, cfg config.Config) *API {
-	return &API{store: store, auth: auth, content: contentService, editorial: editorialService, ai: aiService, cfg: cfg}
+	return NewWithAISettings(store, auth, contentService, editorialService, aiService, nil, cfg)
+}
+
+func NewWithAISettings(store workspace.Store, auth *authn.Service, contentService *content.Service, editorialService *editorial.Service, aiService AIService, aiSettings AISettingsService, cfg config.Config) *API {
+	return &API{store: store, auth: auth, content: contentService, editorial: editorialService, ai: aiService, aiSettings: aiSettings, cfg: cfg}
 }
 
 func (a *API) Register(router *gin.Engine) {
@@ -85,6 +91,8 @@ func (a *API) Register(router *gin.Engine) {
 	protected.POST("/wechat-publish-jobs/:id/retry", a.requireRole(workspace.RoleAdmin), a.retryPublishJob)
 
 	protected.GET("/ai/status", a.requireCode(codeAIAnalysisView), a.aiStatus)
+	protected.GET("/ai/settings", a.requireRole(workspace.RoleAdmin), a.requireCode(codeAISettingsView), a.getAISettings)
+	protected.PUT("/ai/settings", a.requireRole(workspace.RoleAdmin), a.requireCode(codeAISettingsUpdate), a.updateAISettings)
 	protected.POST("/articles/:id/ai-analyses", a.requireCode(codeAIAnalysisCreate), a.startAIAnalysis)
 	protected.GET("/articles/:id/ai-analyses", a.requireCode(codeAIAnalysisView), a.listAIAnalyses)
 	protected.GET("/ai-analyses/:id", a.requireCode(codeAIAnalysisView), a.getAIAnalysis)
@@ -923,6 +931,8 @@ func (a *API) writeError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, workspace.ErrNotFound):
 		response.Error(c, response.NotFound())
+	case errors.Is(err, aisettings.ErrInvalidSettings):
+		response.Error(c, response.BadRequest("AI 设置不合法", err))
 	case errors.Is(err, aiwriting.ErrNotConfigured):
 		response.Error(c, response.DependencyUnavailable(err))
 	case errors.Is(err, aiwriting.ErrInputTooLarge):

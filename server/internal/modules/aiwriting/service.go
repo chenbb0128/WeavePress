@@ -14,6 +14,7 @@ import (
 	"github.com/hibiken/asynq"
 
 	"github.com/chenbb0128/weavepress/server/internal/config"
+	"github.com/chenbb0128/weavepress/server/internal/modules/aisettings"
 	"github.com/chenbb0128/weavepress/server/internal/modules/editorial"
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace"
 	"github.com/chenbb0128/weavepress/server/internal/platform/llm"
@@ -24,15 +25,106 @@ type Enqueuer interface {
 }
 
 type Service struct {
-	store    Store
-	articles ArticleStore
-	queue    Enqueuer
-	provider llm.Provider
-	cfg      config.AIConfig
+	store           Store
+	articles        ArticleStore
+	queue           Enqueuer
+	settings        SettingsResolver
+	providerFactory ProviderFactory
+	limits          Limits
 }
 
 func New(store Store, articles ArticleStore, queue Enqueuer, provider llm.Provider, cfg config.AIConfig) *Service {
-	return &Service{store: store, articles: articles, queue: queue, provider: provider, cfg: cfg}
+	settings := staticSettings{cfg: cfg}
+	return NewWithSettings(store, articles, queue, settings, func(aisettings.RuntimeConfig) llm.Provider { return provider }, Limits{
+		RequestTimeout: cfg.RequestTimeout, MaxInputChars: cfg.MaxInputChars,
+		MaxOutputTokens: cfg.MaxOutputTokens, Temperature: cfg.Temperature,
+	})
+}
+
+type SettingsResolver interface {
+	Status(context.Context) (aisettings.RuntimeStatus, error)
+	Active(context.Context) (aisettings.RuntimeConfig, error)
+	ForJob(context.Context, string, string) (aisettings.RuntimeConfig, error)
+}
+
+type ProviderFactory func(aisettings.RuntimeConfig) llm.Provider
+
+type Limits struct {
+	RequestTimeout  time.Duration
+	MaxInputChars   int
+	MaxOutputTokens int
+	Temperature     float64
+}
+
+func DefaultLimits() Limits {
+	return Limits{RequestTimeout: 120 * time.Second, MaxInputChars: 60_000, MaxOutputTokens: 6_000, Temperature: .4}
+}
+
+func NewWithSettings(store Store, articles ArticleStore, queue Enqueuer, settings SettingsResolver, providerFactory ProviderFactory, limits Limits) *Service {
+	defaults := DefaultLimits()
+	if limits.RequestTimeout <= 0 {
+		limits.RequestTimeout = defaults.RequestTimeout
+	}
+	if limits.MaxInputChars <= 0 {
+		limits.MaxInputChars = defaults.MaxInputChars
+	}
+	if limits.MaxOutputTokens <= 0 {
+		limits.MaxOutputTokens = defaults.MaxOutputTokens
+	}
+	return &Service{store: store, articles: articles, queue: queue, settings: settings, providerFactory: providerFactory, limits: limits}
+}
+
+type staticSettings struct{ cfg config.AIConfig }
+
+func (s staticSettings) Status(context.Context) (aisettings.RuntimeStatus, error) {
+	return aisettings.RuntimeStatus{Enabled: s.cfg.Enabled, Provider: s.cfg.Provider, Model: s.cfg.Model}, nil
+}
+
+func (s staticSettings) Active(context.Context) (aisettings.RuntimeConfig, error) {
+	if !s.cfg.Enabled {
+		return aisettings.RuntimeConfig{}, aisettings.ErrNotConfigured
+	}
+	return aisettings.RuntimeConfig{Enabled: true, Provider: s.cfg.Provider, BaseURL: s.cfg.BaseURL, APIKey: s.cfg.APIKey, Model: s.cfg.Model}, nil
+}
+
+func (s staticSettings) ForJob(_ context.Context, provider, model string) (aisettings.RuntimeConfig, error) {
+	if !s.cfg.Enabled {
+		return aisettings.RuntimeConfig{}, aisettings.ErrNotConfigured
+	}
+	return aisettings.RuntimeConfig{Enabled: true, Provider: provider, BaseURL: s.cfg.BaseURL, APIKey: s.cfg.APIKey, Model: model}, nil
+}
+
+func (s *Service) activeRuntime(ctx context.Context) (aisettings.RuntimeConfig, error) {
+	if s.settings == nil {
+		return aisettings.RuntimeConfig{}, ErrNotConfigured
+	}
+	runtime, err := s.settings.Active(ctx)
+	if err != nil {
+		return aisettings.RuntimeConfig{}, normalizeSettingsError(err)
+	}
+	return runtime, nil
+}
+
+func (s *Service) providerForJob(ctx context.Context, job Job) (llm.Provider, error) {
+	if s.settings == nil || s.providerFactory == nil {
+		return nil, ErrNotConfigured
+	}
+	runtime, err := s.settings.ForJob(ctx, job.Provider, job.Model)
+	if err != nil {
+		return nil, normalizeSettingsError(err)
+	}
+	provider := s.providerFactory(runtime)
+	if provider == nil {
+		return nil, ErrNotConfigured
+	}
+	return provider, nil
+}
+
+func normalizeSettingsError(err error) error {
+	if errors.Is(err, aisettings.ErrNotConfigured) || errors.Is(err, aisettings.ErrProviderNotConfigured) {
+		return ErrNotConfigured
+	}
+	return err
 }
 
 func shouldDispatchReusedJob(job Job) bool {
@@ -40,8 +132,9 @@ func shouldDispatchReusedJob(job Job) bool {
 }
 
 func (s *Service) StartAnalysis(ctx context.Context, articleID, userID uint64, force bool) (Job, bool, error) {
-	if !s.cfg.Enabled {
-		return Job{}, false, ErrNotConfigured
+	runtime, err := s.activeRuntime(ctx)
+	if err != nil {
+		return Job{}, false, err
 	}
 	article, err := s.articles.GetArticle(ctx, articleID)
 	if err != nil {
@@ -51,7 +144,7 @@ func (s *Service) StartAnalysis(ctx context.Context, articleID, userID uint64, f
 		return Job{}, false, ErrArticleNotReady
 	}
 	source := BuildSourceDocument(article)
-	if utf8.RuneCountInString(source.PlainText) > s.cfg.MaxInputChars {
+	if utf8.RuneCountInString(source.PlainText) > s.limits.MaxInputChars {
 		return Job{}, false, ErrInputTooLarge
 	}
 	fingerprint := fingerprint(struct {
@@ -63,8 +156,8 @@ func (s *Service) StartAnalysis(ctx context.Context, articleID, userID uint64, f
 	job, reused, err := s.store.CreateAnalysisJob(ctx, CreateAnalysisJobInput{
 		ArticleID:        article.ID,
 		RequestedBy:      userID,
-		Provider:         s.cfg.Provider,
-		Model:            s.cfg.Model,
+		Provider:         runtime.Provider,
+		Model:            runtime.Model,
 		PromptVersion:    AnalysisPromptV1,
 		InputFingerprint: fingerprint,
 		Force:            force,
@@ -84,8 +177,15 @@ func (s *Service) StartAnalysis(ctx context.Context, articleID, userID uint64, f
 	return job, reused, nil
 }
 
-func (s *Service) Status() Status {
-	return Status{Enabled: s.cfg.Enabled, Provider: s.cfg.Provider, Model: s.cfg.Model}
+func (s *Service) Status(ctx context.Context) (Status, error) {
+	if s.settings == nil {
+		return Status{}, ErrNotConfigured
+	}
+	status, err := s.settings.Status(ctx)
+	if err != nil {
+		return Status{}, normalizeSettingsError(err)
+	}
+	return Status{Enabled: status.Enabled, Provider: status.Provider, Model: status.Model}, nil
 }
 
 func (s *Service) Analyses(ctx context.Context, articleID uint64, page, pageSize int) (Page[Analysis], error) {
@@ -100,8 +200,9 @@ func (s *Service) Analysis(ctx context.Context, id uint64) (Analysis, error) {
 }
 
 func (s *Service) StartGeneration(ctx context.Context, analysisID, userID uint64, params GenerationParams) (Generation, Job, bool, error) {
-	if !s.cfg.Enabled {
-		return Generation{}, Job{}, false, ErrNotConfigured
+	runtime, err := s.activeRuntime(ctx)
+	if err != nil {
+		return Generation{}, Job{}, false, err
 	}
 	analysis, err := s.store.GetAnalysis(ctx, analysisID)
 	if err != nil {
@@ -121,7 +222,7 @@ func (s *Service) StartGeneration(ctx context.Context, analysisID, userID uint64
 		return Generation{}, Job{}, false, ErrArticleNotReady
 	}
 	source := BuildSourceDocument(article)
-	if utf8.RuneCountInString(source.PlainText) > s.cfg.MaxInputChars {
+	if utf8.RuneCountInString(source.PlainText) > s.limits.MaxInputChars {
 		return Generation{}, Job{}, false, ErrInputTooLarge
 	}
 	inputFingerprint := fingerprint(struct {
@@ -133,8 +234,8 @@ func (s *Service) StartGeneration(ctx context.Context, analysisID, userID uint64
 		AnalysisID:       analysisID,
 		RequestedBy:      userID,
 		Params:           params,
-		Provider:         s.cfg.Provider,
-		Model:            s.cfg.Model,
+		Provider:         runtime.Provider,
+		Model:            runtime.Model,
 		PromptVersion:    GenerationPromptV2,
 		InputFingerprint: inputFingerprint,
 	})
@@ -166,8 +267,8 @@ func (s *Service) Jobs(ctx context.Context, filter JobFilter, page, pageSize int
 }
 
 func (s *Service) Retry(ctx context.Context, jobID, userID uint64) (Job, error) {
-	if !s.cfg.Enabled {
-		return Job{}, ErrNotConfigured
+	if _, err := s.activeRuntime(ctx); err != nil {
+		return Job{}, err
 	}
 	job, err := s.store.RetryJob(ctx, jobID, userID)
 	if err != nil {
@@ -198,7 +299,7 @@ func (s *Service) enqueue(ctx context.Context, job Job) error {
 		asynq.TaskID(taskID),
 		asynq.Queue("ai"),
 		asynq.MaxRetry(3),
-		asynq.Timeout(s.cfg.RequestTimeout+30*time.Second),
+		asynq.Timeout(s.limits.RequestTimeout+30*time.Second),
 	)
 	if errors.Is(err, asynq.ErrTaskIDConflict) {
 		return nil
@@ -250,8 +351,9 @@ func (s *Service) processAnalysis(ctx context.Context, job Job) error {
 	if job.Type != JobTypeAnalysis || job.Status != JobRunning {
 		return ErrInvalidParameters
 	}
-	if s.provider == nil {
-		return ErrNotConfigured
+	provider, err := s.providerForJob(ctx, job)
+	if err != nil {
+		return err
 	}
 	article, err := s.articles.GetArticle(ctx, job.ArticleID)
 	if err != nil {
@@ -261,14 +363,14 @@ func (s *Service) processAnalysis(ctx context.Context, job Job) error {
 		return ErrArticleNotReady
 	}
 	source := BuildSourceDocument(article)
-	if utf8.RuneCountInString(source.PlainText) > s.cfg.MaxInputChars {
+	if utf8.RuneCountInString(source.PlainText) > s.limits.MaxInputChars {
 		return ErrInputTooLarge
 	}
 
-	response, err := s.provider.Complete(ctx, llm.Request{
+	response, err := provider.Complete(ctx, llm.Request{
 		Messages:    BuildAnalysisMessages(source),
-		MaxTokens:   s.cfg.MaxOutputTokens,
-		Temperature: s.cfg.Temperature,
+		MaxTokens:   s.limits.MaxOutputTokens,
+		Temperature: s.limits.Temperature,
 		JSON:        true,
 	})
 	usage := tokenUsage(response.Usage)
@@ -286,7 +388,7 @@ func (s *Service) processAnalysis(ctx context.Context, job Job) error {
 		if err := s.store.AddJobEvent(ctx, job.ID, "format_repair", "AI 分析输出格式无效，正在执行一次格式修复"); err != nil {
 			return withUsage(err, usage)
 		}
-		output, usage, validationErr = s.repairAnalysis(ctx, source, response.Content, usage)
+		output, usage, validationErr = s.repairAnalysis(ctx, provider, source, response.Content, usage)
 		if validationErr != nil {
 			return withUsage(normalizeRepairError(validationErr), usage)
 		}
@@ -298,10 +400,10 @@ func (s *Service) processAnalysis(ctx context.Context, job Job) error {
 	return nil
 }
 
-func (s *Service) repairAnalysis(ctx context.Context, source SourceDocument, raw string, usage TokenUsage) (AnalysisOutput, TokenUsage, error) {
-	response, err := s.provider.Complete(ctx, llm.Request{
+func (s *Service) repairAnalysis(ctx context.Context, provider llm.Provider, source SourceDocument, raw string, usage TokenUsage) (AnalysisOutput, TokenUsage, error) {
+	response, err := provider.Complete(ctx, llm.Request{
 		Messages:    BuildRepairMessages(JobTypeAnalysis, raw),
-		MaxTokens:   s.cfg.MaxOutputTokens,
+		MaxTokens:   s.limits.MaxOutputTokens,
 		Temperature: 0,
 		JSON:        true,
 	})
@@ -345,8 +447,9 @@ func (s *Service) processGeneration(ctx context.Context, job Job) error {
 	if job.Type != JobTypeGeneration || job.Status != JobRunning {
 		return ErrInvalidParameters
 	}
-	if s.provider == nil {
-		return ErrNotConfigured
+	provider, err := s.providerForJob(ctx, job)
+	if err != nil {
+		return err
 	}
 	generation, err := s.store.GetGenerationByJobID(ctx, job.ID)
 	if err != nil {
@@ -367,7 +470,7 @@ func (s *Service) processGeneration(ctx context.Context, job Job) error {
 		return ErrArticleNotReady
 	}
 	source := BuildSourceDocument(article)
-	if utf8.RuneCountInString(source.PlainText) > s.cfg.MaxInputChars {
+	if utf8.RuneCountInString(source.PlainText) > s.limits.MaxInputChars {
 		return ErrInputTooLarge
 	}
 	params := storedGenerationParams(generation)
@@ -375,10 +478,10 @@ func (s *Service) processGeneration(ctx context.Context, job Job) error {
 	if err != nil {
 		return err
 	}
-	response, err := s.provider.Complete(ctx, llm.Request{
+	response, err := provider.Complete(ctx, llm.Request{
 		Messages:    messages,
-		MaxTokens:   s.cfg.MaxOutputTokens,
-		Temperature: s.cfg.Temperature,
+		MaxTokens:   s.limits.MaxOutputTokens,
+		Temperature: s.limits.Temperature,
 		JSON:        true,
 	})
 	usage := tokenUsage(response.Usage)
@@ -393,7 +496,7 @@ func (s *Service) processGeneration(ctx context.Context, job Job) error {
 		if err := s.store.AddJobEvent(ctx, job.ID, "format_repair", "AI 稿件输出格式无效，正在执行一次格式修复"); err != nil {
 			return withUsage(err, usage)
 		}
-		output, usage, validationErr = s.repairGeneration(ctx, source, analysis, response.Content, usage)
+		output, usage, validationErr = s.repairGeneration(ctx, provider, source, analysis, response.Content, usage)
 		if validationErr != nil {
 			return withUsage(normalizeRepairError(validationErr), usage)
 		}
@@ -415,10 +518,10 @@ func (s *Service) processGeneration(ctx context.Context, job Job) error {
 	return nil
 }
 
-func (s *Service) repairGeneration(ctx context.Context, source SourceDocument, analysis Analysis, raw string, usage TokenUsage) (GenerationOutput, TokenUsage, error) {
-	response, err := s.provider.Complete(ctx, llm.Request{
+func (s *Service) repairGeneration(ctx context.Context, provider llm.Provider, source SourceDocument, analysis Analysis, raw string, usage TokenUsage) (GenerationOutput, TokenUsage, error) {
+	response, err := provider.Complete(ctx, llm.Request{
 		Messages:    BuildRepairMessages(JobTypeGeneration, raw),
-		MaxTokens:   s.cfg.MaxOutputTokens,
+		MaxTokens:   s.limits.MaxOutputTokens,
 		Temperature: 0,
 		JSON:        true,
 	})

@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/chenbb0128/weavepress/server/internal/platform/netguard"
 )
 
 const (
@@ -57,12 +59,13 @@ type openAIResponse struct {
 }
 
 func NewOpenAICompatible(baseURL, apiKey, model string, timeout time.Duration) Provider {
-	return newOpenAICompatibleWithClient(baseURL, apiKey, model, &http.Client{
-		Timeout: timeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	})
+	return newOpenAICompatibleWithClient(baseURL, apiKey, model, netguard.NewHTTPClient(timeout, nil))
+}
+
+// NewOpenAICompatibleWithClient is intended for controlled tests and adapters
+// that already enforce their own outbound network policy.
+func NewOpenAICompatibleWithClient(baseURL, apiKey, model string, client *http.Client) Provider {
+	return newOpenAICompatibleWithClient(baseURL, apiKey, model, client)
 }
 
 func newOpenAICompatibleWithClient(baseURL, apiKey, model string, client *http.Client) Provider {

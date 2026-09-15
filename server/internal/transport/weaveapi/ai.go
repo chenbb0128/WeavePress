@@ -25,7 +25,7 @@ const (
 )
 
 type AIService interface {
-	Status() aiwriting.Status
+	Status(context.Context) (aiwriting.Status, error)
 	StartAnalysis(context.Context, uint64, uint64, bool) (aiwriting.Job, bool, error)
 	Analyses(context.Context, uint64, int, int) (aiwriting.Page[aiwriting.Analysis], error)
 	Analysis(context.Context, uint64) (aiwriting.Analysis, error)
@@ -91,7 +91,12 @@ func (i generationInput) params() aiwriting.GenerationParams {
 }
 
 func (a *API) aiStatus(c *gin.Context) {
-	response.OK(c, a.ai.Status())
+	status, err := a.ai.Status(c.Request.Context())
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	response.OK(c, status)
 }
 
 func (a *API) startAIAnalysis(c *gin.Context) {

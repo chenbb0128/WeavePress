@@ -5,14 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/chenbb0128/weavepress/server/internal/config"
+	"github.com/chenbb0128/weavepress/server/internal/modules/aisettings"
 	"github.com/chenbb0128/weavepress/server/internal/modules/aiwriting"
 	"github.com/chenbb0128/weavepress/server/internal/modules/content"
 	"github.com/chenbb0128/weavepress/server/internal/modules/editorial"
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace/mysqlstore"
 	"github.com/chenbb0128/weavepress/server/internal/platform/database"
 	"github.com/chenbb0128/weavepress/server/internal/platform/llm"
+	"github.com/chenbb0128/weavepress/server/internal/platform/netguard"
 	"github.com/chenbb0128/weavepress/server/internal/platform/objectstore"
 	"github.com/chenbb0128/weavepress/server/internal/platform/queue"
 	redisclient "github.com/chenbb0128/weavepress/server/internal/platform/redis"
@@ -70,7 +73,17 @@ func (w *Worker) Run(ctx context.Context) (err error) {
 	wechatPublisher := wechat.New(w.cfg.WeChat, objects)
 	editorialService := editorial.New(store, store, queueClient, wechatPublisher, objects, w.cfg.WeChat.Enabled)
 	aiStore := mysqlstore.NewAIStore(db.SQL)
-	aiService := aiwriting.New(aiStore, store, queueClient, newAIProvider(w.cfg.AI), w.cfg.AI)
+	aiSettingsStore := mysqlstore.NewAISettingsStore(db.SQL)
+	aiSettingsService, err := aisettings.New(aiSettingsStore, w.cfg.Auth.MediaSigningKey, func(ctx context.Context, raw string) error {
+		return netguard.ValidateHTTPSURL(ctx, nil, raw)
+	})
+	if err != nil {
+		return fmt.Errorf("create AI settings service: %w", err)
+	}
+	limits := aiwriting.DefaultLimits()
+	aiService := aiwriting.NewWithSettings(aiStore, store, queueClient, aiSettingsService, func(runtime aisettings.RuntimeConfig) llm.Provider {
+		return newAIProvider(runtime, limits.RequestTimeout)
+	}, limits)
 
 	server := queue.NewServer(w.cfg.Redis, w.cfg.Worker, w.logger)
 	mux := workers.NewMux(contentService, editorialService, aiService)
@@ -92,9 +105,6 @@ func (w *Worker) Run(ctx context.Context) (err error) {
 	return nil
 }
 
-func newAIProvider(cfg config.AIConfig) llm.Provider {
-	if !cfg.Enabled {
-		return nil
-	}
-	return llm.NewOpenAICompatible(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.RequestTimeout)
+func newAIProvider(runtime aisettings.RuntimeConfig, timeout time.Duration) llm.Provider {
+	return llm.NewOpenAICompatible(runtime.BaseURL, runtime.APIKey, runtime.Model, timeout)
 }

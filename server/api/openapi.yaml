@@ -305,6 +305,35 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/ai/settings:
+    get:
+      summary: 管理员读取 AI 服务设置
+      operationId: getAISettings
+      security: [ { bearerAuth: [] } ]
+      responses:
+        "200":
+          description: AI 服务设置（不包含 API Key）
+          content: { application/json: { schema: { $ref: "#/components/schemas/AISettingsEnvelope" } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    put:
+      summary: 管理员保存当前 AI 服务商设置
+      operationId: updateAISettings
+      security: [ { bearerAuth: [] } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/UpdateAISettingsInput" } } }
+      responses:
+        "200":
+          description: 已保存的 AI 服务设置
+          content: { application/json: { schema: { $ref: "#/components/schemas/AISettingsEnvelope" } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/articles/{id}/ai-analyses:
     parameters: [ { $ref: "#/components/parameters/ID" } ]
     post:
@@ -647,6 +676,41 @@ components:
         enabled: { type: boolean }
         provider: { type: string, example: openai-compatible }
         model: { type: string }
+    AIProviderSettings:
+      type: object
+      additionalProperties: false
+      required: [id, name, baseUrl, baseUrlEditable, model, modelOptions, keyConfigured]
+      properties:
+        id: { type: string, enum: [zhipu, openai, openai-compatible] }
+        name: { type: string }
+        baseUrl: { type: string, maxLength: 500 }
+        baseUrlEditable: { type: boolean }
+        model: { type: string, maxLength: 100 }
+        modelOptions: { type: array, items: { type: string } }
+        keyConfigured: { type: boolean }
+    AISettings:
+      type: object
+      additionalProperties: false
+      required: [enabled, activeProvider, providers]
+      properties:
+        enabled: { type: boolean }
+        activeProvider: { type: string, enum: [zhipu, openai, openai-compatible] }
+        providers:
+          type: array
+          items: { $ref: "#/components/schemas/AIProviderSettings" }
+    UpdateAISettingsInput:
+      type: object
+      additionalProperties: false
+      required: [enabled, activeProvider, baseUrl, model, apiKey]
+      properties:
+        enabled: { type: boolean }
+        activeProvider: { type: string, enum: [zhipu, openai, openai-compatible] }
+        baseUrl: { type: string, maxLength: 500 }
+        model: { type: string, minLength: 1, maxLength: 100 }
+        apiKey:
+          type: string
+          maxLength: 2048
+          description: 新 Key；留空表示保留该服务商已保存的 Key。
     StartAIAnalysisInput:
       type: object
       additionalProperties: false
@@ -860,6 +924,13 @@ components:
         code: { type: integer, example: 0 }
         message: { type: string, example: success }
         data: { $ref: "#/components/schemas/AIStatus" }
+    AISettingsEnvelope:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: success }
+        data: { $ref: "#/components/schemas/AISettings" }
     StartAIAnalysisEnvelope:
       type: object
       required: [code, message, data]

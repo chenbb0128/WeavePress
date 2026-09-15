@@ -51,9 +51,9 @@ type fakeAIService struct {
 	params     aiwriting.GenerationParams
 }
 
-func (s *fakeAIService) Status() aiwriting.Status {
+func (s *fakeAIService) Status(context.Context) (aiwriting.Status, error) {
 	s.call = "status"
-	return s.status
+	return s.status, s.err
 }
 
 func (s *fakeAIService) StartAnalysis(_ context.Context, articleID, userID uint64, force bool) (aiwriting.Job, bool, error) {
@@ -512,7 +512,7 @@ func newAITestAPI(t *testing.T, ai AIService, role workspace.Role) (*API, string
 	store := aiTestStore{user: user}
 	cfg := config.Config{Auth: config.AuthConfig{JWTSecret: secret}}
 	authService := authn.New(store, nil, cfg.Auth)
-	api := New(store, authService, nil, nil, ai, cfg)
+	api := NewWithAISettings(store, authService, nil, nil, ai, nil, cfg)
 	claims := authn.Claims{Role: role, RegisteredClaims: jwt.RegisteredClaims{
 		Issuer: "weavepress", Subject: "42", ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 	}}

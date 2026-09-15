@@ -597,8 +597,8 @@ func TestServiceReadMethodsDelegateToStore(t *testing.T) {
 		jobsPage:     Page[Job]{Total: 2},
 	}
 	service := New(store, &fakeAIArticles{}, nil, nil, testAIConfig())
-	if status := service.Status(); !status.Enabled || status.Provider != "openai-compatible" || status.Model != "test-model" {
-		t.Fatalf("Status() = %#v", status)
+	if status, err := service.Status(context.Background()); err != nil || !status.Enabled || status.Provider != "openai-compatible" || status.Model != "test-model" {
+		t.Fatalf("Status() = %#v, %v", status, err)
 	}
 	if got, _ := service.Analysis(context.Background(), 3); got.ID != 3 {
 		t.Fatalf("Analysis() = %#v", got)
@@ -695,7 +695,7 @@ func TestHandleAnalyzeTaskRepairsInvalidJSONFromRealProvider(t *testing.T) {
 	defer server.Close()
 
 	store := &fakeAIStore{job: Job{ID: 7, Type: JobTypeAnalysis, ArticleID: 12, Status: JobQueued}}
-	provider := llm.NewOpenAICompatible(server.URL, "test-key", "test-model", time.Second)
+	provider := llm.NewOpenAICompatibleWithClient(server.URL, "test-key", "test-model", server.Client())
 	service := New(store, &fakeAIArticles{article: readyAIArticle()}, nil, provider, testAIConfig())
 
 	if err := service.HandleAnalyzeTask(context.Background(), jobTask(TaskAnalyze, 7)); err != nil {

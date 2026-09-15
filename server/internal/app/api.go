@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chenbb0128/weavepress/server/internal/config"
+	"github.com/chenbb0128/weavepress/server/internal/modules/aisettings"
 	"github.com/chenbb0128/weavepress/server/internal/modules/aiwriting"
 	"github.com/chenbb0128/weavepress/server/internal/modules/authn"
 	"github.com/chenbb0128/weavepress/server/internal/modules/content"
@@ -16,6 +17,7 @@ import (
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace/mysqlstore"
 	"github.com/chenbb0128/weavepress/server/internal/platform/database"
 	platformmetrics "github.com/chenbb0128/weavepress/server/internal/platform/metrics"
+	"github.com/chenbb0128/weavepress/server/internal/platform/netguard"
 	"github.com/chenbb0128/weavepress/server/internal/platform/objectstore"
 	"github.com/chenbb0128/weavepress/server/internal/platform/queue"
 	redisclient "github.com/chenbb0128/weavepress/server/internal/platform/redis"
@@ -105,8 +107,15 @@ func NewAPI(cfg config.Config, logger *slog.Logger) (*API, error) {
 	contentService := content.New(store, queueClient, objects, cfg)
 	editorialService := editorial.New(store, store, queueClient, nil, objects, cfg.WeChat.Enabled)
 	aiStore := mysqlstore.NewAIStore(db.SQL)
-	aiService := aiwriting.New(aiStore, store, queueClient, nil, cfg.AI)
-	businessAPI := weaveapi.New(store, authService, contentService, editorialService, aiService, cfg)
+	aiSettingsStore := mysqlstore.NewAISettingsStore(db.SQL)
+	aiSettingsService, err := aisettings.New(aiSettingsStore, cfg.Auth.MediaSigningKey, func(ctx context.Context, raw string) error {
+		return netguard.ValidateHTTPSURL(ctx, nil, raw)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create AI settings service: %w", err)
+	}
+	aiService := aiwriting.NewWithSettings(aiStore, store, queueClient, aiSettingsService, nil, aiwriting.DefaultLimits())
+	businessAPI := weaveapi.NewWithAISettings(store, authService, contentService, editorialService, aiService, aiSettingsService, cfg)
 
 	router, err := httpapi.NewRouter(httpapi.RouterOptions{
 		App:             cfg.App,
