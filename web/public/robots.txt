@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+Disallow: /articles
+Disallow: /login
+Disallow: /admin/
+Disallow: /api/
+Disallow: /media/
+
+Sitemap: https://wp.pdurl.cn/sitemap.xml

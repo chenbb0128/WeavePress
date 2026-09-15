@@ -1,5 +1,5 @@
 export default defineNuxtConfig({
-  ssr: false,
+  ssr: true,
   compatibilityDate: '2026-09-08',
   modules: ['@nuxt/ui', '@pinia/nuxt'],
   css: ['~/assets/css/main.css'],
@@ -11,6 +11,19 @@ export default defineNuxtConfig({
     },
   },
   runtimeConfig: { public: { apiBase: '/api' } },
+  routeRules: {
+    '/': { prerender: true },
+    '/login': { ssr: false },
+    '/articles': { ssr: false },
+    '/articles/**': { ssr: false },
+  },
+  nitro: {
+    prerender: {
+      crawlLinks: false,
+      routes: ['/'],
+      ignore: ['/admin', '/admin/**'],
+    },
+  },
   vite: {
     server: {
       proxy: {
@@ -21,8 +34,12 @@ export default defineNuxtConfig({
   },
   app: {
     head: {
-      title: 'WeavePress · 内容中心',
-      meta: [{ name: 'description', content: 'WeavePress 团队内容阅读中心' }],
+      htmlAttrs: { lang: 'zh-CN' },
+      title: 'WeavePress｜公众号采集、AI 采编与微信排版平台',
+      meta: [
+        { name: 'description', content: 'WeavePress 帮助内容团队集中采集微信公众号与网页文章，通过 AI 分析、辅助改写和微信排版，构建从内容发现到多平台发布的一体化工作流。' },
+        { name: 'theme-color', content: '#4f46e5' },
+      ],
     },
   },
 });

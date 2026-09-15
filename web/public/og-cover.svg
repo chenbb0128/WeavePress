@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">WeavePress 内容工作流平台</title>
+  <desc id="desc">公众号采集、AI 采编、微信排版与多平台发布</desc>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#eef2ff"/><stop offset=".55" stop-color="#f8fafc"/><stop offset="1" stop-color="#f5f3ff"/></linearGradient><linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#4f46e5"/><stop offset="1" stop-color="#7c3aed"/></linearGradient><filter id="shadow"><feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#312e81" flood-opacity=".16"/></filter></defs>
+  <rect width="1200" height="630" fill="url(#bg)"/><circle cx="1030" cy="40" r="250" fill="#c4b5fd" opacity=".24"/><circle cx="120" cy="630" r="270" fill="#a5b4fc" opacity=".18"/>
+  <g transform="translate(88 78)"><rect width="72" height="72" rx="22" fill="url(#brand)" filter="url(#shadow)"/><text x="36" y="49" fill="white" font-size="36" font-family="Arial, sans-serif" font-weight="700" text-anchor="middle">织</text><text x="94" y="49" fill="#0f172a" font-size="34" font-family="Arial, sans-serif" font-weight="700">WeavePress</text></g>
+  <text x="88" y="255" fill="#0f172a" font-size="62" font-family="Arial, sans-serif" font-weight="800">让好内容，从采集到发布</text><text x="88" y="335" fill="url(#brand)" font-size="62" font-family="Arial, sans-serif" font-weight="800">顺畅流动。</text><text x="90" y="410" fill="#64748b" font-size="26" font-family="Arial, sans-serif">公众号采集 · AI 采编 · 微信排版 · 多平台发布</text>
+  <g transform="translate(88 476)" fill="#4338ca" font-family="Arial, sans-serif" font-size="20" font-weight="600"><rect width="196" height="52" rx="26" fill="#e0e7ff"/><text x="98" y="33" text-anchor="middle">内容团队工作台</text></g>
+</svg>

@@ -10,6 +10,8 @@
     "lint": "eslint .",
     "postinstall": "nuxt prepare",
     "preview": "nuxt preview",
+    "test": "node --test test/site.test.ts",
+    "test:output": "node --test test/marketing-output.test.ts",
     "typecheck": "nuxt typecheck"
   },
   "dependencies": {
