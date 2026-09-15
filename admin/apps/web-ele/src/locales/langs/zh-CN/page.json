@@ -16,7 +16,8 @@
   },
   "ai": {
     "workbenchTitle": "AI 采编工作台",
-    "jobsTitle": "AI 任务"
+    "jobsTitle": "AI 任务",
+    "settingsTitle": "AI 设置"
   },
   "drafts": {
     "title": "微信稿件",

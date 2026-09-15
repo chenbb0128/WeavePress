@@ -16,7 +16,8 @@
   },
   "ai": {
     "workbenchTitle": "AI Writing Workspace",
-    "jobsTitle": "AI Jobs"
+    "jobsTitle": "AI Jobs",
+    "settingsTitle": "AI Settings"
   },
   "drafts": {
     "title": "WeChat Drafts",

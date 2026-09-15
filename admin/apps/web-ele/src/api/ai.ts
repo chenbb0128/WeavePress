@@ -19,6 +19,32 @@ export interface AIStatus {
   provider: string;
 }
 
+export type AIProviderId = 'openai' | 'openai-compatible' | 'zhipu';
+
+export interface AIProviderSettings {
+  baseUrl: string;
+  baseUrlEditable: boolean;
+  id: AIProviderId;
+  keyConfigured: boolean;
+  model: string;
+  modelOptions: string[];
+  name: string;
+}
+
+export interface AISettings {
+  activeProvider: AIProviderId;
+  enabled: boolean;
+  providers: AIProviderSettings[];
+}
+
+export interface UpdateAISettingsInput {
+  activeProvider: AIProviderId;
+  apiKey: string;
+  baseUrl: string;
+  enabled: boolean;
+  model: string;
+}
+
 export interface AIFact {
   confidence: 'high' | 'low' | 'medium';
   id: string;
@@ -173,6 +199,14 @@ export interface StartGenerationResult {
 
 export function getAIStatusApi() {
   return requestClient.get<AIStatus>('/ai/status');
+}
+
+export function getAISettingsApi() {
+  return requestClient.get<AISettings>('/ai/settings');
+}
+
+export function updateAISettingsApi(input: UpdateAISettingsInput) {
+  return requestClient.put<AISettings>('/ai/settings', input);
 }
 
 export function startAIAnalysisApi(articleId: number, force = false) {

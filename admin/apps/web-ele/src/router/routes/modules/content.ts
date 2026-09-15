@@ -70,13 +70,24 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
+    name: 'AISettings',
+    path: '/ai/settings',
+    component: () => import('#/views/ai/settings.vue'),
+    meta: {
+      authority: ['admin'],
+      icon: 'lucide:settings-2',
+      order: 5,
+      title: $t('page.ai.settingsTitle'),
+    },
+  },
+  {
     name: 'Drafts',
     path: '/drafts',
     component: () => import('#/views/drafts/index.vue'),
     meta: {
       authority: ['admin', 'editor'],
       icon: 'lucide:file-pen-line',
-      order: 5,
+      order: 6,
       title: $t('page.drafts.title'),
     },
   },
@@ -98,7 +109,7 @@ const routes: RouteRecordRaw[] = [
     meta: {
       authority: ['admin', 'editor'],
       icon: 'lucide:send',
-      order: 6,
+      order: 7,
       title: $t('page.wechat.publishJobsTitle'),
     },
   },
