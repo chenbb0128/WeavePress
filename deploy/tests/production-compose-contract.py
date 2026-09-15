@@ -19,6 +19,13 @@ CRITICAL_SECRET_KEYS = {
     "WEAVEPRESS_AUTH_JWT_SECRET",
     "WEAVEPRESS_AUTH_MEDIA_SIGNING_KEY",
 }
+AI_RUNTIME_KEYS = {
+    "WEAVEPRESS_AI_API_KEY",
+    "WEAVEPRESS_AI_BASE_URL",
+    "WEAVEPRESS_AI_ENABLED",
+    "WEAVEPRESS_AI_MODEL",
+    "WEAVEPRESS_AI_PROVIDER",
+}
 EXPECTED_NETWORKS = {
     "api": {"app", "infra"},
     "worker": {"app", "infra"},
@@ -242,6 +249,19 @@ def validate_compose(model: object) -> list[str]:
     ):
         errors.append("api and worker database DSNs must match")
 
+    for key in sorted(AI_RUNTIME_KEYS):
+        owners = {
+            name
+            for name, service in services.items()
+            if key in mapping(mapping(service).get("environment"))
+        }
+        if owners != {"api", "worker"}:
+            errors.append(f"{key} must be present only in api and worker")
+        if runtime_environments.get("api", {}).get(key) != runtime_environments.get(
+            "worker", {}
+        ).get(key):
+            errors.append(f"api and worker {key} values must match")
+
     migrate = mapping(services.get("migrate"))
     migrate_environment = mapping(migrate.get("environment"))
     if set(migrate_environment) != {"WEAVEPRESS_DATABASE_DSN"}:
@@ -377,6 +397,9 @@ def run_self_test(baseline: object) -> int:
             "leaked-placeholder"
         )
 
+    def remove_worker_ai_model(model: dict[str, Any]) -> None:
+        del model["services"]["worker"]["environment"]["WEAVEPRESS_AI_MODEL"]
+
     def mount_media_in_migrate(model: dict[str, Any]) -> None:
         model["services"]["migrate"]["volumes"].append(
             {"type": "bind", "source": "/tmp/media", "target": "/app/data"}
@@ -418,6 +441,7 @@ def run_self_test(baseline: object) -> int:
         ("worker replaced with mysql image", replace_worker_with_mysql),
         ("unique api alias removed", remove_unique_api_alias),
         ("migrate receives JWT secret", leak_secret_to_migrate),
+        ("worker AI model removed", remove_worker_ai_model),
         ("migrate mounts application data", mount_media_in_migrate),
         ("migrate uses application DSN", use_application_dsn_for_migrate),
         ("api receives migration DSN", expose_migration_dsn_to_api),

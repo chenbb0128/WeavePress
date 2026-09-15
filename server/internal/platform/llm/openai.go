@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -153,6 +154,13 @@ func openAIChatCompletionsEndpoint(baseURL string) string {
 		return strings.TrimRight(normalized, "/") + "/v1/chat/completions"
 	}
 	suffix := "/v1/chat/completions"
+	trimmedPath := strings.TrimRight(parsed.Path, "/")
+	lastSegment := trimmedPath[strings.LastIndex(trimmedPath, "/")+1:]
+	if version := strings.TrimPrefix(lastSegment, "v"); version != lastSegment && version != "" {
+		if _, conversionErr := strconv.Atoi(version); conversionErr == nil {
+			suffix = "/chat/completions"
+		}
+	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + suffix
 	if parsed.RawPath != "" {
 		parsed.RawPath = strings.TrimRight(parsed.RawPath, "/") + suffix

@@ -46,7 +46,7 @@ worker:
   enabled: false
   concurrency: 4
   shutdown_timeout: 10s
-  queues: { collection: 2, publishing: 1, default: 1 }
+  queues: { collection: 2, ai: 1, publishing: 1, default: 1 }
 
 auth:
   jwt_secret: "overridden-by-environment-at-least-32-characters"

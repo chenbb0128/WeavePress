@@ -62,6 +62,11 @@ expected_keys=(
   WEAVEPRESS_WECHAT_ENABLED
   WEAVEPRESS_WECHAT_APP_ID
   WEAVEPRESS_WECHAT_APP_SECRET
+  WEAVEPRESS_AI_ENABLED
+  WEAVEPRESS_AI_PROVIDER
+  WEAVEPRESS_AI_BASE_URL
+  WEAVEPRESS_AI_API_KEY
+  WEAVEPRESS_AI_MODEL
 )
 mapfile -t example_keys < <(awk -F= '/^[A-Za-z_][A-Za-z0-9_]*=/ { print $1 }' "$ENV_EXAMPLE")
 [[ "${example_keys[*]}" == "${expected_keys[*]}" ]] || die '.env.example keys do not match the production contract'
@@ -148,6 +153,11 @@ env_stage="$(mktemp "$APP_DIR/.env.initialize.XXXXXX")"
   printf 'WEAVEPRESS_WECHAT_ENABLED=false\n'
   printf 'WEAVEPRESS_WECHAT_APP_ID=\n'
   printf 'WEAVEPRESS_WECHAT_APP_SECRET=\n'
+  printf 'WEAVEPRESS_AI_ENABLED=false\n'
+  printf 'WEAVEPRESS_AI_PROVIDER=openai-compatible\n'
+  printf 'WEAVEPRESS_AI_BASE_URL=https://open.bigmodel.cn/api/paas/v4\n'
+  printf 'WEAVEPRESS_AI_API_KEY=\n'
+  printf 'WEAVEPRESS_AI_MODEL=glm-5.3-flash\n'
 } > "$env_stage"
 chown root:root "$env_stage"
 chmod 0600 "$env_stage"

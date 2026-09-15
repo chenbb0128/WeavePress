@@ -61,6 +61,7 @@ worker:
   shutdown_timeout: 10s
   queues:
     collection: 2
+    ai: 1
     publishing: 1
     default: 1
 

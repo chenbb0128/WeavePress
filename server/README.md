@@ -46,7 +46,7 @@ go run ./cmd/worker
 | --- | --- | --- |
 | `WEAVEPRESS_AI_ENABLED` | `false` | 是否启用 AI 分析、生成和失败任务重试 |
 | `WEAVEPRESS_AI_PROVIDER` | `openai-compatible` | 当前唯一支持的 provider |
-| `WEAVEPRESS_AI_BASE_URL` | 空 | OpenAI-compatible 服务的 API 根地址或代理前缀；不要包含完整的 `/v1/chat/completions`，适配器会自动追加该路径 |
+| `WEAVEPRESS_AI_BASE_URL` | 空 | OpenAI-compatible 服务的 API 根地址或带版本的 API 根地址；不要包含完整的 Chat Completions 路径 |
 | `WEAVEPRESS_AI_API_KEY` | 空 | 仅以环境变量或 Secret 注入的服务端凭据 |
 | `WEAVEPRESS_AI_MODEL` | 空 | Provider 提供的模型名 |
 | `WEAVEPRESS_AI_REQUEST_TIMEOUT` | `120s` | 单次模型请求超时 |
@@ -54,7 +54,19 @@ go run ./cmd/worker
 | `WEAVEPRESS_AI_MAX_OUTPUT_TOKENS` | `6000` | 单次请求的最大输出 Token 数 |
 | `WEAVEPRESS_AI_TEMPERATURE` | `0.4` | 生成温度，允许范围为 `0` 到 `2` |
 
-启用时 `base_url`、`api_key` 和 `model` 都是必填项；生产环境的 `base_url` 必须使用 HTTPS。按所用服务商的 OpenAI-compatible 文档填写 API 根地址或版本根地址，但不要填写完整 Chat Completions endpoint；当前适配器会在配置路径后追加 `/v1/chat/completions`。
+启用时 `base_url`、`api_key` 和 `model` 都是必填项；生产环境的 `base_url` 必须使用 HTTPS。按所用服务商的 OpenAI-compatible 文档填写 API 根地址或版本根地址，但不要填写完整 Chat Completions endpoint。未带版本的根地址会追加 `/v1/chat/completions`；以 `/v1`、`/v4` 等版本段结尾的地址会追加 `/chat/completions`。
+
+智谱 GLM 可直接使用官方 OpenAI-compatible 根地址：
+
+```dotenv
+WEAVEPRESS_AI_ENABLED=true
+WEAVEPRESS_AI_PROVIDER=openai-compatible
+WEAVEPRESS_AI_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+WEAVEPRESS_AI_API_KEY=通过服务器Secret录入
+WEAVEPRESS_AI_MODEL=glm-5.3-flash
+```
+
+`glm-5.3-flash` 是生产模板的默认模型，也可以替换为智谱账号实际可用的其他文本模型。当前分析依赖 Chat Completions 的 `response_format: {"type":"json_object"}` 能力。
 
 Worker 必须监听 `ai` 队列，否则任务会一直停留在排队状态。推荐在 `configs/config.yaml` 使用与默认配置一致的优先级：
 

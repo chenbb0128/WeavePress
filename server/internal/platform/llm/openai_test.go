@@ -13,6 +13,38 @@ import (
 	"time"
 )
 
+func TestOpenAIChatCompletionsEndpointSupportsVersionedBaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{
+			name:    "default OpenAI root",
+			baseURL: "https://api.openai.com",
+			want:    "https://api.openai.com/v1/chat/completions",
+		},
+		{
+			name:    "OpenAI compatible v1 root",
+			baseURL: "https://llm.example.com/v1/",
+			want:    "https://llm.example.com/v1/chat/completions",
+		},
+		{
+			name:    "Zhipu compatible v4 root",
+			baseURL: "https://open.bigmodel.cn/api/paas/v4/",
+			want:    "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := openAIChatCompletionsEndpoint(tt.baseURL); got != tt.want {
+				t.Fatalf("endpoint = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOpenAICompleteMapsRequestAndUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost {
