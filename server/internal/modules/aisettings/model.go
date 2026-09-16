@@ -8,10 +8,12 @@ import (
 const (
 	ProviderZhipu            = "zhipu"
 	ProviderOpenAI           = "openai"
+	ProviderQwen             = "qwen"
 	ProviderOpenAICompatible = "openai-compatible"
 
 	zhipuBaseURL  = "https://open.bigmodel.cn/api/paas/v4"
 	openAIBaseURL = "https://api.openai.com/v1"
+	qwenBaseURL   = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
 
 var (
@@ -36,6 +38,7 @@ type ProviderDefinition struct {
 var providerCatalog = []ProviderDefinition{
 	{ID: ProviderZhipu, Name: "智谱 GLM", BaseURL: zhipuBaseURL, DefaultModel: "glm-5.3-flash", ModelOptions: []string{"glm-5.3-flash"}},
 	{ID: ProviderOpenAI, Name: "OpenAI", BaseURL: openAIBaseURL, DefaultModel: "gpt-5-mini", ModelOptions: []string{"gpt-5", "gpt-5-mini"}},
+	{ID: ProviderQwen, Name: "通义千问", BaseURL: qwenBaseURL, DefaultModel: "qwen-plus", ModelOptions: []string{"qwen-plus", "qwen-max", "qwen-turbo"}},
 	{ID: ProviderOpenAICompatible, Name: "自定义 OpenAI-compatible", BaseURLEditable: true},
 }
 

@@ -17,6 +17,7 @@ import {
   ElEmpty,
   ElInput,
   ElMessage,
+  ElMessageBox,
   ElOption,
   ElPagination,
   ElSelect,
@@ -27,11 +28,17 @@ import {
   ElTimelineItem,
 } from 'element-plus';
 
-import { getAIJobApi, getAIJobsApi, retryAIJobApi } from '#/api';
+import {
+  deleteAIJobApi,
+  getAIJobApi,
+  getAIJobsApi,
+  retryAIJobApi,
+} from '#/api';
 
 import {
   AI_JOB_STATUS_LABELS,
   AI_JOB_TYPE_LABELS,
+  canDelete,
   canRetry,
   shouldPoll,
 } from './model';
@@ -40,6 +47,7 @@ defineOptions({ name: 'AIJobs' });
 
 const POLL_INTERVAL = 8000;
 const RETRY_PERMISSION = 'ai:job:retry';
+const DELETE_PERMISSION = 'ai:job:delete';
 const router = useRouter();
 const { hasAccessByCodes } = useAccess();
 const jobs = ref<AIJob[]>([]);
@@ -48,6 +56,7 @@ const loading = ref(false);
 const drawer = ref(false);
 const detailLoadingId = ref<number>();
 const retryingIds = ref<Set<number>>(new Set());
+const deletingIds = ref<Set<number>>(new Set());
 const query = reactive<{
   articleId: string;
   status: '' | AIJobStatus;
@@ -136,11 +145,22 @@ function canRetryJob(job: AIJob) {
   return canRetry(job) && hasAccessByCodes([RETRY_PERMISSION]);
 }
 
+function canDeleteJob(job: AIJob) {
+  return canDelete(job) && hasAccessByCodes([DELETE_PERMISSION]);
+}
+
 function setRetrying(id: number, retrying: boolean) {
   const next = new Set(retryingIds.value);
   if (retrying) next.add(id);
   else next.delete(id);
   retryingIds.value = next;
+}
+
+function setDeleting(id: number, deleting: boolean) {
+  const next = new Set(deletingIds.value);
+  if (deleting) next.add(id);
+  else next.delete(id);
+  deletingIds.value = next;
 }
 
 function clearPoll() {
@@ -243,6 +263,39 @@ async function retry(job: AIJob) {
     }
   }
   if (!destroyed) setRetrying(job.id, false);
+}
+
+async function remove(job: AIJob) {
+  if (!canDeleteJob(job) || deletingIds.value.has(job.id)) return;
+  try {
+    await ElMessageBox.confirm(
+      `确定删除失败的 AI 任务 #${job.id} 吗？此操作不会删除来源文章。`,
+      '删除 AI 任务',
+      {
+        cancelButtonText: '取消',
+        confirmButtonText: '删除',
+        type: 'warning',
+      },
+    );
+  } catch {
+    return;
+  }
+
+  setDeleting(job.id, true);
+  try {
+    await deleteAIJobApi(job.id);
+    if (destroyed) return;
+    if (selected.value?.id === job.id) {
+      drawer.value = false;
+      selected.value = undefined;
+    }
+    ElMessage.success('失败任务已删除');
+    await load();
+  } catch {
+    if (!destroyed) ElMessage.error('AI 任务删除失败，请稍后再试');
+  } finally {
+    if (!destroyed) setDeleting(job.id, false);
+  }
 }
 
 function search() {
@@ -411,7 +464,7 @@ onBeforeUnmount(() => {
             {{ dayjs(row.createdAt).format('YYYY-MM-DD HH:mm') }}
           </template>
         </ElTableColumn>
-        <ElTableColumn align="right" fixed="right" label="操作" width="150">
+        <ElTableColumn align="right" fixed="right" label="操作" width="200">
           <template #default="{ row }">
             <ElButton
               :disabled="
@@ -432,6 +485,15 @@ onBeforeUnmount(() => {
               @click="retry(row as AIJob)"
             >
               重试
+            </ElButton>
+            <ElButton
+              v-if="canDeleteJob(row as AIJob)"
+              :loading="deletingIds.has(row.id)"
+              link
+              type="danger"
+              @click="remove(row as AIJob)"
+            >
+              删除
             </ElButton>
           </template>
         </ElTableColumn>
@@ -545,6 +607,14 @@ onBeforeUnmount(() => {
             @click="retry(selected)"
           >
             重新执行
+          </ElButton>
+          <ElButton
+            v-if="canDeleteJob(selected)"
+            :loading="deletingIds.has(selected.id)"
+            type="danger"
+            @click="remove(selected)"
+          >
+            删除任务
           </ElButton>
           <ElButton
             v-if="

@@ -96,6 +96,11 @@ func (s *fakeAIService) Retry(_ context.Context, jobID, userID uint64) (aiwritin
 	return s.job, s.err
 }
 
+func (s *fakeAIService) Delete(_ context.Context, jobID uint64) error {
+	s.call, s.jobID = "delete", jobID
+	return s.err
+}
+
 func TestAIRoutesAreProtected(t *testing.T) {
 	tests := []struct {
 		method string
@@ -111,6 +116,7 @@ func TestAIRoutesAreProtected(t *testing.T) {
 		{http.MethodGet, "/api/ai-jobs", ""},
 		{http.MethodGet, "/api/ai-jobs/1", ""},
 		{http.MethodPost, "/api/ai-jobs/1/retry", ""},
+		{http.MethodDelete, "/api/ai-jobs/1", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
@@ -120,6 +126,38 @@ func TestAIRoutesAreProtected(t *testing.T) {
 				t.Fatalf("status = %d, want 401; body=%s", recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+func TestDeleteAIJobRequiresAdminAndDeletesFailedJob(t *testing.T) {
+	t.Run("editor is forbidden", func(t *testing.T) {
+		fake := &fakeAIService{}
+		api, token := newAITestAPI(t, fake, workspace.RoleEditor)
+		recorder := performRequest(t, api, http.MethodDelete, "/api/ai-jobs/24", "", token)
+		assertStatus(t, recorder, http.StatusForbidden)
+		if fake.call != "" {
+			t.Fatalf("service call = %q, want none", fake.call)
+		}
+	})
+
+	t.Run("admin deletes", func(t *testing.T) {
+		fake := &fakeAIService{}
+		api, token := newAITestAPI(t, fake, workspace.RoleAdmin)
+		recorder := performRequest(t, api, http.MethodDelete, "/api/ai-jobs/24", "", token)
+		assertStatus(t, recorder, http.StatusOK)
+		if fake.call != "delete" || fake.jobID != 24 || !strings.Contains(recorder.Body.String(), `"deleted":true`) {
+			t.Fatalf("fake=%#v body=%s", fake, recorder.Body.String())
+		}
+	})
+}
+
+func TestDeleteAIJobRejectsNonFailedJob(t *testing.T) {
+	fake := &fakeAIService{err: aiwriting.ErrJobNotDeletable}
+	api, token := newAITestAPI(t, fake, workspace.RoleAdmin)
+	recorder := performRequest(t, api, http.MethodDelete, "/api/ai-jobs/24", "", token)
+	assertStatus(t, recorder, http.StatusConflict)
+	if fake.call != "delete" || strings.Contains(recorder.Body.String(), aiwriting.ErrJobNotDeletable.Error()) {
+		t.Fatalf("call=%q unsafe body=%s", fake.call, recorder.Body.String())
 	}
 }
 

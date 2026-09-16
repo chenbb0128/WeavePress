@@ -103,6 +103,7 @@ func (a *API) Register(router *gin.Engine) {
 	protected.GET("/ai-jobs", a.requireCode(codeAIAnalysisView), a.listAIJobs)
 	protected.GET("/ai-jobs/:id", a.requireCode(codeAIAnalysisView), a.getAIJob)
 	protected.POST("/ai-jobs/:id/retry", a.requireCode(codeAIJobRetry), a.retryAIJob)
+	protected.DELETE("/ai-jobs/:id", a.requireRole(workspace.RoleAdmin), a.requireCode(codeAIJobDelete), a.deleteAIJob)
 
 	router.GET("/media/assets/:id", a.media("assets"))
 	router.GET("/media/raw/:id", a.media("raw"))
@@ -961,6 +962,7 @@ func (a *API) writeError(c *gin.Context, err error) {
 	case errors.Is(err, aiwriting.ErrArticleNotReady),
 		errors.Is(err, aiwriting.ErrAnalysisNotReady),
 		errors.Is(err, aiwriting.ErrJobNotRetryable),
+		errors.Is(err, aiwriting.ErrJobNotDeletable),
 		errors.Is(err, workspace.ErrJobStateConflict):
 		response.Error(c, response.Conflict("AI 任务当前状态不允许此操作", err))
 	case errors.Is(err, workspace.ErrUsernameTaken):

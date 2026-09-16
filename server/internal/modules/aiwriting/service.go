@@ -285,6 +285,10 @@ func (s *Service) Retry(ctx context.Context, jobID, userID uint64) (Job, error) 
 	return job, nil
 }
 
+func (s *Service) Delete(ctx context.Context, jobID uint64) error {
+	return s.store.DeleteJob(ctx, jobID)
+}
+
 func (s *Service) enqueue(ctx context.Context, job Job) error {
 	if s.queue == nil {
 		return fmt.Errorf("AI queue unavailable")

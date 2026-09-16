@@ -482,6 +482,33 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: 删除失败的 AI 任务（仅管理员）
+      operationId: deleteAIJob
+      security: [ { bearerAuth: [] } ]
+      parameters: [ { $ref: "#/components/parameters/ID" } ]
+      responses:
+        "200":
+          description: 失败任务已删除，来源文章保留
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, message, data]
+                properties:
+                  code: { type: integer, example: 0 }
+                  message: { type: string, example: success }
+                  data:
+                    type: object
+                    required: [deleted]
+                    properties:
+                      deleted: { type: boolean, example: true }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/ai-jobs/{id}/retry:
     post:
       summary: 手动重试失败的 AI 任务
@@ -701,7 +728,7 @@ components:
       additionalProperties: false
       required: [id, name, baseUrl, baseUrlEditable, model, modelOptions, keyConfigured]
       properties:
-        id: { type: string, enum: [zhipu, openai, openai-compatible] }
+        id: { type: string, enum: [zhipu, openai, qwen, openai-compatible] }
         name: { type: string }
         baseUrl: { type: string, maxLength: 500 }
         baseUrlEditable: { type: boolean }
@@ -714,7 +741,7 @@ components:
       required: [enabled, activeProvider, providers]
       properties:
         enabled: { type: boolean }
-        activeProvider: { type: string, enum: [zhipu, openai, openai-compatible] }
+        activeProvider: { type: string, enum: [zhipu, openai, qwen, openai-compatible] }
         providers:
           type: array
           items: { $ref: "#/components/schemas/AIProviderSettings" }
@@ -724,7 +751,7 @@ components:
       required: [enabled, activeProvider, baseUrl, model, apiKey]
       properties:
         enabled: { type: boolean }
-        activeProvider: { type: string, enum: [zhipu, openai, openai-compatible] }
+        activeProvider: { type: string, enum: [zhipu, openai, qwen, openai-compatible] }
         baseUrl: { type: string, maxLength: 500 }
         model: { type: string, minLength: 1, maxLength: 100 }
         apiKey:
@@ -736,7 +763,7 @@ components:
       additionalProperties: false
       required: [activeProvider, baseUrl, model, apiKey]
       properties:
-        activeProvider: { type: string, enum: [zhipu, openai, openai-compatible] }
+        activeProvider: { type: string, enum: [zhipu, openai, qwen, openai-compatible] }
         baseUrl: { type: string, maxLength: 500 }
         model: { type: string, minLength: 1, maxLength: 100 }
         apiKey:
@@ -749,7 +776,7 @@ components:
       required: [success, provider, model, latencyMs]
       properties:
         success: { type: boolean }
-        provider: { type: string, enum: [zhipu, openai, openai-compatible] }
+        provider: { type: string, enum: [zhipu, openai, qwen, openai-compatible] }
         model: { type: string }
         latencyMs: { type: integer, format: int64, minimum: 0 }
     StartAIAnalysisInput:

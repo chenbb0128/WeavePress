@@ -961,6 +961,28 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 	if err != nil || retriedOutputFailure.Status != aiwriting.JobQueued || retriedOutputFailure.ManualRetries != 1 {
 		t.Fatalf("output-invalid retry job=%#v err=%v", retriedOutputFailure, err)
 	}
+	if err := aiStore.DeleteJob(ctx, completedAnalysisJob.ID); !errors.Is(err, aiwriting.ErrJobNotDeletable) {
+		t.Fatalf("completed job delete error=%v, want %v", err, aiwriting.ErrJobNotDeletable)
+	}
+	deleteInput := generationInput
+	deleteInput.Params.IdempotencyKey = "delete-failed-generation"
+	_, deleteJob, _, err := aiStore.CreateGenerationJob(ctx, deleteInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := aiStore.SetJobFailure(ctx, deleteJob.ID, aiwriting.JobFailureInput{Code: "FINAL", Message: "删除测试"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := aiStore.SaveJobOutput(ctx, aiwriting.SaveJobOutputInput{JobID: deleteJob.ID, Stage: aiwriting.JobOutputInitial, Content: "invalid"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := aiStore.DeleteJob(ctx, deleteJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(`SELECT COUNT(*) FROM ai_jobs WHERE id = ?`, 0, deleteJob.ID)
+	assertCount(`SELECT COUNT(*) FROM ai_generations WHERE job_id = ?`, 0, deleteJob.ID)
+	assertCount(`SELECT COUNT(*) FROM ai_job_events WHERE job_id = ?`, 0, deleteJob.ID)
+	assertCount(`SELECT COUNT(*) FROM ai_job_outputs WHERE job_id = ?`, 0, deleteJob.ID)
 	if err := aiStore.SetJobFailure(ctx, forcedJob.ID, aiwriting.JobFailureInput{
 		Code: "INVALID", Message: "非法重排", Requeue: true,
 	}); !errors.Is(err, aiwriting.ErrInvalidParameters) {

@@ -143,7 +143,7 @@ onMounted(load);
           <p class="wp-page-eyebrow">AI PROVIDER</p>
           <h1 class="wp-page-title">AI 服务设置</h1>
           <p class="wp-page-description">
-            分别保存智谱 GLM、OpenAI 或兼容服务，保存后 API 与 Worker 无需重启。
+            分别保存智谱 GLM、通义千问、OpenAI 或兼容服务，保存后 API 与 Worker 无需重启。
           </p>
         </div>
         <ElTag

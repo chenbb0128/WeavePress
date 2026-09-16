@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AI_JOB_STATUS_LABELS,
   AI_JOB_TYPE_LABELS,
+  canDelete,
   canGenerate,
   canRetry,
   shouldPoll,
@@ -155,5 +156,12 @@ describe('ai workbench model', () => {
         status: 'running',
       }),
     ).toBe(false);
+  });
+
+  it('only allows failed jobs to be deleted', () => {
+    expect(canDelete({ status: 'failed' })).toBe(true);
+    expect(canDelete({ status: 'queued' })).toBe(false);
+    expect(canDelete({ status: 'running' })).toBe(false);
+    expect(canDelete({ status: 'completed' })).toBe(false);
   });
 });

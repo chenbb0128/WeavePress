@@ -130,3 +130,7 @@ export function canRetry(
     (job.retryable || MANUALLY_RETRYABLE_OUTPUT_ERRORS.has(job.errorCode ?? ''))
   );
 }
+
+export function canDelete(job: Pick<AIJob, 'status'>) {
+  return job.status === 'failed';
+}

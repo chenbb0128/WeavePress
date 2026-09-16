@@ -42,6 +42,7 @@ var (
 	ErrAssetInvalid           = errors.New("AI asset is invalid")
 	ErrExcessiveSourceOverlap = errors.New("AI output overlaps the source excessively")
 	ErrJobNotRetryable        = errors.New("AI job is not retryable")
+	ErrJobNotDeletable        = errors.New("AI job is not deletable")
 )
 
 var AllowedTones = map[string]struct{}{

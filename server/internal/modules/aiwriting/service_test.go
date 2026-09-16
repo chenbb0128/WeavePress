@@ -41,6 +41,9 @@ type fakeAIStore struct {
 	retryJob                Job
 	retryErr                error
 	retryCalls              int
+	deleteErr               error
+	deleteCalls             int
+	deletedJobID            uint64
 	setRunningErr           error
 	completeAnalysisCalls   int
 	completedAnalysis       AnalysisOutput
@@ -134,6 +137,11 @@ func (s *fakeAIStore) SaveJobOutput(_ context.Context, input SaveJobOutputInput)
 func (s *fakeAIStore) RetryJob(context.Context, uint64, uint64) (Job, error) {
 	s.retryCalls++
 	return s.retryJob, s.retryErr
+}
+func (s *fakeAIStore) DeleteJob(_ context.Context, jobID uint64) error {
+	s.deleteCalls++
+	s.deletedJobID = jobID
+	return s.deleteErr
 }
 
 type fakeAIArticles struct {
@@ -591,6 +599,28 @@ func TestRetryDisabledDoesNotUseStoreOrQueue(t *testing.T) {
 	}
 	if store.retryCalls != 0 || queue.calls != 0 {
 		t.Fatalf("RetryJob calls=%d enqueue calls=%d, want both 0", store.retryCalls, queue.calls)
+	}
+}
+
+func TestDeleteDelegatesFailedJobRemovalToStore(t *testing.T) {
+	store := &fakeAIStore{}
+	service := New(store, &fakeAIArticles{}, nil, nil, testAIConfig())
+
+	err := service.Delete(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.deleteCalls != 1 || store.deletedJobID != 7 {
+		t.Fatalf("DeleteJob calls=%d jobID=%d, want 1 and 7", store.deleteCalls, store.deletedJobID)
+	}
+}
+
+func TestDeletePropagatesNotDeletableError(t *testing.T) {
+	store := &fakeAIStore{deleteErr: ErrJobNotDeletable}
+	service := New(store, &fakeAIArticles{}, nil, nil, testAIConfig())
+
+	if err := service.Delete(context.Background(), 7); !errors.Is(err, ErrJobNotDeletable) {
+		t.Fatalf("Delete() error = %v, want %v", err, ErrJobNotDeletable)
 	}
 }
 

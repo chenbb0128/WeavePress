@@ -32,6 +32,15 @@ const settings: AISettings = {
       modelOptions: ['gpt-5', 'gpt-5-mini'],
       name: 'OpenAI',
     },
+    {
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      baseUrlEditable: false,
+      id: 'qwen',
+      keyConfigured: true,
+      model: 'qwen-plus',
+      modelOptions: ['qwen-plus', 'qwen-max', 'qwen-turbo'],
+      name: '通义千问',
+    },
   ],
 };
 
@@ -89,6 +98,23 @@ describe('ai settings view model', () => {
 
     expect(getApiKeyPlaceholder(settings, form.activeProvider)).toBe(
       '输入 API Key',
+    );
+  });
+
+  it('switches to the independently configured qwen provider', () => {
+    const form = createSettingsForm(settings);
+
+    applyProviderToForm(form, settings, 'qwen');
+
+    expect(form).toEqual({
+      activeProvider: 'qwen',
+      apiKey: '',
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      enabled: false,
+      model: 'qwen-plus',
+    });
+    expect(getApiKeyPlaceholder(settings, form.activeProvider)).toBe(
+      '••••••••••••（已保存）',
     );
   });
 });

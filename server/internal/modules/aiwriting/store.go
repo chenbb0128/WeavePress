@@ -65,4 +65,5 @@ type Store interface {
 	AddJobEvent(context.Context, uint64, string, string) error
 	SaveJobOutput(context.Context, SaveJobOutputInput) error
 	RetryJob(context.Context, uint64, uint64) (Job, error)
+	DeleteJob(context.Context, uint64) error
 }

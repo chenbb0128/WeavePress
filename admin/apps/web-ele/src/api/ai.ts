@@ -19,7 +19,7 @@ export interface AIStatus {
   provider: string;
 }
 
-export type AIProviderId = 'openai' | 'openai-compatible' | 'zhipu';
+export type AIProviderId = 'openai' | 'openai-compatible' | 'qwen' | 'zhipu';
 
 export interface AIProviderSettings {
   baseUrl: string;
@@ -292,4 +292,8 @@ export function getAIJobApi(id: number) {
 
 export function retryAIJobApi(id: number) {
   return requestClient.post<AIJob>(`/ai-jobs/${id}/retry`);
+}
+
+export function deleteAIJobApi(id: number) {
+  return requestClient.delete<{ deleted: boolean }>(`/ai-jobs/${id}`);
 }

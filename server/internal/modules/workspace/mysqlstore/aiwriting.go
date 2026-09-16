@@ -609,6 +609,32 @@ func (s *AIStore) RetryJob(ctx context.Context, id, requestedBy uint64) (aiwriti
 	return s.GetJob(ctx, id, false)
 }
 
+func (s *AIStore) DeleteJob(ctx context.Context, id uint64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	job, err := getAIJobForUpdate(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if job.Status != aiwriting.JobFailed {
+		return aiwriting.ErrJobNotDeletable
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM ai_generations WHERE job_id = ?`, id); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM ai_jobs WHERE id = ? AND status = 'failed'`, id)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return aiwriting.ErrJobNotDeletable
+	}
+	return tx.Commit()
+}
+
 type aiQueryRower interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }

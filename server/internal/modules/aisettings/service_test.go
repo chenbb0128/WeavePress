@@ -107,8 +107,8 @@ func TestViewReturnsCatalogWithoutAPIKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(view.Providers) != 3 {
-		t.Fatalf("providers = %d, want 3", len(view.Providers))
+	if len(view.Providers) != 4 {
+		t.Fatalf("providers = %d, want 4", len(view.Providers))
 	}
 	if !view.Providers[0].KeyConfigured || view.Providers[0].Model != "glm-custom" {
 		t.Fatalf("zhipu view = %#v", view.Providers[0])
@@ -116,6 +116,28 @@ func TestViewReturnsCatalogWithoutAPIKey(t *testing.T) {
 	if strings.Contains(strings.ToLower(strings.Join([]string{view.Providers[0].BaseURL, view.Providers[0].Model}, " ")), "api-key-sensitive") {
 		t.Fatal("view leaked key")
 	}
+}
+
+func TestViewIncludesQwenProviderDefaults(t *testing.T) {
+	store := &fakeStore{providers: map[string]StoredProvider{}}
+	view, err := newTestService(t, store).View(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, provider := range view.Providers {
+		if provider.ID != "qwen" {
+			continue
+		}
+		if provider.Name != "通义千问" || provider.BaseURL != "https://dashscope.aliyuncs.com/compatible-mode/v1" || provider.BaseURLEditable || provider.Model != "qwen-plus" {
+			t.Fatalf("qwen provider = %#v", provider)
+		}
+		wantModels := []string{"qwen-plus", "qwen-max", "qwen-turbo"}
+		if strings.Join(provider.ModelOptions, ",") != strings.Join(wantModels, ",") {
+			t.Fatalf("qwen models = %#v, want %#v", provider.ModelOptions, wantModels)
+		}
+		return
+	}
+	t.Fatal("qwen provider is missing")
 }
 
 func TestUpdateEmptyKeyPreservesConfiguredKey(t *testing.T) {
@@ -282,6 +304,16 @@ func TestUpdateKeepsProviderSettingsSeparate(t *testing.T) {
 	}
 	if bytes.Equal(store.providers[ProviderZhipu].APICiphertext, store.providers[ProviderOpenAI].APICiphertext) {
 		t.Fatal("provider keys were not stored separately")
+	}
+	_, err = service.Update(context.Background(), 7, UpdateInput{
+		ActiveProvider: "qwen", Model: "qwen-plus", APIKey: "qwen-key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(store.providers["qwen"].APICiphertext, store.providers[ProviderZhipu].APICiphertext) ||
+		bytes.Equal(store.providers["qwen"].APICiphertext, store.providers[ProviderOpenAI].APICiphertext) {
+		t.Fatal("qwen key was not stored separately")
 	}
 }
 

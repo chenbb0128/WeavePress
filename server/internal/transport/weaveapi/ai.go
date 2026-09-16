@@ -22,6 +22,7 @@ const (
 	codeAIGenerationCreate = "ai:generation:create"
 	codeAIGenerationView   = "ai:generation:view"
 	codeAIJobRetry         = "ai:job:retry"
+	codeAIJobDelete        = "ai:job:delete"
 )
 
 type AIService interface {
@@ -34,6 +35,7 @@ type AIService interface {
 	Jobs(context.Context, aiwriting.JobFilter, int, int) (aiwriting.Page[aiwriting.Job], error)
 	Job(context.Context, uint64) (aiwriting.Job, error)
 	Retry(context.Context, uint64, uint64) (aiwriting.Job, error)
+	Delete(context.Context, uint64) error
 }
 
 type analysisInput struct {
@@ -254,6 +256,19 @@ func (a *API) retryAIJob(c *gin.Context) {
 		return
 	}
 	response.JSON(c, http.StatusAccepted, result)
+}
+
+func (a *API) deleteAIJob(c *gin.Context) {
+	id, err := parsePositiveID(c.Param("id"))
+	if err != nil {
+		response.Error(c, response.BadRequest("AI 任务 ID 不正确", err))
+		return
+	}
+	if err := a.ai.Delete(c.Request.Context(), id); err != nil {
+		a.writeError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"deleted": true})
 }
 
 func aiPagination(query url.Values) (int, int, *response.AppError) {

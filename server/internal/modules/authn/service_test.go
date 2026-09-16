@@ -34,6 +34,12 @@ func TestPermissionsSeparateAdministration(t *testing.T) {
 	if !contains(admin, "user:view") {
 		t.Fatal("admin misses user administration permission")
 	}
+	if contains(editor, "ai:job:delete") {
+		t.Fatal("editor received AI job deletion permission")
+	}
+	if !contains(admin, "ai:job:delete") {
+		t.Fatal("admin misses AI job deletion permission")
+	}
 }
 
 func TestPermissionsIncludeAIWritingForAdminAndEditor(t *testing.T) {
