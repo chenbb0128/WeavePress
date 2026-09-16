@@ -126,7 +126,7 @@ async function testConnection() {
       `${currentProvider.value?.name ?? result.provider} / ${result.model} 连接成功，耗时 ${result.latencyMs} ms`,
     );
   } catch {
-    return;
+    // 请求错误由全局响应拦截器展示。
   } finally {
     testing.value = false;
   }
