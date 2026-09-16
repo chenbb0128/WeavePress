@@ -49,6 +49,8 @@ type fakeAIStore struct {
 	completedDraft          editorial.GeneratedDraftInput
 	events                  []JobEvent
 	eventErr                error
+	outputs                 []SaveJobOutputInput
+	outputErr               error
 }
 
 func (s *fakeAIStore) CreateAnalysisJob(_ context.Context, input CreateAnalysisJobInput) (Job, bool, error) {
@@ -124,6 +126,10 @@ func (s *fakeAIStore) AddJobEvent(_ context.Context, jobID uint64, status, messa
 	}
 	s.events = append(s.events, JobEvent{JobID: jobID, Status: status, Message: message})
 	return nil
+}
+func (s *fakeAIStore) SaveJobOutput(_ context.Context, input SaveJobOutputInput) error {
+	s.outputs = append(s.outputs, input)
+	return s.outputErr
 }
 func (s *fakeAIStore) RetryJob(context.Context, uint64, uint64) (Job, error) {
 	s.retryCalls++
@@ -671,6 +677,15 @@ func TestHandleAnalyzeTaskRepairsInvalidJSONOnceAndAccumulatesUsage(t *testing.T
 	if store.job.TokenUsage != (TokenUsage{InputTokens: 9, OutputTokens: 5, TotalTokens: 14}) {
 		t.Fatalf("usage = %#v", store.job.TokenUsage)
 	}
+	if len(store.outputs) != 2 {
+		t.Fatalf("outputs = %#v, want initial and repair", store.outputs)
+	}
+	if store.outputs[0].Stage != JobOutputInitial || store.outputs[0].Content != "not-json" || !strings.Contains(store.outputs[0].ValidationError, "one JSON object") {
+		t.Fatalf("initial output = %#v", store.outputs[0])
+	}
+	if store.outputs[1].Stage != JobOutputRepair || store.outputs[1].Content != validJSON || store.outputs[1].ValidationError != "" {
+		t.Fatalf("repair output = %#v", store.outputs[1])
+	}
 }
 
 func TestHandleAnalyzeTaskRepairsInvalidJSONFromRealProvider(t *testing.T) {
@@ -724,6 +739,24 @@ func TestHandleAnalyzeTaskFailsPermanentlyWhenRepairIsStillInvalid(t *testing.T)
 	failure := store.failures[0]
 	if failure.Code != "AI_OUTPUT_INVALID" || failure.Retryable || failure.Requeue || failure.Usage.TotalTokens != 14 {
 		t.Fatalf("failure = %#v", failure)
+	}
+	if len(store.outputs) != 2 || store.outputs[1].Stage != JobOutputRepair || !strings.Contains(store.outputs[1].ValidationError, "facts must be a non-null array") {
+		t.Fatalf("outputs = %#v", store.outputs)
+	}
+}
+
+func TestHandleAnalyzeTaskTruncatesStoredModelOutput(t *testing.T) {
+	store := &fakeAIStore{job: Job{ID: 7, Type: JobTypeAnalysis, ArticleID: 12, Status: JobQueued}}
+	provider := &fakeAIProvider{responses: []llm.Response{
+		{Content: strings.Repeat("界", maxStoredOutputBytes), Usage: llm.Usage{TotalTokens: 1}},
+		{Content: `{}`, Usage: llm.Usage{TotalTokens: 1}},
+	}}
+	service := New(store, &fakeAIArticles{article: readyAIArticle()}, nil, provider, testAIConfig())
+
+	_ = service.HandleAnalyzeTask(context.Background(), jobTask(TaskAnalyze, 7))
+
+	if len(store.outputs) != 2 || !store.outputs[0].Truncated || len([]byte(store.outputs[0].Content)) > maxStoredOutputBytes {
+		t.Fatalf("outputs = %#v", store.outputs)
 	}
 }
 

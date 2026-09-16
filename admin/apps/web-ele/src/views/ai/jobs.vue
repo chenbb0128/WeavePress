@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import type { AIJob, AIJobStatus, AIJobType } from '#/api';
+import type { AIJob, AIJobOutput, AIJobStatus, AIJobType } from '#/api';
 
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
@@ -8,6 +8,7 @@ import { useAccess } from '@vben/access';
 
 import dayjs from 'dayjs';
 import {
+  ElAlert,
   ElButton,
   ElCard,
   ElDescriptions,
@@ -89,6 +90,19 @@ function safeJobMessage(job: AIJob) {
 
 function safeEventMessage(message: string) {
   return safeMessage(message, '任务状态已更新');
+}
+
+function outputStageLabel(stage: AIJobOutput['stage']) {
+  return stage === 'repair' ? '格式修复输出' : '首次模型输出';
+}
+
+async function copyModelOutput(output: AIJobOutput) {
+  try {
+    await navigator.clipboard.writeText(output.content);
+    ElMessage.success('模型输出已复制');
+  } catch {
+    ElMessage.error('复制失败，请手动选择文本');
+  }
 }
 
 function formatDuration(job: AIJob) {
@@ -481,6 +495,47 @@ onBeforeUnmount(() => {
           </ElTimelineItem>
         </ElTimeline>
         <ElEmpty v-else description="暂无执行事件" :image-size="72" />
+
+        <h2 class="mb-4 mt-6 text-base font-semibold">模型输出</h2>
+        <div v-if="selected.outputs?.length" class="space-y-4">
+          <section
+            v-for="output in selected.outputs"
+            :key="output.id"
+            class="border-border bg-muted/30 rounded-lg border p-4"
+          >
+            <div class="mb-3 flex flex-wrap items-center gap-2">
+              <strong>{{ outputStageLabel(output.stage) }}</strong>
+              <ElTag v-if="output.truncated" effect="plain" type="warning">
+                内容已截断
+              </ElTag>
+              <span class="text-muted-foreground text-xs">
+                Input {{ output.inputTokens.toLocaleString() }} / Output
+                {{ output.outputTokens.toLocaleString() }} / Total
+                {{ output.totalTokens.toLocaleString() }}
+              </span>
+              <ElButton
+                class="ml-auto"
+                link
+                type="primary"
+                @click="copyModelOutput(output)"
+              >
+                复制输出
+              </ElButton>
+            </div>
+            <ElAlert
+              v-if="output.validationError"
+              class="mb-3"
+              :closable="false"
+              show-icon
+              :title="`结构校验：${output.validationError}`"
+              type="error"
+            />
+            <pre
+              class="bg-background max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-md border p-3 text-xs leading-5"
+              >{{ output.content }}</pre>
+          </section>
+        </div>
+        <ElEmpty v-else description="暂无模型输出记录" :image-size="72" />
 
         <div class="mt-6 flex gap-2">
           <ElButton

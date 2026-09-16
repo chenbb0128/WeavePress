@@ -20,6 +20,11 @@ import (
 	"github.com/chenbb0128/weavepress/server/internal/platform/llm"
 )
 
+const (
+	maxStoredOutputBytes          = 256 << 10
+	maxStoredValidationErrorBytes = 8 << 10
+)
+
 type Enqueuer interface {
 	EnqueueContext(context.Context, *asynq.Task, ...asynq.Option) (*asynq.TaskInfo, error)
 }
@@ -381,6 +386,9 @@ func (s *Service) processAnalysis(ctx context.Context, job Job) error {
 	if validationErr == nil {
 		validationErr = ValidateAnalysis(source, output)
 	}
+	if err := s.saveJobOutput(ctx, job.ID, JobOutputInitial, response.Content, validationErr, tokenUsage(response.Usage)); err != nil {
+		return withUsage(err, usage)
+	}
 	if validationErr != nil {
 		if !errors.Is(validationErr, ErrOutputInvalid) {
 			return withUsage(validationErr, usage)
@@ -388,7 +396,7 @@ func (s *Service) processAnalysis(ctx context.Context, job Job) error {
 		if err := s.store.AddJobEvent(ctx, job.ID, "format_repair", "AI 分析输出格式无效，正在执行一次格式修复"); err != nil {
 			return withUsage(err, usage)
 		}
-		output, usage, validationErr = s.repairAnalysis(ctx, provider, source, response.Content, usage)
+		output, usage, validationErr = s.repairAnalysis(ctx, job.ID, provider, source, response.Content, usage)
 		if validationErr != nil {
 			return withUsage(normalizeRepairError(validationErr), usage)
 		}
@@ -400,7 +408,7 @@ func (s *Service) processAnalysis(ctx context.Context, job Job) error {
 	return nil
 }
 
-func (s *Service) repairAnalysis(ctx context.Context, provider llm.Provider, source SourceDocument, raw string, usage TokenUsage) (AnalysisOutput, TokenUsage, error) {
+func (s *Service) repairAnalysis(ctx context.Context, jobID uint64, provider llm.Provider, source SourceDocument, raw string, usage TokenUsage) (AnalysisOutput, TokenUsage, error) {
 	response, err := provider.Complete(ctx, llm.Request{
 		Messages:    BuildRepairMessages(JobTypeAnalysis, raw),
 		MaxTokens:   s.limits.MaxOutputTokens,
@@ -411,12 +419,15 @@ func (s *Service) repairAnalysis(ctx context.Context, provider llm.Provider, sou
 	if err != nil {
 		return AnalysisOutput{}, usage, err
 	}
-	output, err := DecodeAnalysisOutput(response.Content)
-	if err != nil {
+	output, validationErr := DecodeAnalysisOutput(response.Content)
+	if validationErr == nil {
+		validationErr = ValidateAnalysis(source, output)
+	}
+	if err := s.saveJobOutput(ctx, jobID, JobOutputRepair, response.Content, validationErr, tokenUsage(response.Usage)); err != nil {
 		return AnalysisOutput{}, usage, err
 	}
-	if err := ValidateAnalysis(source, output); err != nil {
-		return AnalysisOutput{}, usage, err
+	if validationErr != nil {
+		return AnalysisOutput{}, usage, validationErr
 	}
 	return output, usage, nil
 }
@@ -489,6 +500,9 @@ func (s *Service) processGeneration(ctx context.Context, job Job) error {
 		return withUsage(err, usage)
 	}
 	output, validationErr := s.decodeAndValidateGeneration(ctx, source, analysis, response.Content)
+	if err := s.saveJobOutput(ctx, job.ID, JobOutputInitial, response.Content, validationErr, tokenUsage(response.Usage)); err != nil {
+		return withUsage(err, usage)
+	}
 	if validationErr != nil {
 		if !errors.Is(validationErr, ErrOutputInvalid) {
 			return withUsage(validationErr, usage)
@@ -496,7 +510,7 @@ func (s *Service) processGeneration(ctx context.Context, job Job) error {
 		if err := s.store.AddJobEvent(ctx, job.ID, "format_repair", "AI 稿件输出格式无效，正在执行一次格式修复"); err != nil {
 			return withUsage(err, usage)
 		}
-		output, usage, validationErr = s.repairGeneration(ctx, provider, source, analysis, response.Content, usage)
+		output, usage, validationErr = s.repairGeneration(ctx, job.ID, provider, source, analysis, response.Content, usage)
 		if validationErr != nil {
 			return withUsage(normalizeRepairError(validationErr), usage)
 		}
@@ -518,7 +532,7 @@ func (s *Service) processGeneration(ctx context.Context, job Job) error {
 	return nil
 }
 
-func (s *Service) repairGeneration(ctx context.Context, provider llm.Provider, source SourceDocument, analysis Analysis, raw string, usage TokenUsage) (GenerationOutput, TokenUsage, error) {
+func (s *Service) repairGeneration(ctx context.Context, jobID uint64, provider llm.Provider, source SourceDocument, analysis Analysis, raw string, usage TokenUsage) (GenerationOutput, TokenUsage, error) {
 	response, err := provider.Complete(ctx, llm.Request{
 		Messages:    BuildRepairMessages(JobTypeGeneration, raw),
 		MaxTokens:   s.limits.MaxOutputTokens,
@@ -529,11 +543,37 @@ func (s *Service) repairGeneration(ctx context.Context, provider llm.Provider, s
 	if err != nil {
 		return GenerationOutput{}, usage, err
 	}
-	output, err := s.decodeAndValidateGeneration(ctx, source, analysis, response.Content)
-	if err != nil {
+	output, validationErr := s.decodeAndValidateGeneration(ctx, source, analysis, response.Content)
+	if err := s.saveJobOutput(ctx, jobID, JobOutputRepair, response.Content, validationErr, tokenUsage(response.Usage)); err != nil {
 		return GenerationOutput{}, usage, err
 	}
+	if validationErr != nil {
+		return GenerationOutput{}, usage, validationErr
+	}
 	return output, usage, nil
+}
+
+func (s *Service) saveJobOutput(ctx context.Context, jobID uint64, stage, content string, validationErr error, usage TokenUsage) error {
+	content, truncated := truncateUTF8Bytes(content, maxStoredOutputBytes)
+	validationError := ""
+	if validationErr != nil {
+		validationError, _ = truncateUTF8Bytes(validationErr.Error(), maxStoredValidationErrorBytes)
+	}
+	return s.store.SaveJobOutput(ctx, SaveJobOutputInput{
+		JobID: jobID, Stage: stage, Content: content, ValidationError: validationError,
+		Truncated: truncated, Usage: usage,
+	})
+}
+
+func truncateUTF8Bytes(value string, limit int) (string, bool) {
+	if len(value) <= limit {
+		return value, false
+	}
+	end := limit
+	for end > 0 && !utf8.RuneStart(value[end]) {
+		end--
+	}
+	return value[:end], true
 }
 
 func normalizeRepairError(err error) error {

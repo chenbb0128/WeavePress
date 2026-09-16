@@ -35,6 +35,27 @@ func TestAnalysisPromptTreatsArticleAsUntrustedData(t *testing.T) {
 	}
 }
 
+func TestAnalysisPromptContainsCompleteNestedJSONContract(t *testing.T) {
+	messages := BuildAnalysisMessages(SourceDocument{})
+	for _, want := range []string{
+		`"facts":[{"id":"F1","text":"","sourceBlockIds":["B1"],"confidence":"high"}]`,
+		`"viewpoints":[{"id":"V1","text":"","holder":"","sourceBlockIds":["B1"]}]`,
+		`"quotes":[{"id":"Q1","text":"","sourceBlockId":"B1"}]`,
+		`"risks":[{"id":"R1","text":"","sourceBlockIds":["B1"]}]`,
+		`"angles":[{"id":"A1","title":"","thesis":"","outline":[""]},{"id":"A2"`,
+		`{"id":"A3","title":"","thesis":"","outline":[""]}]`,
+	} {
+		if !strings.Contains(messages[0].Content, want) {
+			t.Fatalf("analysis contract missing %q: %s", want, messages[0].Content)
+		}
+	}
+
+	repair := BuildRepairMessages(JobTypeAnalysis, `{}`)
+	if !strings.Contains(repair[1].Content, `"sourceBlockIds":["B1"]`) || !strings.Contains(repair[1].Content, `"sourceBlockId":"B1"`) {
+		t.Fatalf("repair contract is incomplete: %s", repair[1].Content)
+	}
+}
+
 func TestSourcePromptUsesBlocksWithoutDuplicatingPlainText(t *testing.T) {
 	const body = "只应发送一次的正文"
 	source := SourceDocument{

@@ -119,6 +119,19 @@ export interface AIJobEvent {
   status: string;
 }
 
+export interface AIJobOutput {
+  content: string;
+  createdAt: string;
+  id: number;
+  inputTokens: number;
+  jobId: number;
+  outputTokens: number;
+  stage: 'initial' | 'repair';
+  totalTokens: number;
+  truncated: boolean;
+  validationError?: string;
+}
+
 export interface AIJob {
   article?: AIJobArticle;
   articleId: number;
@@ -134,6 +147,7 @@ export interface AIJob {
   manualRetries: number;
   model: string;
   outputTokens: number;
+  outputs?: AIJobOutput[];
   parentJobId?: null | number;
   promptVersion: string;
   provider: string;

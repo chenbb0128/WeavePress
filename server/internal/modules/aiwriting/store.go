@@ -40,6 +40,15 @@ type JobFailureInput struct {
 	Usage     TokenUsage
 }
 
+type SaveJobOutputInput struct {
+	JobID           uint64
+	Stage           string
+	Content         string
+	ValidationError string
+	Truncated       bool
+	Usage           TokenUsage
+}
+
 type Store interface {
 	CreateAnalysisJob(context.Context, CreateAnalysisJobInput) (Job, bool, error)
 	CreateGenerationJob(context.Context, CreateGenerationJobInput) (Generation, Job, bool, error)
@@ -54,5 +63,6 @@ type Store interface {
 	CompleteGeneration(context.Context, uint64, GenerationOutput, editorial.GeneratedDraftInput, TokenUsage) (Generation, error)
 	SetJobFailure(context.Context, uint64, JobFailureInput) error
 	AddJobEvent(context.Context, uint64, string, string) error
+	SaveJobOutput(context.Context, SaveJobOutputInput) error
 	RetryJob(context.Context, uint64, uint64) (Job, error)
 }

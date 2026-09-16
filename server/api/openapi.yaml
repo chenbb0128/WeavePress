@@ -845,6 +845,19 @@ components:
         status: { type: string }
         message: { type: string }
         createdAt: { type: string, format: date-time }
+    AIJobOutput:
+      allOf:
+        - { $ref: "#/components/schemas/TokenUsage" }
+        - type: object
+          required: [id, jobId, stage, content, truncated, createdAt]
+          properties:
+            id: { type: integer, format: int64, minimum: 1 }
+            jobId: { type: integer, format: int64, minimum: 1 }
+            stage: { type: string, enum: [initial, repair] }
+            content: { type: string, description: 模型原始输出，最多保存 256 KiB }
+            validationError: { type: string }
+            truncated: { type: boolean }
+            createdAt: { type: string, format: date-time }
     AIJob:
       allOf:
         - { $ref: "#/components/schemas/TokenUsage" }
@@ -874,6 +887,9 @@ components:
             events:
               type: array
               items: { $ref: "#/components/schemas/AIJobEvent" }
+            outputs:
+              type: array
+              items: { $ref: "#/components/schemas/AIJobOutput" }
     AIAnalysis:
       type: object
       required: [id, jobId, articleId, summary, facts, viewpoints, quotes, risks, angles, createdAt]

@@ -23,6 +23,9 @@ const (
 
 	TaskAnalyze  = "ai:analyze"
 	TaskGenerate = "ai:generate"
+
+	JobOutputInitial = "initial"
+	JobOutputRepair  = "repair"
 )
 
 var (
@@ -167,6 +170,7 @@ type Job struct {
 	UpdatedAt    time.Time          `json:"updatedAt"`
 	Article      *workspace.Article `json:"article,omitempty"`
 	Events       []JobEvent         `json:"events,omitempty"`
+	Outputs      []JobOutput        `json:"outputs,omitempty"`
 }
 
 type JobEvent struct {
@@ -174,6 +178,17 @@ type JobEvent struct {
 	JobID     uint64    `json:"jobId"`
 	Status    string    `json:"status"`
 	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+type JobOutput struct {
+	ID              uint64 `json:"id"`
+	JobID           uint64 `json:"jobId"`
+	Stage           string `json:"stage"`
+	Content         string `json:"content"`
+	ValidationError string `json:"validationError,omitempty"`
+	Truncated       bool   `json:"truncated"`
+	TokenUsage
 	CreatedAt time.Time `json:"createdAt"`
 }
 

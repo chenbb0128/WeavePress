@@ -196,6 +196,10 @@ func (s *AIStore) GetJob(ctx context.Context, id uint64, withDetails bool) (aiwr
 	}
 	job.Article = &article
 	job.Events, err = queryAIJobEvents(ctx, s.db, job.ID)
+	if err != nil {
+		return job, err
+	}
+	job.Outputs, err = queryAIJobOutputs(ctx, s.db, job.ID)
 	return job, err
 }
 
@@ -557,6 +561,22 @@ func (s *AIStore) AddJobEvent(ctx context.Context, jobID uint64, status, message
 	return err
 }
 
+func (s *AIStore) SaveJobOutput(ctx context.Context, input aiwriting.SaveJobOutputInput) error {
+	if input.Stage != aiwriting.JobOutputInitial && input.Stage != aiwriting.JobOutputRepair {
+		return aiwriting.ErrInvalidParameters
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO ai_job_outputs
+		(job_id, stage, content, validation_error, truncated, input_tokens, output_tokens, total_tokens)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE content = VALUES(content), validation_error = VALUES(validation_error),
+		truncated = VALUES(truncated), input_tokens = VALUES(input_tokens),
+		output_tokens = VALUES(output_tokens), total_tokens = VALUES(total_tokens),
+		created_at = UTC_TIMESTAMP(3)`, input.JobID, input.Stage, input.Content,
+		input.ValidationError, input.Truncated, input.Usage.InputTokens,
+		input.Usage.OutputTokens, input.Usage.TotalTokens)
+	return err
+}
+
 func (s *AIStore) RetryJob(ctx context.Context, id, requestedBy uint64) (aiwriting.Job, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -659,6 +679,27 @@ func queryAIJobEvents(ctx context.Context, db aiEventQueryer, jobID uint64) ([]a
 		events = append(events, event)
 	}
 	return events, rows.Err()
+}
+
+func queryAIJobOutputs(ctx context.Context, db aiEventQueryer, jobID uint64) ([]aiwriting.JobOutput, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id, job_id, stage, content, validation_error, truncated,
+		input_tokens, output_tokens, total_tokens, created_at
+		FROM ai_job_outputs WHERE job_id = ? ORDER BY id ASC`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	outputs := make([]aiwriting.JobOutput, 0, 2)
+	for rows.Next() {
+		var output aiwriting.JobOutput
+		if err := rows.Scan(&output.ID, &output.JobID, &output.Stage, &output.Content,
+			&output.ValidationError, &output.Truncated, &output.InputTokens,
+			&output.OutputTokens, &output.TotalTokens, &output.CreatedAt); err != nil {
+			return nil, err
+		}
+		outputs = append(outputs, output)
+	}
+	return outputs, rows.Err()
 }
 
 func getAIAnalysisByID(ctx context.Context, db aiQueryRower, id uint64) (aiwriting.Analysis, error) {
