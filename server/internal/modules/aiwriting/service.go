@@ -698,7 +698,7 @@ func classifyAIError(err error) (string, string, bool) {
 	case errors.Is(err, ErrInvalidParameters):
 		return "AI_INVALID_PARAMETERS", "AI 生成参数无效", false
 	case errors.Is(err, ErrOutputInvalid):
-		return "AI_OUTPUT_INVALID", "AI 返回内容的结构无效", false
+		return ErrorCodeOutputInvalid, "AI 返回内容的结构无效", false
 	case errors.Is(err, ErrSourceReferenceInvalid):
 		return "AI_SOURCE_REFERENCE_INVALID", "AI 返回内容引用了不存在的来源", false
 	case errors.Is(err, ErrQuoteMismatch):

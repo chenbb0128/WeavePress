@@ -114,6 +114,19 @@ export function canGenerate(
   );
 }
 
-export function canRetry(job: Pick<AIJob, 'retryable' | 'status'>) {
-  return job.status === 'failed' && job.retryable;
+const MANUALLY_RETRYABLE_OUTPUT_ERRORS = new Set([
+  'AI_ASSET_INVALID',
+  'AI_EXCESSIVE_SOURCE_OVERLAP',
+  'AI_OUTPUT_INVALID',
+  'AI_QUOTE_MISMATCH',
+  'AI_SOURCE_REFERENCE_INVALID',
+]);
+
+export function canRetry(
+  job: Pick<AIJob, 'errorCode' | 'retryable' | 'status'>,
+) {
+  return (
+    job.status === 'failed' &&
+    (job.retryable || MANUALLY_RETRYABLE_OUTPUT_ERRORS.has(job.errorCode ?? ''))
+  );
 }

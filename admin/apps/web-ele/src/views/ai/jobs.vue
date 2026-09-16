@@ -468,9 +468,9 @@ onBeforeUnmount(() => {
           <ElDescriptionsItem label="错误信息">
             {{ safeJobMessage(selected) }}
           </ElDescriptionsItem>
-          <ElDescriptionsItem label="可重试">
-            <ElTag :type="selected.retryable ? 'success' : 'info'">
-              {{ selected.retryable ? '是' : '否' }}
+          <ElDescriptionsItem label="允许人工重试">
+            <ElTag :type="canRetry(selected) ? 'success' : 'info'">
+              {{ canRetry(selected) ? '是' : '否' }}
             </ElTag>
           </ElDescriptionsItem>
         </ElDescriptions>

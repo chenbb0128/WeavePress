@@ -126,10 +126,34 @@ describe('ai workbench model', () => {
     ]);
   });
 
-  it('allows manual retry only for retryable failed jobs', () => {
-    expect(canRetry({ retryable: true, status: 'failed' })).toBe(true);
-    expect(canRetry({ retryable: false, status: 'failed' })).toBe(false);
-    expect(canRetry({ retryable: true, status: 'running' })).toBe(false);
-    expect(canRetry({ retryable: true, status: 'completed' })).toBe(false);
+  it('separates manual retry from automatic retry eligibility', () => {
+    expect(
+      canRetry({
+        errorCode: 'AI_RATE_LIMITED',
+        retryable: true,
+        status: 'failed',
+      }),
+    ).toBe(true);
+    expect(
+      canRetry({
+        errorCode: 'AI_OUTPUT_INVALID',
+        retryable: false,
+        status: 'failed',
+      }),
+    ).toBe(true);
+    expect(
+      canRetry({
+        errorCode: 'AI_INVALID_PARAMETERS',
+        retryable: false,
+        status: 'failed',
+      }),
+    ).toBe(false);
+    expect(
+      canRetry({
+        errorCode: 'AI_OUTPUT_INVALID',
+        retryable: false,
+        status: 'running',
+      }),
+    ).toBe(false);
   });
 });

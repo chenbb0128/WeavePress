@@ -583,9 +583,16 @@ func (s *AIStore) RetryJob(ctx context.Context, id, requestedBy uint64) (aiwriti
 		return aiwriting.Job{}, err
 	}
 	defer tx.Rollback()
+	job, err := getAIJobForUpdate(ctx, tx, id)
+	if err != nil {
+		return aiwriting.Job{}, err
+	}
+	if !aiwriting.CanManuallyRetry(job) {
+		return aiwriting.Job{}, aiwriting.ErrJobNotRetryable
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE ai_jobs SET status = 'queued',
-		manual_retries = manual_retries + 1, error_code = '', error_message = '', finished_at = NULL
-		WHERE id = ? AND status = 'failed' AND retryable = TRUE`, id)
+		manual_retries = manual_retries + 1, error_code = '', error_message = '', retryable = FALSE, finished_at = NULL
+		WHERE id = ? AND status = 'failed'`, id)
 	if err != nil {
 		return aiwriting.Job{}, err
 	}

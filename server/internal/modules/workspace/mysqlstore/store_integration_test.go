@@ -943,6 +943,24 @@ func TestMySQLIntegrationAIStore(t *testing.T) {
 	if _, err := aiStore.RetryJob(ctx, failureJob.ID, secondUser.ID); !errors.Is(err, aiwriting.ErrJobNotRetryable) {
 		t.Fatalf("non-retryable job retry error=%v", err)
 	}
+	outputFailureInput := analysisInput
+	outputFailureInput.Force = true
+	outputFailureJob, _, err := aiStore.CreateAnalysisJob(ctx, outputFailureInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := aiStore.SetJobRunning(ctx, outputFailureJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := aiStore.SetJobFailure(ctx, outputFailureJob.ID, aiwriting.JobFailureInput{
+		Code: aiwriting.ErrorCodeOutputInvalid, Message: "模型输出结构无效",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	retriedOutputFailure, err := aiStore.RetryJob(ctx, outputFailureJob.ID, secondUser.ID)
+	if err != nil || retriedOutputFailure.Status != aiwriting.JobQueued || retriedOutputFailure.ManualRetries != 1 {
+		t.Fatalf("output-invalid retry job=%#v err=%v", retriedOutputFailure, err)
+	}
 	if err := aiStore.SetJobFailure(ctx, forcedJob.ID, aiwriting.JobFailureInput{
 		Code: "INVALID", Message: "非法重排", Requeue: true,
 	}); !errors.Is(err, aiwriting.ErrInvalidParameters) {

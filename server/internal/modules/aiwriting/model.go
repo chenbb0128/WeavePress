@@ -26,6 +26,8 @@ const (
 
 	JobOutputInitial = "initial"
 	JobOutputRepair  = "repair"
+
+	ErrorCodeOutputInvalid = "AI_OUTPUT_INVALID"
 )
 
 var (
@@ -230,4 +232,23 @@ type Page[T any] struct {
 	Total    int64 `json:"total"`
 	Page     int   `json:"page"`
 	PageSize int   `json:"pageSize"`
+}
+
+func CanManuallyRetry(job Job) bool {
+	if job.Status != JobFailed {
+		return false
+	}
+	if job.Retryable {
+		return true
+	}
+	switch job.ErrorCode {
+	case ErrorCodeOutputInvalid,
+		"AI_SOURCE_REFERENCE_INVALID",
+		"AI_QUOTE_MISMATCH",
+		"AI_ASSET_INVALID",
+		"AI_EXCESSIVE_SOURCE_OVERLAP":
+		return true
+	default:
+		return false
+	}
 }
