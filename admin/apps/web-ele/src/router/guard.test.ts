@@ -1,9 +1,9 @@
 import type { Router } from 'vue-router';
 
+import { useAccessStore, useUserStore } from '@vben/stores';
+
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-
-import { useAccessStore, useUserStore } from '@vben/stores';
 
 import { createRouterGuard } from './guard';
 
