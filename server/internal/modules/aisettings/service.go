@@ -5,17 +5,37 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 type URLValidator func(context.Context, string) error
 
-type Service struct {
-	store       Store
-	cipher      *Cipher
-	validateURL URLValidator
+type ConnectionTester interface {
+	Test(context.Context, RuntimeConfig) error
 }
 
-func New(store Store, mediaSigningKey string, validateURL URLValidator) (*Service, error) {
+type ConnectionTesterFunc func(context.Context, RuntimeConfig) error
+
+func (f ConnectionTesterFunc) Test(ctx context.Context, config RuntimeConfig) error {
+	return f(ctx, config)
+}
+
+type Option func(*Service)
+
+func WithConnectionTester(tester ConnectionTester) Option {
+	return func(service *Service) {
+		service.connectionTester = tester
+	}
+}
+
+type Service struct {
+	store            Store
+	cipher           *Cipher
+	validateURL      URLValidator
+	connectionTester ConnectionTester
+}
+
+func New(store Store, mediaSigningKey string, validateURL URLValidator, options ...Option) (*Service, error) {
 	cipher, err := NewCipher(mediaSigningKey)
 	if err != nil {
 		return nil, err
@@ -23,7 +43,13 @@ func New(store Store, mediaSigningKey string, validateURL URLValidator) (*Servic
 	if store == nil {
 		return nil, fmt.Errorf("%w: store is required", ErrInvalidSettings)
 	}
-	return &Service{store: store, cipher: cipher, validateURL: validateURL}, nil
+	service := &Service{store: store, cipher: cipher, validateURL: validateURL}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service, nil
 }
 
 func (s *Service) View(ctx context.Context) (SettingsView, error) {
@@ -151,6 +177,76 @@ func (s *Service) Update(ctx context.Context, userID uint64, input UpdateInput) 
 		return SettingsView{}, err
 	}
 	return s.View(ctx)
+}
+
+func (s *Service) TestConnection(ctx context.Context, input TestInput) (TestResult, error) {
+	if s.connectionTester == nil {
+		return TestResult{}, ErrTesterUnavailable
+	}
+	config, err := s.connectionTestConfig(ctx, input)
+	if err != nil {
+		return TestResult{}, err
+	}
+	testCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	startedAt := time.Now()
+	if err := s.connectionTester.Test(testCtx, config); err != nil {
+		return TestResult{}, err
+	}
+	return TestResult{
+		Success: true, Provider: config.Provider, Model: config.Model,
+		LatencyMS: time.Since(startedAt).Milliseconds(),
+	}, nil
+}
+
+func (s *Service) connectionTestConfig(ctx context.Context, input TestInput) (RuntimeConfig, error) {
+	definition, ok := providerDefinition(strings.TrimSpace(input.ActiveProvider))
+	if !ok {
+		return RuntimeConfig{}, fmt.Errorf("%w: provider is invalid", ErrInvalidSettings)
+	}
+	model := strings.TrimSpace(input.Model)
+	if model == "" {
+		model = definition.DefaultModel
+	}
+	if model == "" || len(model) > 100 {
+		return RuntimeConfig{}, fmt.Errorf("%w: model is required", ErrInvalidSettings)
+	}
+	baseURL := definition.BaseURL
+	if definition.BaseURLEditable {
+		baseURL = strings.TrimSpace(input.BaseURL)
+		if baseURL == "" || s.validateURL == nil || s.validateURL(ctx, baseURL) != nil {
+			return RuntimeConfig{}, fmt.Errorf("%w: base URL is invalid", ErrInvalidSettings)
+		}
+	}
+	apiKey := strings.TrimSpace(input.APIKey)
+	if len(apiKey) > 2048 {
+		return RuntimeConfig{}, fmt.Errorf("%w: API key is too long", ErrInvalidSettings)
+	}
+	if apiKey == "" {
+		stored, err := s.store.GetProvider(ctx, definition.ID)
+		if err != nil {
+			if errors.Is(err, ErrProviderNotConfigured) {
+				return RuntimeConfig{}, fmt.Errorf("%w: API key is required", ErrInvalidSettings)
+			}
+			return RuntimeConfig{}, err
+		}
+		if len(stored.APICiphertext) == 0 {
+			return RuntimeConfig{}, fmt.Errorf("%w: API key is required", ErrInvalidSettings)
+		}
+		plain, err := s.cipher.Decrypt(stored.Provider, stored.BaseURL, stored.APICiphertext)
+		if err != nil {
+			return RuntimeConfig{}, err
+		}
+		defer clear(plain)
+		apiKey = strings.TrimSpace(string(plain))
+	}
+	if apiKey == "" {
+		return RuntimeConfig{}, fmt.Errorf("%w: API key is required", ErrInvalidSettings)
+	}
+	return RuntimeConfig{
+		Enabled: true, Provider: definition.ID, BaseURL: baseURL,
+		Model: model, APIKey: apiKey,
+	}, nil
 }
 
 func (s *Service) Active(ctx context.Context) (RuntimeConfig, error) {

@@ -8,6 +8,18 @@ import (
 	"testing"
 )
 
+type fakeConnectionTester struct {
+	config RuntimeConfig
+	calls  int
+	err    error
+}
+
+func (t *fakeConnectionTester) Test(_ context.Context, config RuntimeConfig) error {
+	t.calls++
+	t.config = config
+	return t.err
+}
+
 type fakeStore struct {
 	runtime      StoredRuntime
 	providers    map[string]StoredProvider
@@ -270,6 +282,66 @@ func TestUpdateKeepsProviderSettingsSeparate(t *testing.T) {
 	}
 	if bytes.Equal(store.providers[ProviderZhipu].APICiphertext, store.providers[ProviderOpenAI].APICiphertext) {
 		t.Fatal("provider keys were not stored separately")
+	}
+}
+
+func TestConnectionUsesSavedKeyWhileAIIsDisabled(t *testing.T) {
+	cipher, err := NewCipher(strings.Repeat("m", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := cipher.Encrypt(ProviderZhipu, zhipuBaseURL, []byte("saved-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{
+		runtime: StoredRuntime{Enabled: false, ActiveProvider: ProviderZhipu},
+		providers: map[string]StoredProvider{
+			ProviderZhipu: {Provider: ProviderZhipu, BaseURL: zhipuBaseURL, Model: "glm-5.3-flash", APICiphertext: secret},
+		},
+	}
+	tester := &fakeConnectionTester{}
+	service, err := New(store, strings.Repeat("m", 32), func(context.Context, string) error { return nil }, WithConnectionTester(tester))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.TestConnection(context.Background(), TestInput{
+		ActiveProvider: ProviderZhipu,
+		Model:          "glm-5.3-flash",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tester.calls != 1 || tester.config.APIKey != "saved-key" || !tester.config.Enabled {
+		t.Fatalf("tester calls=%d config=%#v", tester.calls, tester.config)
+	}
+	if result.Provider != ProviderZhipu || result.Model != "glm-5.3-flash" || !result.Success {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestConnectionPrefersEnteredKeyWithoutSavingSettings(t *testing.T) {
+	store := &fakeStore{providers: map[string]StoredProvider{}}
+	tester := &fakeConnectionTester{}
+	service, err := New(store, strings.Repeat("m", 32), func(context.Context, string) error { return nil }, WithConnectionTester(tester))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = service.TestConnection(context.Background(), TestInput{
+		ActiveProvider: ProviderOpenAI,
+		Model:          "gpt-5-mini",
+		APIKey:         "new-key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tester.config.APIKey != "new-key" {
+		t.Fatalf("tester key = %q", tester.config.APIKey)
+	}
+	if store.update.Provider != "" || len(store.providers) != 0 {
+		t.Fatalf("test connection changed persisted settings: update=%#v providers=%#v", store.update, store.providers)
 	}
 }
 

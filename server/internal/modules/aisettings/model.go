@@ -21,6 +21,7 @@ var (
 	ErrSettingsConflict      = errors.New("AI settings changed concurrently")
 	ErrCipherUnavailable     = errors.New("AI settings cipher is unavailable")
 	ErrDecryptFailed         = errors.New("AI provider credential could not be decrypted")
+	ErrTesterUnavailable     = errors.New("AI connection tester is unavailable")
 )
 
 type ProviderDefinition struct {
@@ -60,6 +61,20 @@ type UpdateInput struct {
 	BaseURL        string `json:"baseUrl"`
 	Model          string `json:"model"`
 	APIKey         string `json:"apiKey"`
+}
+
+type TestInput struct {
+	ActiveProvider string `json:"activeProvider"`
+	BaseURL        string `json:"baseUrl"`
+	Model          string `json:"model"`
+	APIKey         string `json:"apiKey"`
+}
+
+type TestResult struct {
+	Success   bool   `json:"success"`
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	LatencyMS int64  `json:"latencyMs"`
 }
 
 type RuntimeConfig struct {

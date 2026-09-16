@@ -45,6 +45,20 @@ export interface UpdateAISettingsInput {
   model: string;
 }
 
+export interface TestAISettingsInput {
+  activeProvider: AIProviderId;
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+}
+
+export interface TestAISettingsResult {
+  latencyMs: number;
+  model: string;
+  provider: AIProviderId;
+  success: boolean;
+}
+
 export interface AIFact {
   confidence: 'high' | 'low' | 'medium';
   id: string;
@@ -207,6 +221,10 @@ export function getAISettingsApi() {
 
 export function updateAISettingsApi(input: UpdateAISettingsInput) {
   return requestClient.put<AISettings>('/ai/settings', input);
+}
+
+export function testAISettingsApi(input: TestAISettingsInput) {
+  return requestClient.post<TestAISettingsResult>('/ai/settings/test', input);
 }
 
 export function startAIAnalysisApi(articleId: number, force = false) {

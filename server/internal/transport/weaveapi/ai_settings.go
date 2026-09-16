@@ -19,6 +19,7 @@ const (
 type AISettingsService interface {
 	View(context.Context) (aisettings.SettingsView, error)
 	Update(context.Context, uint64, aisettings.UpdateInput) (aisettings.SettingsView, error)
+	TestConnection(context.Context, aisettings.TestInput) (aisettings.TestResult, error)
 }
 
 type aiSettingsInput struct {
@@ -55,6 +56,31 @@ func (i aiSettingsInput) updateInput() aisettings.UpdateInput {
 	}
 }
 
+type aiSettingsTestInput struct {
+	ActiveProvider string `json:"activeProvider"`
+	BaseURL        string `json:"baseUrl"`
+	Model          string `json:"model"`
+	APIKey         string `json:"apiKey"`
+}
+
+func (i aiSettingsTestInput) Validate() []response.ValidationDetail {
+	return aiSettingsInput{
+		ActiveProvider: i.ActiveProvider,
+		BaseURL:        i.BaseURL,
+		Model:          i.Model,
+		APIKey:         i.APIKey,
+	}.Validate()
+}
+
+func (i aiSettingsTestInput) testInput() aisettings.TestInput {
+	return aisettings.TestInput{
+		ActiveProvider: i.ActiveProvider,
+		BaseURL:        i.BaseURL,
+		Model:          i.Model,
+		APIKey:         i.APIKey,
+	}
+}
+
 func (a *API) getAISettings(c *gin.Context) {
 	if a.aiSettings == nil {
 		response.Error(c, response.Internal(aisettings.ErrNotConfigured))
@@ -84,6 +110,24 @@ func (a *API) updateAISettings(c *gin.Context) {
 		return
 	}
 	result, err := a.aiSettings.Update(c.Request.Context(), user.ID, input.updateInput())
+	if err != nil {
+		a.writeError(c, err)
+		return
+	}
+	response.OK(c, result)
+}
+
+func (a *API) testAISettings(c *gin.Context) {
+	var input aiSettingsTestInput
+	if bindErr := request.BindJSON(c, &input); bindErr != nil {
+		response.Error(c, bindErr)
+		return
+	}
+	if a.aiSettings == nil {
+		response.Error(c, response.Internal(aisettings.ErrNotConfigured))
+		return
+	}
+	result, err := a.aiSettings.TestConnection(c.Request.Context(), input.testInput())
 	if err != nil {
 		a.writeError(c, err)
 		return

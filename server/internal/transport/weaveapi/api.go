@@ -21,6 +21,7 @@ import (
 	"github.com/chenbb0128/weavepress/server/internal/modules/content"
 	"github.com/chenbb0128/weavepress/server/internal/modules/editorial"
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace"
+	"github.com/chenbb0128/weavepress/server/internal/platform/llm"
 	"github.com/chenbb0128/weavepress/server/internal/transport/httpapi/request"
 	"github.com/chenbb0128/weavepress/server/internal/transport/httpapi/response"
 )
@@ -93,6 +94,7 @@ func (a *API) Register(router *gin.Engine) {
 	protected.GET("/ai/status", a.requireCode(codeAIAnalysisView), a.aiStatus)
 	protected.GET("/ai/settings", a.requireRole(workspace.RoleAdmin), a.requireCode(codeAISettingsView), a.getAISettings)
 	protected.PUT("/ai/settings", a.requireRole(workspace.RoleAdmin), a.requireCode(codeAISettingsUpdate), a.updateAISettings)
+	protected.POST("/ai/settings/test", a.requireRole(workspace.RoleAdmin), a.requireCode(codeAISettingsUpdate), a.testAISettings)
 	protected.POST("/articles/:id/ai-analyses", a.requireCode(codeAIAnalysisCreate), a.startAIAnalysis)
 	protected.GET("/articles/:id/ai-analyses", a.requireCode(codeAIAnalysisView), a.listAIAnalyses)
 	protected.GET("/ai-analyses/:id", a.requireCode(codeAIAnalysisView), a.getAIAnalysis)
@@ -927,6 +929,7 @@ func pagination(c *gin.Context) (int, int) {
 func parseID(c *gin.Context) (uint64, error) { return strconv.ParseUint(c.Param("id"), 10, 64) }
 func (a *API) writeError(c *gin.Context, err error) {
 	var collectErr *collectors.Error
+	var providerErr *llm.Error
 	var preflightErr *editorial.PreflightError
 	switch {
 	case errors.Is(err, workspace.ErrNotFound):
@@ -935,6 +938,15 @@ func (a *API) writeError(c *gin.Context, err error) {
 		response.Error(c, response.BadRequest("AI 设置不合法", err))
 	case errors.Is(err, aisettings.ErrSettingsConflict):
 		response.Error(c, response.Conflict("AI 设置已被其他请求修改，请刷新后重试", err))
+	case errors.As(err, &providerErr):
+		switch providerErr.Code {
+		case llm.ErrorCodeAuthFailed, llm.ErrorCodeRequestFailed:
+			response.Error(c, response.BadRequest(providerErr.Message, err))
+		case llm.ErrorCodeRateLimited:
+			response.Error(c, response.NewError(response.CodeRateLimited, http.StatusTooManyRequests, providerErr.Message, err))
+		default:
+			response.Error(c, response.NewError(response.CodeDependencyUnavailable, http.StatusServiceUnavailable, providerErr.Message, err))
+		}
 	case errors.Is(err, aiwriting.ErrNotConfigured):
 		response.Error(c, response.DependencyUnavailable(err))
 	case errors.Is(err, aiwriting.ErrInputTooLarge):

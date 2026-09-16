@@ -4,8 +4,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   applyProviderToForm,
+  buildConnectionTestInput,
   buildSettingsInput,
   createSettingsForm,
+  getApiKeyPlaceholder,
 } from './settings-model';
 
 const settings: AISettings = {
@@ -69,5 +71,24 @@ describe('ai settings view model', () => {
       enabled: false,
       model: 'glm-custom',
     });
+  });
+
+  it('shows a saved-key mask without placing it in the form value', () => {
+    const form = createSettingsForm(settings);
+
+    expect(getApiKeyPlaceholder(settings, form.activeProvider)).toBe(
+      '••••••••••••（已保存）',
+    );
+    expect(form.apiKey).toBe('');
+    expect(buildConnectionTestInput(form).apiKey).toBe('');
+  });
+
+  it('uses a plain prompt when the selected provider has no saved key', () => {
+    const form = createSettingsForm(settings);
+    applyProviderToForm(form, settings, 'openai');
+
+    expect(getApiKeyPlaceholder(settings, form.activeProvider)).toBe(
+      '输入 API Key',
+    );
   });
 });

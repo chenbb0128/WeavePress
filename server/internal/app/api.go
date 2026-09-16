@@ -16,6 +16,7 @@ import (
 	"github.com/chenbb0128/weavepress/server/internal/modules/editorial"
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace/mysqlstore"
 	"github.com/chenbb0128/weavepress/server/internal/platform/database"
+	"github.com/chenbb0128/weavepress/server/internal/platform/llm"
 	platformmetrics "github.com/chenbb0128/weavepress/server/internal/platform/metrics"
 	"github.com/chenbb0128/weavepress/server/internal/platform/netguard"
 	"github.com/chenbb0128/weavepress/server/internal/platform/objectstore"
@@ -110,7 +111,14 @@ func NewAPI(cfg config.Config, logger *slog.Logger) (*API, error) {
 	aiSettingsStore := mysqlstore.NewAISettingsStore(db.SQL)
 	aiSettingsService, err := aisettings.New(aiSettingsStore, cfg.Auth.MediaSigningKey, func(ctx context.Context, raw string) error {
 		return netguard.ValidateHTTPSURL(ctx, nil, raw)
-	})
+	}, aisettings.WithConnectionTester(aisettings.ConnectionTesterFunc(func(ctx context.Context, runtime aisettings.RuntimeConfig) error {
+		provider := llm.NewOpenAICompatible(runtime.BaseURL, runtime.APIKey, runtime.Model, 15*time.Second)
+		_, err := provider.Complete(ctx, llm.Request{
+			Messages:  []llm.Message{{Role: "user", Content: "请只回复 OK"}},
+			MaxTokens: 8, Temperature: 0,
+		})
+		return err
+	})))
 	if err != nil {
 		return nil, fmt.Errorf("create AI settings service: %w", err)
 	}

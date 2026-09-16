@@ -2,6 +2,7 @@ package weaveapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -13,14 +14,18 @@ import (
 	"github.com/chenbb0128/weavepress/server/internal/modules/aisettings"
 	"github.com/chenbb0128/weavepress/server/internal/modules/authn"
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace"
+	"github.com/chenbb0128/weavepress/server/internal/platform/llm"
 )
 
 type fakeAISettingsService struct {
-	view      aisettings.SettingsView
-	input     aisettings.UpdateInput
-	userID    uint64
-	viewCalls int
-	err       error
+	view       aisettings.SettingsView
+	input      aisettings.UpdateInput
+	userID     uint64
+	viewCalls  int
+	testInput  aisettings.TestInput
+	testResult aisettings.TestResult
+	testCalls  int
+	err        error
 }
 
 func (s *fakeAISettingsService) View(context.Context) (aisettings.SettingsView, error) {
@@ -33,6 +38,12 @@ func (s *fakeAISettingsService) Update(_ context.Context, userID uint64, input a
 	return s.view, s.err
 }
 
+func (s *fakeAISettingsService) TestConnection(_ context.Context, input aisettings.TestInput) (aisettings.TestResult, error) {
+	s.testCalls++
+	s.testInput = input
+	return s.testResult, s.err
+}
+
 func TestAISettingsRoutesRequireAdmin(t *testing.T) {
 	for _, test := range []struct {
 		method string
@@ -40,9 +51,14 @@ func TestAISettingsRoutesRequireAdmin(t *testing.T) {
 	}{
 		{method: http.MethodGet},
 		{method: http.MethodPut, body: `{"enabled":true,"activeProvider":"zhipu","baseUrl":"","model":"glm-5.3-flash","apiKey":"secret"}`},
+		{method: http.MethodPost, body: `{"activeProvider":"zhipu","baseUrl":"","model":"glm-5.3-flash","apiKey":""}`},
 	} {
 		api, token, _ := newAISettingsTestAPI(t, workspace.RoleEditor)
-		recorder := performRequest(t, api, test.method, "/api/ai/settings", test.body, token)
+		path := "/api/ai/settings"
+		if test.method == http.MethodPost {
+			path += "/test"
+		}
+		recorder := performRequest(t, api, test.method, path, test.body, token)
 		assertStatus(t, recorder, http.StatusForbidden)
 	}
 }
@@ -82,6 +98,38 @@ func TestUpdateAISettingsReturnsConflictForConcurrentChange(t *testing.T) {
 	body := `{"enabled":true,"activeProvider":"openai","baseUrl":"","model":"gpt-5-mini","apiKey":""}`
 	recorder := performRequest(t, api, http.MethodPut, "/api/ai/settings", body, token)
 	assertStatus(t, recorder, http.StatusConflict)
+}
+
+func TestAISettingsConnectionTestReturnsSafeResult(t *testing.T) {
+	api, token, settings := newAISettingsTestAPI(t, workspace.RoleAdmin)
+	settings.testResult = aisettings.TestResult{
+		Success: true, Provider: aisettings.ProviderZhipu, Model: "glm-5.3-flash", LatencyMS: 123,
+	}
+	body := `{"activeProvider":"zhipu","baseUrl":"","model":"glm-5.3-flash","apiKey":"new-secret"}`
+	recorder := performRequest(t, api, http.MethodPost, "/api/ai/settings/test", body, token)
+	assertStatus(t, recorder, http.StatusOK)
+	responseBody := recorder.Body.String()
+	if settings.testCalls != 1 || settings.testInput.APIKey != "new-secret" {
+		t.Fatalf("test calls=%d input=%#v", settings.testCalls, settings.testInput)
+	}
+	if !strings.Contains(responseBody, `"latencyMs":123`) || strings.Contains(responseBody, "new-secret") {
+		t.Fatalf("unsafe or incomplete response: %s", responseBody)
+	}
+}
+
+func TestAISettingsConnectionTestHidesUpstreamDetails(t *testing.T) {
+	api, token, settings := newAISettingsTestAPI(t, workspace.RoleAdmin)
+	settings.err = &llm.Error{
+		Code: llm.ErrorCodeAuthFailed, Message: "AI 模型认证失败",
+		Cause: errors.New("upstream body contains new-secret"),
+	}
+	body := `{"activeProvider":"zhipu","baseUrl":"","model":"glm-5.3-flash","apiKey":"new-secret"}`
+	recorder := performRequest(t, api, http.MethodPost, "/api/ai/settings/test", body, token)
+	assertStatus(t, recorder, http.StatusBadRequest)
+	responseBody := recorder.Body.String()
+	if !strings.Contains(responseBody, "AI 模型认证失败") || strings.Contains(responseBody, "new-secret") || strings.Contains(responseBody, "upstream body") {
+		t.Fatalf("unsafe error response: %s", responseBody)
+	}
 }
 
 func newAISettingsTestAPI(t *testing.T, role workspace.Role) (*API, string, *fakeAISettingsService) {

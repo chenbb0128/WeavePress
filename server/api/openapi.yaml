@@ -334,6 +334,26 @@ paths:
         "415": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/ai/settings/test:
+    post:
+      summary: 管理员测试当前 AI 服务配置
+      description: 使用请求中的配置发起最小模型请求；API Key 留空时使用该服务商已保存的 Key，不保存任何设置。
+      operationId: testAISettings
+      security: [ { bearerAuth: [] } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/TestAISettingsInput" } } }
+      responses:
+        "200":
+          description: AI 服务连接可用
+          content: { application/json: { schema: { $ref: "#/components/schemas/TestAISettingsEnvelope" } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/articles/{id}/ai-analyses:
     parameters: [ { $ref: "#/components/parameters/ID" } ]
     post:
@@ -711,6 +731,27 @@ components:
           type: string
           maxLength: 2048
           description: 新 Key；留空表示保留该服务商已保存的 Key。
+    TestAISettingsInput:
+      type: object
+      additionalProperties: false
+      required: [activeProvider, baseUrl, model, apiKey]
+      properties:
+        activeProvider: { type: string, enum: [zhipu, openai, openai-compatible] }
+        baseUrl: { type: string, maxLength: 500 }
+        model: { type: string, minLength: 1, maxLength: 100 }
+        apiKey:
+          type: string
+          maxLength: 2048
+          description: 待测试的新 Key；留空时使用该服务商已保存的 Key。
+    TestAISettingsResult:
+      type: object
+      additionalProperties: false
+      required: [success, provider, model, latencyMs]
+      properties:
+        success: { type: boolean }
+        provider: { type: string, enum: [zhipu, openai, openai-compatible] }
+        model: { type: string }
+        latencyMs: { type: integer, format: int64, minimum: 0 }
     StartAIAnalysisInput:
       type: object
       additionalProperties: false
@@ -931,6 +972,13 @@ components:
         code: { type: integer, example: 0 }
         message: { type: string, example: success }
         data: { $ref: "#/components/schemas/AISettings" }
+    TestAISettingsEnvelope:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: success }
+        data: { $ref: "#/components/schemas/TestAISettingsResult" }
     StartAIAnalysisEnvelope:
       type: object
       required: [code, message, data]

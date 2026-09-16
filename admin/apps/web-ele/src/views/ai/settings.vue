@@ -19,18 +19,25 @@ import {
   ElTag,
 } from 'element-plus';
 
-import { getAISettingsApi, updateAISettingsApi } from '#/api';
+import {
+  getAISettingsApi,
+  testAISettingsApi,
+  updateAISettingsApi,
+} from '#/api';
 
 import {
   applyProviderToForm,
+  buildConnectionTestInput,
   buildSettingsInput,
   createSettingsForm,
+  getApiKeyPlaceholder,
 } from './settings-model';
 
 defineOptions({ name: 'AISettings' });
 
 const loading = ref(false);
 const saving = ref(false);
+const testing = ref(false);
 const formRef = ref<FormInstance>();
 const settings = ref<AISettings>();
 const form = reactive({
@@ -43,6 +50,9 @@ const form = reactive({
 
 const currentProvider = computed<AIProviderSettings | undefined>(() =>
   settings.value?.providers.find((item) => item.id === form.activeProvider),
+);
+const apiKeyPlaceholder = computed(() =>
+  getApiKeyPlaceholder(settings.value, form.activeProvider),
 );
 const rules = computed<FormRules>(() => ({
   apiKey:
@@ -96,6 +106,29 @@ async function save() {
   } finally {
     form.apiKey = '';
     saving.value = false;
+  }
+}
+
+async function testConnection() {
+  const valid = await formRef.value
+    ?.validateField(['baseUrl', 'model'])
+    .then(() => true)
+    .catch(() => false);
+  if (!valid) return;
+  if (!form.apiKey.trim() && !currentProvider.value?.keyConfigured) {
+    ElMessage.warning('请输入 API Key 后再测试');
+    return;
+  }
+  testing.value = true;
+  try {
+    const result = await testAISettingsApi(buildConnectionTestInput(form));
+    ElMessage.success(
+      `${currentProvider.value?.name ?? result.provider} / ${result.model} 连接成功，耗时 ${result.latencyMs} ms`,
+    );
+  } catch {
+    return;
+  } finally {
+    testing.value = false;
   }
 }
 
@@ -189,7 +222,7 @@ onMounted(load);
             v-model="form.apiKey"
             autocomplete="new-password"
             class="field-control"
-            placeholder="输入新 Key；留空保留原 Key"
+            :placeholder="apiKeyPlaceholder"
             show-password
             type="password"
           />
@@ -202,15 +235,27 @@ onMounted(load);
           </span>
         </ElFormItem>
 
-        <ElButton
-          v-access:code="'ai:settings:update'"
-          :loading="saving"
-          size="large"
-          type="primary"
-          @click="save"
-        >
-          保存设置
-        </ElButton>
+        <div class="form-actions">
+          <ElButton
+            v-access:code="'ai:settings:update'"
+            :disabled="testing"
+            :loading="saving"
+            size="large"
+            type="primary"
+            @click="save"
+          >
+            保存设置
+          </ElButton>
+          <ElButton
+            v-access:code="'ai:settings:update'"
+            :disabled="saving"
+            :loading="testing"
+            size="large"
+            @click="testConnection"
+          >
+            测试连接
+          </ElButton>
+        </div>
       </ElForm>
     </ElCard>
   </div>
@@ -233,6 +278,11 @@ onMounted(load);
   margin-left: 12px;
   font-size: 13px;
   color: var(--el-text-color-secondary);
+}
+
+.form-actions {
+  display: flex;
+  gap: 12px;
 }
 
 @media (max-width: 640px) {
