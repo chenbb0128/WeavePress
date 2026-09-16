@@ -113,7 +113,11 @@ onMounted(load);
             分别保存智谱 GLM、OpenAI 或兼容服务，保存后 API 与 Worker 无需重启。
           </p>
         </div>
-        <ElTag :type="form.enabled ? 'success' : 'info'" effect="plain" size="large">
+        <ElTag
+          :type="form.enabled ? 'success' : 'info'"
+          effect="plain"
+          size="large"
+        >
           {{ form.enabled ? 'AI 已启用' : 'AI 已停用' }}
         </ElTag>
       </div>
@@ -227,15 +231,15 @@ onMounted(load);
 
 .field-hint {
   margin-left: 12px;
-  color: var(--el-text-color-secondary);
   font-size: 13px;
+  color: var(--el-text-color-secondary);
 }
 
 @media (max-width: 640px) {
   .field-hint {
     display: block;
-    margin: 8px 0 0;
     width: 100%;
+    margin: 8px 0 0;
   }
 }
 </style>

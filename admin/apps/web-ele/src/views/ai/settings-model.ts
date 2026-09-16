@@ -1,8 +1,4 @@
-import type {
-  AIProviderId,
-  AISettings,
-  UpdateAISettingsInput,
-} from '#/api';
+import type { AIProviderId, AISettings, UpdateAISettingsInput } from '#/api';
 
 export interface AISettingsForm {
   activeProvider: AIProviderId;

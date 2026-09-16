@@ -33,7 +33,7 @@ const settings: AISettings = {
   ],
 };
 
-describe('AI settings view model', () => {
+describe('ai settings view model', () => {
   it('loads the active provider without exposing a saved key', () => {
     const form = createSettingsForm(settings);
 
