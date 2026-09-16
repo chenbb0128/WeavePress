@@ -200,21 +200,12 @@ onMounted(load);
         </ElFormItem>
 
         <ElFormItem label="Model ID" prop="model">
-          <ElSelect
+          <ElInput
             v-model="form.model"
-            allow-create
             class="field-control"
-            default-first-option
-            filterable
-            placeholder="选择或输入 Model ID"
-          >
-            <ElOption
-              v-for="model in currentProvider?.modelOptions ?? []"
-              :key="model"
-              :label="model"
-              :value="model"
-            />
-          </ElSelect>
+            maxlength="100"
+            placeholder="输入 Model ID，例如 GLM-5.3"
+          />
         </ElFormItem>
 
         <ElFormItem label="API Key" prop="apiKey">
