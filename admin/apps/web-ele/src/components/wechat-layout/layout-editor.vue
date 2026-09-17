@@ -105,7 +105,8 @@ const imageExtension = WechatImage.extend({
           image.src = source;
         else image.removeAttribute('src');
         image.alt = attrs.alt;
-        image.style.width = `${[50, 75, 100].includes(attrs.width) ? attrs.width : 100}%`;
+        image.style.width = 'auto';
+        image.style.maxWidth = `${[50, 75, 100].includes(attrs.width) ? attrs.width : 100}%`;
         caption.textContent = attrs.caption;
         caption.hidden = !attrs.caption;
         dom.dataset.draftAssetId = String(attrs.draftAssetId);
@@ -326,11 +327,11 @@ async function copyLayout() {
           </ElButton>
           <div v-if="selectedImage" class="image-controls">
             <label
-              >图片宽度
+              >图片最大宽度
               <ElSelect
                 :model-value="selectedImage.width"
                 :disabled="!editable"
-                aria-label="图片宽度"
+                aria-label="图片最大宽度"
                 @update:model-value="changeImage({ width: $event })"
               >
                 <ElOption

@@ -127,7 +127,7 @@ func renderImage(output *strings.Builder, node Node, theme Theme) {
 	imageWidth := imageWidthStyle(width)
 	output.WriteString(`<figure style="margin:24px 0;text-align:center"><img data-weavepress-draft-asset-id="`)
 	output.WriteString(fmt.Sprintf("%d", id))
-	output.WriteString(`" alt="` + html.EscapeString(alt) + `" style="display:block;width:` + imageWidth + `;max-width:100%;height:auto;margin:0 auto">`)
+	output.WriteString(`" alt="` + html.EscapeString(alt) + `" style="display:block;width:auto;max-width:` + imageWidth + `;height:auto;margin:0 auto">`)
 	if caption != "" {
 		output.WriteString(`<figcaption style="` + theme.CaptionStyle + `">` + html.EscapeString(caption) + `</figcaption>`)
 	}

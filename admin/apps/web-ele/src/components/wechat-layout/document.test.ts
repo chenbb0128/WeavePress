@@ -191,6 +191,8 @@ describe('微信排版文档工具', () => {
     expect(html).toContain('&lt;正文&gt;');
     expect(html).toContain('/media/draft-assets/18?signed=1');
     expect(html).toContain('color:#1f2937');
+    expect(html).toContain('width:auto;max-width:75%;height:auto');
+    expect(html).not.toContain('width:75%;max-width:100%');
     expect(html).not.toContain('<正文>');
   });
 

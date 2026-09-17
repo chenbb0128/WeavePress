@@ -45,6 +45,9 @@ func TestThemeRegistryAndRender(t *testing.T) {
 		if !strings.Contains(first, `alt="&#34;图&#34;"`) {
 			t.Fatalf("image alt was not escaped: %s", first)
 		}
+		if !strings.Contains(first, `width:auto;max-width:75%;height:auto`) || strings.Contains(first, `width:75%;max-width:100%`) {
+			t.Fatalf("small image would be enlarged: %s", first)
+		}
 	}
 }
 

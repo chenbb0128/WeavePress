@@ -384,7 +384,7 @@ function renderImage(
   const source = assetURLs.get(attrs.draftAssetId);
   if (!source || !isSafeAssetURL(source)) return '';
 
-  const imageStyle = `display:block;max-width:100%;height:auto;margin:0 auto;width:${attrs.width}%`;
+  const imageStyle = `display:block;width:auto;max-width:${attrs.width}%;height:auto;margin:0 auto`;
   const caption = attrs.caption
     ? styledElement(
         'figcaption',
