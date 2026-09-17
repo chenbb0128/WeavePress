@@ -324,7 +324,7 @@ func TestStartAnalysisEnqueuesWithDeterministicOptions(t *testing.T) {
 	if len(wantOptions) != 0 {
 		t.Fatalf("missing enqueue options: %v", wantOptions)
 	}
-	if store.createdAnalysis.Provider != cfg.Provider || store.createdAnalysis.Model != cfg.Model || store.createdAnalysis.PromptVersion != AnalysisPromptV1 {
+	if store.createdAnalysis.Provider != cfg.Provider || store.createdAnalysis.Model != cfg.Model || store.createdAnalysis.PromptVersion != "analysis-v2" {
 		t.Fatalf("CreateAnalysisJob input = %#v", store.createdAnalysis)
 	}
 }
@@ -517,7 +517,7 @@ func TestStartGenerationCreatesAndEnqueues(t *testing.T) {
 	if got := enqueueOption(queue.options, asynq.TaskIDOpt); got != "ai:generation:9:0:0" {
 		t.Fatalf("TaskID = %v", got)
 	}
-	if store.createdGeneration.Provider != cfg.Provider || store.createdGeneration.Model != cfg.Model || store.createdGeneration.PromptVersion != "generation-v2" {
+	if store.createdGeneration.Provider != cfg.Provider || store.createdGeneration.Model != cfg.Model || store.createdGeneration.PromptVersion != "generation-v3" {
 		t.Fatalf("CreateGenerationJob input = %#v", store.createdGeneration)
 	}
 }

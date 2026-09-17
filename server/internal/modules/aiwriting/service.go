@@ -163,7 +163,7 @@ func (s *Service) StartAnalysis(ctx context.Context, articleID, userID uint64, f
 		RequestedBy:      userID,
 		Provider:         runtime.Provider,
 		Model:            runtime.Model,
-		PromptVersion:    AnalysisPromptV1,
+		PromptVersion:    AnalysisPromptV2,
 		InputFingerprint: fingerprint,
 		Force:            force,
 	})
@@ -241,7 +241,7 @@ func (s *Service) StartGeneration(ctx context.Context, analysisID, userID uint64
 		Params:           params,
 		Provider:         runtime.Provider,
 		Model:            runtime.Model,
-		PromptVersion:    GenerationPromptV2,
+		PromptVersion:    GenerationPromptV3,
 		InputFingerprint: inputFingerprint,
 	})
 	if err != nil {

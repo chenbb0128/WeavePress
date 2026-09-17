@@ -56,6 +56,19 @@ func TestAnalysisPromptContainsCompleteNestedJSONContract(t *testing.T) {
 	}
 }
 
+func TestAnalysisPromptExcludesFooterNoiseFromEditorialMaterial(t *testing.T) {
+	messages := BuildAnalysisMessages(SourceDocument{})
+
+	for _, want := range []string{
+		"新闻来源列表、邮箱、二维码说明、关注或推广文案",
+		"不得作为正文事实、观点或采编角度",
+	} {
+		if !strings.Contains(messages[0].Content, want) {
+			t.Fatalf("analysis prompt missing %q: %s", want, messages[0].Content)
+		}
+	}
+}
+
 func TestSourcePromptUsesBlocksWithoutDuplicatingPlainText(t *testing.T) {
 	const body = "只应发送一次的正文"
 	source := SourceDocument{
@@ -187,9 +200,35 @@ func TestFaithfulReplicationPromptPreservesMeaningWithoutCopying(t *testing.T) {
 	}
 	for _, want := range []string{
 		"保持原文的核心主题、事实、观点关系和总体结论",
-		"重新组织标题、文章结构和表达方式",
+		"重新组织标题和表达方式",
 		"不得引入来源之外的新事实",
 		"避免连续大段复用原文措辞",
+	} {
+		if !strings.Contains(messages[0].Content, want) {
+			t.Fatalf("faithful prompt missing %q: %s", want, messages[0].Content)
+		}
+	}
+}
+
+func TestFaithfulReplicationPromptPreservesIndependentTopicsAndNaturalAudience(t *testing.T) {
+	params := validGenerationParams()
+	params.AngleID = FaithfulSourceAngleID
+	params.Audience = "宝妈"
+	params.TargetWords = 1_000
+
+	messages, err := BuildGenerationMessages(SourceDocument{}, validAnalysis(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"保持原文的话题数量、出现顺序和段落关系",
+		"不得合并原本独立的话题",
+		"不得虚构统一主题、因果关系或共同结论",
+		"使用中性转场",
+		"目标读者只用于调整词语难度和解释方式",
+		"不得直接称呼或点名目标读者",
+		"目标字数上下浮动不超过 15%",
+		"不得为了凑字数重复观点",
 	} {
 		if !strings.Contains(messages[0].Content, want) {
 			t.Fatalf("faithful prompt missing %q: %s", want, messages[0].Content)

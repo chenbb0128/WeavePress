@@ -17,8 +17,10 @@ const (
 	JobFailed    = "failed"
 
 	AnalysisPromptV1      = "analysis-v1"
+	AnalysisPromptV2      = "analysis-v2"
 	GenerationPromptV1    = "generation-v1"
 	GenerationPromptV2    = "generation-v2"
+	GenerationPromptV3    = "generation-v3"
 	FaithfulSourceAngleID = "SOURCE"
 
 	TaskAnalyze  = "ai:analyze"
