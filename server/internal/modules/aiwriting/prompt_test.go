@@ -221,14 +221,35 @@ func TestFaithfulReplicationPromptPreservesIndependentTopicsAndNaturalAudience(t
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"保持原文的话题数量、出现顺序和段落关系",
-		"不得合并原本独立的话题",
-		"不得虚构统一主题、因果关系或共同结论",
-		"使用中性转场",
+		"先确定一条清晰的主线",
+		"保留与主旨直接相关的内容",
+		"压缩或删除无关的营销信息",
+		"用中性转场连接",
 		"目标读者只用于调整词语难度和解释方式",
 		"不得直接称呼或点名目标读者",
 		"目标字数上下浮动不超过 15%",
 		"不得为了凑字数重复观点",
+	} {
+		if !strings.Contains(messages[0].Content, want) {
+			t.Fatalf("faithful prompt missing %q: %s", want, messages[0].Content)
+		}
+	}
+}
+
+func TestFaithfulReplicationPromptPrioritizesEditorialCoherence(t *testing.T) {
+	params := validGenerationParams()
+	params.AngleID = FaithfulSourceAngleID
+
+	messages, err := BuildGenerationMessages(SourceDocument{}, validAnalysis(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"先确定一条清晰的主线",
+		"与主旨无关的抽奖、报名、优惠、联系方式、二维码和推广段落应删除或压缩为一句",
+		"先写导语，再按 3 至 5 个小节组织正文，使用自然转场",
+		"最多使用两处直接引用",
+		"不能连续使用引用块",
 	} {
 		if !strings.Contains(messages[0].Content, want) {
 			t.Fatalf("faithful prompt missing %q: %s", want, messages[0].Content)
