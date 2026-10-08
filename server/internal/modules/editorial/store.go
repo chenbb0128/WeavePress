@@ -2,6 +2,7 @@ package editorial
 
 import (
 	"context"
+	"io"
 
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace"
 )
@@ -13,6 +14,7 @@ type ArticleStore interface {
 
 type AssetObjects interface {
 	Put(context.Context, string, []byte, string) error
+	Open(context.Context, string) (io.ReadCloser, error)
 }
 
 type Store interface {

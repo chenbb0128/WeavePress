@@ -243,14 +243,14 @@ func (s *Service) Preflight(ctx context.Context, id uint64) (PreflightResult, er
 }
 
 func (s *Service) Update(ctx context.Context, id, userID uint64, input UpdateInput) (Draft, error) {
-	prepared, err := s.prepareUpdate(ctx, id, input)
+	prepared, err := s.prepareUpdate(ctx, id, userID, input)
 	if err != nil {
 		return Draft{}, err
 	}
 	return s.store.UpdateDraft(ctx, id, userID, prepared)
 }
 
-func (s *Service) prepareUpdate(ctx context.Context, draftID uint64, input UpdateInput) (UpdateInput, error) {
+func (s *Service) prepareUpdate(ctx context.Context, draftID, userID uint64, input UpdateInput) (UpdateInput, error) {
 	input.Title = strings.TrimSpace(input.Title)
 	input.Author = strings.TrimSpace(input.Author)
 	input.Digest = strings.TrimSpace(input.Digest)
@@ -270,6 +270,10 @@ func (s *Service) prepareUpdate(ctx context.Context, draftID uint64, input Updat
 		return UpdateInput{}, err
 	}
 	if err = s.validateDraftAssets(ctx, draftID, *input.EditorDocument, input.CoverAssetID); err != nil {
+		return UpdateInput{}, err
+	}
+	input.EditorDocument, err = s.normalizeBodyImages(ctx, draftID, userID, input.ExpectedVersion, input.EditorDocument)
+	if err != nil {
 		return UpdateInput{}, err
 	}
 	input.ContentHTML, err = RenderDocument(*input.EditorDocument, theme)
@@ -423,10 +427,9 @@ func (s *Service) validateDraftAssets(ctx context.Context, draftID uint64, doc D
 		if asset.DraftID != draftID || asset.ID != id || strings.TrimSpace(asset.ObjectKey) == "" || !isWeChatImageType(asset.MediaType, cover) {
 			return ErrDraftAssetInvalid
 		}
-		if !cover && asset.ByteSize > WeChatMaxContentImageSize {
-			return ErrDraftAssetTooLarge
-		}
-		if cover && (!asset.CoverEligible || asset.ByteSize > WeChatMaxCoverImageSize) || !cover && !asset.BodyEligible {
+		// Keep editable progress even when an imported image exceeds WeChat's
+		// body limit. SubmitReview and publishing still enforce the preflight.
+		if cover && (!asset.CoverEligible || asset.ByteSize > WeChatMaxCoverImageSize) || !cover && !asset.BodyEligible && asset.ByteSize <= WeChatMaxContentImageSize {
 			return ErrDraftAssetInvalid
 		}
 		return nil

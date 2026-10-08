@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace"
@@ -13,10 +14,34 @@ import (
 const sourceOverlapRunes = 80
 
 func BuildSourceDocument(article workspace.Article) SourceDocument {
+	articleBlocks := article.Blocks
+	var structured strings.Builder
+	for _, block := range articleBlocks {
+		structured.WriteString(block.Text)
+	}
+	compact := func(value string) string {
+		return strings.Map(func(r rune) rune {
+			if unicode.IsSpace(r) {
+				return -1
+			}
+			return r
+		}, value)
+	}
+	if article.PlainText != "" && compact(structured.String()) != compact(article.PlainText) {
+		// Older collectors could mark section/span articles ready while retaining
+		// only tail paragraphs and images. Use full text once, with a stable citation
+		// ID, instead of feeding that partial body to the model or duplicating it.
+		articleBlocks = []workspace.Block{{Type: "paragraph", Text: article.PlainText}}
+		for _, block := range article.Blocks {
+			if block.Type == "image" {
+				articleBlocks = append(articleBlocks, block)
+			}
+		}
+	}
 	blocks := make([]SourceBlock, 0, len(article.Blocks))
 	blockByID := make(map[string]SourceBlock, len(article.Blocks))
 	plainParts := make([]string, 0, len(article.Blocks))
-	for index, block := range article.Blocks {
+	for index, block := range articleBlocks {
 		sourceBlock := SourceBlock{
 			ID:      fmt.Sprintf("B%d", index+1),
 			Type:    block.Type,

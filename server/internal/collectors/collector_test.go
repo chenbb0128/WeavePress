@@ -3,10 +3,14 @@ package collectors
 import (
 	"context"
 	"net/url"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/chenbb0128/weavepress/server/internal/modules/workspace"
 )
 
 type fixtureFetcher struct {
@@ -71,5 +75,75 @@ func TestWebCollectorFixture(t *testing.T) {
 	}
 	if article.Images[0].SourceURL != "https://example.com/fixture.png" {
 		t.Fatalf("image URL = %q", article.Images[0].SourceURL)
+	}
+}
+
+func TestExtractContentPreservesNestedTextAndImageOrder(t *testing.T) {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(`<div id="js_content">开头<section><span leaf="">第一段<strong>强调</strong>结尾</span></section><blockquote><p>引用<span>内容</span></p></blockquote><section><span>图前</span><img src="/a.jpg"><span>图后</span><br>下一行</section><ul><li><p>列表文字</p></li></ul>尾声</div>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, _ := url.Parse("https://example.com/article")
+	_, _, blocks, _, err := extractContent(doc.Find("#js_content"), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []workspace.Block{
+		{Type: "paragraph", Text: "开头"},
+		{Type: "paragraph", Text: "第一段强调结尾"},
+		{Type: "quote", Text: "引用内容"},
+		{Type: "paragraph", Text: "图前"},
+		{Type: "image", SourceURL: "https://example.com/a.jpg"},
+		{Type: "paragraph", Text: "图后"},
+		{Type: "paragraph", Text: "下一行"},
+		{Type: "list", Text: "列表文字"},
+		{Type: "paragraph", Text: "尾声"},
+	}
+	if !reflect.DeepEqual(blocks, want) {
+		t.Fatalf("blocks = %#v, want %#v", blocks, want)
+	}
+}
+
+func TestWeChatSectionSpanArticlePreservesAllText(t *testing.T) {
+	body, err := os.ReadFile("testdata/wechat-section-span.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, _ := url.Parse("https://mp.weixin.qq.com/s/kr9amIr21vzoUjO_DTZgYw")
+	page := `<meta name="author" content="后厂村吴彦祖"><a id="js_name">新闻哥</a>` + string(body)
+	article, err := (WeChatCollector{}).Collect(context.Background(), fixtureFetcher{result: FetchResult{Body: []byte(page), FinalURL: base}}, base.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text strings.Builder
+	for _, block := range article.Blocks {
+		text.WriteString(block.Text)
+	}
+	withoutSpace := func(s string) string {
+		return strings.Map(func(r rune) rune {
+			if unicode.IsSpace(r) {
+				return -1
+			}
+			return r
+		}, s)
+	}
+	if withoutSpace(text.String()) != withoutSpace(article.PlainText) {
+		t.Fatalf("structured text lost or duplicated: got %d runes, original %d", len([]rune(text.String())), len([]rune(article.PlainText)))
+	}
+	if len(article.Images) != 37 {
+		t.Fatalf("images = %d, want 37", len(article.Images))
+	}
+	if article.SourceName != "新闻哥" {
+		t.Fatalf("source = %q", article.SourceName)
+	}
+}
+
+func TestValidateCollectedRejectsPartialStructuredText(t *testing.T) {
+	_, err := validateCollected(workspace.CollectedArticle{
+		PlainText: strings.Repeat("正文", 40) + "尾部",
+		Blocks:    []workspace.Block{{Type: "paragraph", Text: "尾部"}, {Type: "image", SourceURL: "https://example.com/a.jpg"}},
+	})
+	if err == nil {
+		t.Fatal("incomplete structured content was accepted")
 	}
 }

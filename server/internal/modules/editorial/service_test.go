@@ -1,10 +1,12 @@
 package editorial
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -253,11 +255,20 @@ func (s *fakeEditorialStore) RetryPublishJob(context.Context, uint64, uint64) (P
 }
 
 type fakeAssetObjects struct {
+	original  []byte
 	key       string
 	body      []byte
 	mediaType string
 	calls     int
 	err       error
+	openErr   error
+}
+
+func (s *fakeAssetObjects) Open(context.Context, string) (io.ReadCloser, error) {
+	if s.openErr != nil {
+		return nil, s.openErr
+	}
+	return io.NopCloser(bytes.NewReader(s.original)), nil
 }
 
 func (s *fakeAssetObjects) Put(_ context.Context, key string, body []byte, mediaType string) error {
@@ -414,7 +425,7 @@ func TestUpdateValidatesDraftAssets(t *testing.T) {
 		want  error
 	}{
 		{"foreign", DraftAsset{ID: 8, DraftID: 2, ObjectKey: "a.png", MediaType: "image/png", BodyEligible: true, CoverEligible: true}, true, ErrDraftAssetInvalid},
-		{"body too large", DraftAsset{ID: 8, DraftID: 1, ObjectKey: "a.webp", MediaType: "image/webp", ByteSize: WeChatMaxContentImageSize + 1, CoverEligible: true}, true, ErrDraftAssetTooLarge},
+		{"body too large can be saved", DraftAsset{ID: 8, DraftID: 1, ObjectKey: "a.webp", MediaType: "image/webp", ByteSize: WeChatMaxContentImageSize + 1, CoverEligible: true}, true, nil},
 		{"large cover", DraftAsset{ID: 8, DraftID: 1, ObjectKey: "a.webp", MediaType: "image/webp", ByteSize: WeChatMaxContentImageSize + 1, CoverEligible: true}, false, nil},
 		{"unavailable", DraftAsset{ID: 8, DraftID: 1, MediaType: "image/png", BodyEligible: true, CoverEligible: true}, true, ErrDraftAssetInvalid},
 		{"invalid cover", DraftAsset{ID: 8, DraftID: 1, ObjectKey: "a.png", MediaType: "image/png"}, false, ErrDraftAssetInvalid},

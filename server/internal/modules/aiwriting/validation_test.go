@@ -67,6 +67,26 @@ func TestPlainTextSourceUsesOneFallbackBlockAcrossPromptAndValidation(t *testing
 	}
 }
 
+func TestPartialStructuredSourceFallsBackToFullTextWithoutDuplicates(t *testing.T) {
+	assetID := uint64(7)
+	for _, blocks := range [][]workspace.Block{
+		{{Type: "image", AssetID: &assetID}},
+		{{Type: "paragraph", Text: "尾部"}, {Type: "image", AssetID: &assetID}},
+		{{Type: "paragraph", Text: "完整正文与尾部"}, {Type: "paragraph", Text: "尾部"}, {Type: "image", AssetID: &assetID}},
+	} {
+		source := BuildSourceDocument(workspace.Article{PlainText: "完整正文与尾部", Blocks: blocks})
+		if len(source.Blocks) != 2 || source.Blocks[0].Text != "完整正文与尾部" || source.Blocks[0].ID != "B1" || source.Blocks[1].Type != "image" || source.Blocks[1].AssetID == nil || *source.Blocks[1].AssetID != 7 {
+			t.Fatalf("fallback = %#v", source.Blocks)
+		}
+		if source.BlockByID["B1"] != source.Blocks[0] {
+			t.Fatal("fallback missing from citation map")
+		}
+		if messages := BuildAnalysisMessages(source); strings.Count(messages[1].Content, "完整正文与尾部") != 1 {
+			t.Fatalf("prompt lost or duplicated body: %s", messages[1].Content)
+		}
+	}
+}
+
 func TestValidateGenerationParams(t *testing.T) {
 	valid := GenerationParams{
 		AngleID:                "A1",

@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/chenbb0128/weavepress/server/internal/platform/netguard"
@@ -102,10 +104,23 @@ func (p *openAICompatible) Complete(ctx context.Context, request Request) (Respo
 	}
 	httpRequest.Header.Set("Authorization", "Bearer "+p.apiKey)
 	httpRequest.Header.Set("Content-Type", "application/json")
+	started := time.Now()
+	var requestWritten atomic.Bool
+	httpRequest = httpRequest.WithContext(httptrace.WithClientTrace(httpRequest.Context(), &httptrace.ClientTrace{
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				requestWritten.Store(true)
+			}
+		},
+	}))
 
 	httpResponse, err := p.client.Do(httpRequest)
 	if err != nil {
-		return Response{}, transportError(ctx, "AI 模型服务暂时不可用", err)
+		phase := "connecting_or_sending"
+		if requestWritten.Load() {
+			phase = "waiting_response"
+		}
+		return Response{}, requestTransportError(ctx, "AI 模型服务暂时不可用", err, phase, started)
 	}
 	defer httpResponse.Body.Close()
 
@@ -126,7 +141,7 @@ func (p *openAICompatible) Complete(ctx context.Context, request Request) (Respo
 
 	responseBody, err := io.ReadAll(io.LimitReader(httpResponse.Body, maxSuccessResponseBytes+1))
 	if err != nil {
-		return Response{}, transportError(ctx, "读取 AI 模型响应失败", err)
+		return Response{}, requestTransportError(ctx, "读取 AI 模型响应失败", err, "reading_response", started)
 	}
 	if int64(len(responseBody)) > maxSuccessResponseBytes {
 		return Response{}, providerError(ErrorCodeRequestFailed, "AI 模型响应超过大小限制", false, nil)
@@ -180,6 +195,17 @@ func transportError(ctx context.Context, message string, cause error) error {
 	default:
 		return providerError(ErrorCodeUnavailable, message, true, cause)
 	}
+}
+
+func requestTransportError(ctx context.Context, message string, cause error, phase string, started time.Time) error {
+	err := transportError(ctx, message, cause)
+	var target *Error
+	if errors.As(err, &target) && target.Code == ErrorCodeTimeout {
+		// Safe to persist in job events: never include credentials, endpoint,
+		// request text or the upstream response body in the user-facing message.
+		target.Message = fmt.Sprintf("AI 模型请求超时（阶段=%s，耗时=%d ms）", phase, time.Since(started).Milliseconds())
+	}
+	return err
 }
 
 func providerError(code, message string, retryable bool, cause error) error {

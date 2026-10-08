@@ -9,10 +9,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/PuerkitoBio/goquery"
 	readability "github.com/go-shiori/go-readability"
 	"github.com/microcosm-cc/bluemonday"
+	xhtml "golang.org/x/net/html"
 
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace"
 )
@@ -70,7 +72,7 @@ func (WeChatCollector) Collect(ctx context.Context, fetcher Fetcher, rawURL stri
 	}
 	title := firstNonEmpty(meta(doc, "property", "og:title"), strings.TrimSpace(doc.Find("#activity-name").First().Text()), strings.TrimSpace(doc.Find("title").Text()))
 	author := firstNonEmpty(meta(doc, "name", "author"), strings.TrimSpace(doc.Find("#js_name").First().Text()))
-	sourceName := firstNonEmpty(strings.TrimSpace(doc.Find(".profile_nickname").First().Text()), author)
+	sourceName := firstNonEmpty(strings.TrimSpace(doc.Find(".profile_nickname").First().Text()), strings.TrimSpace(doc.Find("#js_name").First().Text()), author)
 	result := workspace.CollectedArticle{Title: title, Author: author, SourceName: sourceName, Language: "zh-CN", RawHTML: fetched.Body, CleanHTML: cleanHTML, PlainText: plainText, Blocks: blocks, Images: images, CoverURL: meta(doc, "property", "og:image"), Metadata: map[string]any{"collector": "wechat", "finalUrl": fetched.FinalURL.String()}}
 	result.PublishedAt = parsePublishedTime(meta(doc, "property", "article:published_time"), bodyText)
 	if result.CoverURL != "" {
@@ -132,9 +134,33 @@ func extractContent(content *goquery.Selection, base *url.URL) (string, string, 
 	images := make([]workspace.CollectedImage, 0)
 	seen := map[string]bool{}
 	position := uint(0)
-	content.Find("h1,h2,h3,h4,h5,h6,p,blockquote,pre,li,img").Each(func(_ int, selection *goquery.Selection) {
-		name := goquery.NodeName(selection)
+	var text strings.Builder
+	current := workspace.Block{Type: "paragraph"}
+	flush := func() {
+		if value := normalizeSpace(text.String()); value != "" {
+			block := current
+			block.Text = value
+			blocks = append(blocks, block)
+		}
+		text.Reset()
+	}
+	var walk func(*xhtml.Node, workspace.Block)
+	walk = func(node *xhtml.Node, style workspace.Block) {
+		if node.Type == xhtml.TextNode {
+			text.WriteString(node.Data)
+			return
+		}
+		if node.Type != xhtml.ElementNode && node.Type != xhtml.DocumentNode {
+			return
+		}
+		name := node.Data
+		if name == "br" {
+			flush()
+			return
+		}
 		if name == "img" {
+			flush()
+			selection := goquery.NewDocumentFromNode(node).Selection
 			source, _ := selection.Attr("src")
 			source = resolveURL(base, source)
 			if source == "" || seen[source] {
@@ -147,26 +173,36 @@ func extractContent(content *goquery.Selection, base *url.URL) (string, string, 
 			position++
 			return
 		}
-		text := normalizeSpace(selection.Text())
-		if text == "" {
-			return
+		boundary := false
+		switch name {
+		case "h1", "h2", "h3", "h4", "h5", "h6":
+			style = workspace.Block{Type: "heading"}
+			style.Level, _ = strconv.Atoi(name[1:])
+			boundary = true
+		case "blockquote", "pre", "li":
+			kind := map[string]string{"blockquote": "quote", "pre": "code", "li": "list"}[name]
+			style = workspace.Block{Type: kind}
+			boundary = true
+		case "html", "body", "main", "article", "section", "div", "p", "ul", "ol", "dl", "dt", "dd", "figure", "figcaption", "table", "tr", "td", "th", "hr":
+			boundary = true
 		}
-		block := workspace.Block{Text: text}
-		switch {
-		case strings.HasPrefix(name, "h"):
-			block.Type = "heading"
-			block.Level, _ = strconv.Atoi(strings.TrimPrefix(name, "h"))
-		case name == "blockquote":
-			block.Type = "quote"
-		case name == "pre":
-			block.Type = "code"
-		case name == "li":
-			block.Type = "list"
-		default:
-			block.Type = "paragraph"
+		previous := current
+		if boundary {
+			flush()
+			current = style
 		}
-		blocks = append(blocks, block)
-	})
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child, style)
+		}
+		if boundary {
+			flush()
+			current = previous
+		}
+	}
+	for _, node := range content.Nodes {
+		walk(node, workspace.Block{Type: "paragraph"})
+	}
+	flush()
 	return cleanHTML, plainText, blocks, images, nil
 }
 
@@ -179,6 +215,21 @@ func validateCollected(article workspace.CollectedArticle) (workspace.CollectedA
 	}
 	if len([]rune(article.PlainText)) < 50 || len(article.Blocks) == 0 {
 		return workspace.CollectedArticle{}, collectError("CONTENT_EMPTY", "正文内容为空或过短", false, nil)
+	}
+	var structured strings.Builder
+	for _, block := range article.Blocks {
+		structured.WriteString(block.Text)
+	}
+	withoutSpace := func(value string) string {
+		return strings.Map(func(r rune) rune {
+			if unicode.IsSpace(r) {
+				return -1
+			}
+			return r
+		}, value)
+	}
+	if withoutSpace(structured.String()) != withoutSpace(article.PlainText) {
+		return workspace.CollectedArticle{}, collectError("CONTENT_INCOMPLETE", "结构化正文与原文不一致，请重新采集", false, nil)
 	}
 	return article, nil
 }
