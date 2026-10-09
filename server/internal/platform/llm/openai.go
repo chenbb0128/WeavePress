@@ -41,6 +41,7 @@ type openAIRequest struct {
 	MaxTokens      int                   `json:"max_tokens"`
 	Temperature    float64               `json:"temperature"`
 	ResponseFormat *openAIResponseFormat `json:"response_format,omitempty"`
+	EnableThinking *bool                 `json:"enable_thinking,omitempty"`
 }
 
 type openAIResponseFormat struct {
@@ -92,6 +93,12 @@ func (p *openAICompatible) Complete(ctx context.Context, request Request) (Respo
 	}
 	if request.JSON {
 		payload.ResponseFormat = &openAIResponseFormat{Type: "json_object"}
+	}
+	// Qwen3.8-Max defaults to thinking and can spend minutes reasoning before
+	// returning content. Editorial requests need a bounded final JSON response.
+	if p.model == "qwen3.8-max" {
+		thinking := false
+		payload.EnableThinking = &thinking
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

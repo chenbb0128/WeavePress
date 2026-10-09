@@ -118,6 +118,39 @@ func TestOpenAICompleteMapsRequestAndUsage(t *testing.T) {
 	}
 }
 
+func TestOpenAICompleteQwenMaxUsesNonThinkingMode(t *testing.T) {
+	for _, model := range []string{"qwen3.8-max", "test-model"} {
+		t.Run(model, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				var body map[string]json.RawMessage
+				if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+					t.Error(err)
+					writer.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				thinking, exists := body["enable_thinking"]
+				if model == "qwen3.8-max" {
+					if !exists || string(thinking) != "false" {
+						t.Error("Qwen analysis must explicitly disable unbounded thinking")
+						writer.WriteHeader(http.StatusBadRequest)
+						return
+					}
+				} else if exists {
+					t.Error("generic model received a Qwen-specific parameter")
+				}
+				writer.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(writer, `{"choices":[{"message":{"content":"{\"summary\":\"ok\"}"}}]}`)
+			}))
+			defer server.Close()
+			provider := newTestOpenAICompatible(server.URL, "test-key", model, time.Second)
+			response, err := provider.Complete(context.Background(), Request{JSON: true, MaxTokens: 6000})
+			if err != nil || response.Content != `{"summary":"ok"}` {
+				t.Fatalf("analysis response = %#v, error = %v", response, err)
+			}
+		})
+	}
+}
+
 func TestOpenAICompleteMapsHTTPError(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -46,6 +46,8 @@ AI 服务设置全部由管理员在管理端“AI 设置”页面维护，支�
 
 内部运行限制固定为单次请求 120 秒、输入 60000 字符、最大输出 6000 Token、Temperature 0.4，不提供 `WEAVEPRESS_AI_*` 环境变量覆盖。当前分析依赖 Chat Completions 的 `response_format: {"type":"json_object"}` 能力。
 
+使用 `qwen3.8-max` 时，请求显式设置 `enable_thinking: false`，避免模型持续深度思考而在最终 JSON 返回前触发超时；分析与生成仍执行现有事实、引用和格式校验。
+
 Worker 必须监听 `ai` 队列，否则任务会一直停留在排队状态。推荐在 `configs/config.yaml` 使用与默认配置一致的优先级：
 
 ```yaml
