@@ -5,6 +5,7 @@ import type {
   AITone,
   GenerationInput,
 } from '#/api/ai';
+import type { Article } from '#/api/content';
 
 export interface GenerationValidationError {
   field: keyof GenerationInput;
@@ -27,12 +28,36 @@ const ALLOWED_TONES: ReadonlySet<string> = new Set<AITone>([
   'analytical',
   'plain',
   'professional',
+  'source',
   'storytelling',
   'warm',
 ]);
 
 function characterCount(value: string) {
   return [...value].length;
+}
+
+export function sourceTargetWords(
+  article: Pick<Article, 'blocks' | 'plainText'>,
+) {
+  const blockText = (article.blocks ?? [])
+    .filter((block) => block.type !== 'image' && block.text?.trim())
+    .map((block) => block.text)
+    .join('\n');
+  const compact = (value: string) => value.replace(/\s/g, '');
+  const plainText = article.plainText ?? '';
+  const sourceText =
+    plainText && compact(blockText) !== compact(plainText)
+      ? plainText
+      : blockText || plainText;
+  const lines = sourceText.split(/\r?\n/);
+  const body: string[] = [];
+  for (const line of lines) {
+    if (/^(?:新闻来源|【每日一签】|【网友问网友】)$/.test(line.trim())) break;
+    body.push(line);
+  }
+  const length = characterCount(body.join('').replace(/\s/g, ''));
+  return length ? Math.min(5000, Math.max(300, length)) : 1000;
 }
 
 function isASCII(value: string) {

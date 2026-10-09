@@ -23,6 +23,7 @@ const (
 	GenerationPromptV3    = "generation-v3"
 	GenerationPromptV4    = "generation-v4"
 	GenerationPromptV5    = "generation-v5"
+	GenerationPromptV6    = "generation-v6"
 	FaithfulSourceAngleID = "SOURCE"
 
 	TaskAnalyze  = "ai:analyze"
@@ -50,6 +51,7 @@ var (
 )
 
 var AllowedTones = map[string]struct{}{
+	"source":       {},
 	"professional": {},
 	"plain":        {},
 	"analytical":   {},

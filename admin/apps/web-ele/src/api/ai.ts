@@ -10,6 +10,7 @@ export type AITone =
   | 'analytical'
   | 'plain'
   | 'professional'
+  | 'source'
   | 'storytelling'
   | 'warm';
 

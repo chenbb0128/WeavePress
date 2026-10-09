@@ -56,6 +56,7 @@ import {
   canGenerate,
   canRetry,
   shouldPoll,
+  sourceTargetWords,
   validateGenerationForm,
 } from './model';
 
@@ -86,10 +87,11 @@ const generationForm = reactive({
   angleId: '',
   audience: '',
   targetWords: 1000,
-  tone: 'professional' as AITone,
+  tone: 'source' as AITone,
 });
 
 const toneOptions: { label: string; value: AITone }[] = [
+  { label: '保留原文语气', value: 'source' },
   { label: '专业', value: 'professional' },
   { label: '平实', value: 'plain' },
   { label: '分析', value: 'analytical' },
@@ -100,11 +102,12 @@ const toneOptions: { label: string; value: AITone }[] = [
 const faithfulReplicationAngle = {
   id: FAITHFUL_SOURCE_ANGLE_ID,
   outline: [
-    '保留核心主题、事实和总体结论',
-    '重新组织标题、文章结构和表达',
+    '保留各正文话题、顺序、关键细节和作者立场',
+    '保留标题重点，用新的措辞表达',
     '不添加来源之外的新事实',
   ],
-  thesis: '保持原文总体意思，用新的标题、结构和措辞生成一篇可编辑新稿。',
+  thesis:
+    '保持原文总体意思、话题顺序和表达节奏，用新的措辞生成一篇可编辑新稿。',
   title: '忠实复刻（推荐）',
 };
 
@@ -544,6 +547,7 @@ async function load() {
     ]);
     if (destroyed || epoch !== loadEpoch) return;
     article.value = articleData;
+    generationForm.targetWords = sourceTargetWords(articleData);
     aiStatus.value = status;
     analyses.value = history.items;
     const latest = history.items[0];

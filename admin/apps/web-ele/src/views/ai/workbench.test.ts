@@ -361,6 +361,13 @@ describe('ai workbench', () => {
   });
 
   it('defaults completed analysis to faithful replication', async () => {
+    const source = article();
+    source.blocks = [
+      { type: 'paragraph', text: '文'.repeat(2100) },
+      { type: 'heading', text: '新闻来源' },
+      { type: 'paragraph', text: '尾'.repeat(700) },
+    ];
+    mocks.getArticleApi.mockResolvedValue(source);
     const existing = analysis();
     mocks.getAIAnalysesApi.mockResolvedValue({
       items: [existing],
@@ -390,7 +397,57 @@ describe('ai workbench', () => {
 
     expect(mocks.startAIGenerationApi).toHaveBeenCalledWith(
       existing.id,
-      expect.objectContaining({ angleId: 'SOURCE' }),
+      expect.objectContaining({
+        angleId: 'SOURCE',
+        tone: 'source',
+        targetWords: 2100,
+      }),
+    );
+  });
+
+  it('preserves explicitly chosen tone and word count when switching analysis', async () => {
+    const existing = analysis();
+    mocks.getAIAnalysesApi.mockResolvedValue({
+      items: [existing],
+      page: 1,
+      pageSize: 20,
+      total: 1,
+    });
+    mocks.getAIAnalysisApi.mockResolvedValue(existing);
+    mocks.startAIGenerationApi.mockReturnValue(new Promise(() => {}));
+    const { host } = mountComponent(AIWorkbench);
+    await settle();
+    const toneField = [
+      ...host.querySelectorAll<HTMLElement>('.el-form-item'),
+    ].find((item) => item.querySelector('label')?.textContent === '语气');
+    toneField?.querySelector<HTMLElement>('.el-select__wrapper')?.click();
+    await settle();
+    [...document.querySelectorAll<HTMLElement>('.el-select-dropdown__item')]
+      .find((item) => item.textContent === '专业')
+      ?.click();
+    await settle();
+    const wordsInput = host.querySelector<HTMLInputElement>(
+      'input[role="spinbutton"]',
+    );
+    expect(wordsInput).toBeTruthy();
+    if (!wordsInput) return;
+    wordsInput.value = '1700';
+    wordsInput.dispatchEvent(new Event('input', { bubbles: true }));
+    wordsInput.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+    await selectAnalysis(host, '分析 #31');
+    const audienceInput = host.querySelector<HTMLInputElement>(
+      'input[placeholder="例如：产品经理"]',
+    );
+    if (!audienceInput) throw new Error('audience input missing');
+    audienceInput.value = '普通读者';
+    audienceInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    buttonByText(host, 'AI 复刻并生成稿件')?.click();
+    await settle();
+    expect(mocks.startAIGenerationApi).toHaveBeenCalledWith(
+      existing.id,
+      expect.objectContaining({ tone: 'professional', targetWords: 1700 }),
     );
   });
 

@@ -9,6 +9,7 @@ import {
   canGenerate,
   canRetry,
   shouldPoll,
+  sourceTargetWords,
   validateGenerationForm,
 } from './model';
 
@@ -24,6 +25,44 @@ function validInput(): GenerationInput {
 }
 
 describe('ai workbench model', () => {
+  it('accepts source tone and derives target length from body before footer', () => {
+    expect(validateGenerationForm({ ...validInput(), tone: 'source' })).toEqual(
+      [],
+    );
+    expect(
+      sourceTargetWords({
+        blocks: [
+          {
+            type: 'paragraph',
+            text: ` ${'文'.repeat(1100)}\n${'😀'.repeat(200)} `,
+          },
+          { type: 'image', alt: '图'.repeat(500), text: '图'.repeat(500) },
+          { type: 'heading', text: '【每日一签】' },
+          { type: 'paragraph', text: '尾'.repeat(800) },
+        ],
+      }),
+    ).toBe(1300);
+  });
+
+  it('bounds source length and falls back to plain text or the empty default', () => {
+    expect(sourceTargetWords({ plainText: '短文' })).toBe(300);
+    expect(sourceTargetWords({ plainText: '文'.repeat(6000) })).toBe(5000);
+    expect(
+      sourceTargetWords({
+        plainText: `${'文'.repeat(700)}\n新闻来源\n${'尾'.repeat(300)}`,
+      }),
+    ).toBe(700);
+    expect(sourceTargetWords({ blocks: [], plainText: '' })).toBe(1000);
+  });
+
+  it('uses complete plain text when older structured blocks contain only the tail', () => {
+    expect(
+      sourceTargetWords({
+        blocks: [{ type: 'paragraph', text: '尾'.repeat(50) }],
+        plainText: `${'文'.repeat(2100)}\n新闻来源\n${'尾'.repeat(50)}`,
+      }),
+    ).toBe(2100);
+  });
   it('accepts open-ended job event statuses', () => {
     const event: AIJobEvent = {
       createdAt: '2026-09-09T00:00:00Z',

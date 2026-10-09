@@ -245,10 +245,10 @@ func TestFaithfulReplicationPromptPreservesIndependentTopicsAndNaturalAudience(t
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"先确定一条清晰的主线",
-		"保留与主旨直接相关的内容",
+		"保留所有独立正文话题及原有先后顺序",
 		"压缩或删除无关的营销信息",
-		"用中性转场连接",
+		"标题保留原文强调的重点",
+		"不得把幽默、调侃或个人感受一律当作噪声删除",
 		"目标读者只用于调整词语难度和解释方式",
 		"不得直接称呼或点名目标读者",
 		"目标字数上下浮动不超过 15%",
@@ -269,15 +269,42 @@ func TestFaithfulReplicationPromptPrioritizesEditorialCoherence(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"先确定一条清晰的主线",
-		"与主旨无关的抽奖、报名、优惠、联系方式、二维码和推广段落应删除或压缩为一句",
-		"先写导语，再按 3 至 5 个小节组织正文，使用自然转场",
+		"以完整来源正文确定内容范围",
+		"不得仅根据分析摘要或事实列表裁剪话题",
+		"不强制统一主线、导语或小节数量",
+		"不得补充原文没有说明的原因、频率、公众反应或确定性判断",
 		"最多使用两处直接引用",
 		"不能连续使用引用块",
 	} {
 		if !strings.Contains(messages[0].Content, want) {
 			t.Fatalf("faithful prompt missing %q: %s", want, messages[0].Content)
 		}
+	}
+	for _, forbidden := range []string{"先确定一条清晰的主线", "先写导语，再按 3 至 5 个小节", "用中性转场连接"} {
+		if strings.Contains(messages[0].Content, forbidden) {
+			t.Fatalf("faithful prompt contains conflicting angle rule %q", forbidden)
+		}
+	}
+}
+
+func TestGenerationSourceTonePreservesStyleWithoutOverridingExplicitTone(t *testing.T) {
+	params := validGenerationParams()
+	params.AngleID = FaithfulSourceAngleID
+	params.Tone = "source"
+	messages, err := BuildGenerationMessages(SourceDocument{}, validAnalysis(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(messages[0].Content, "保留原文的口语、短句节奏、讽刺和情绪强度") {
+		t.Fatal("source tone does not preserve source style")
+	}
+	params.Tone = "professional"
+	messages, err = BuildGenerationMessages(SourceDocument{}, validAnalysis(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(messages[0].Content, "保留原文的口语、短句节奏、讽刺和情绪强度") {
+		t.Fatal("source style overrode an explicit tone")
 	}
 }
 
@@ -290,6 +317,9 @@ func TestEditorialAngleDoesNotUseFaithfulReplicationPrompt(t *testing.T) {
 	}
 	if strings.Contains(messages[0].Content, faithfulReplicationPrompt) {
 		t.Fatalf("editorial angle unexpectedly used faithful prompt: %s", messages[0].Content)
+	}
+	if !strings.Contains(messages[0].Content, "先写导语，再按 3 至 5 个小节") {
+		t.Fatal("editorial angle lost its restructuring rules")
 	}
 }
 

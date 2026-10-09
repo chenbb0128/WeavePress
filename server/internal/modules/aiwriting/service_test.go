@@ -517,7 +517,7 @@ func TestStartGenerationCreatesAndEnqueues(t *testing.T) {
 	if got := enqueueOption(queue.options, asynq.TaskIDOpt); got != "ai:generation:9:0:0" {
 		t.Fatalf("TaskID = %v", got)
 	}
-	if store.createdGeneration.Provider != cfg.Provider || store.createdGeneration.Model != cfg.Model || store.createdGeneration.PromptVersion != "generation-v5" {
+	if store.createdGeneration.Provider != cfg.Provider || store.createdGeneration.Model != cfg.Model || store.createdGeneration.PromptVersion != "generation-v6" {
 		t.Fatalf("CreateGenerationJob input = %#v", store.createdGeneration)
 	}
 }
