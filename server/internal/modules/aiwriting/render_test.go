@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/chenbb0128/weavepress/server/internal/modules/editorial"
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace"
 )
 
@@ -37,6 +38,17 @@ func TestRenderGenerationAppendsTraceableSourceAndEscapesText(t *testing.T) {
 	}
 	if !strings.Contains(got, "&lt;b&gt;逐字引用&lt;/b&gt;") {
 		t.Fatalf("quote text was not escaped: %s", got)
+	}
+}
+
+func TestBuildEditorDocumentCreatesValidStructuredDocument(t *testing.T) {
+	assetID := uint64(7)
+	doc := BuildEditorDocument([]GeneratedBlock{{Type: "heading", Level: 4, Text: "小节"}, {Type: "paragraph", Text: "正文"}, {Type: "quote", Text: "引用"}, {Type: "list", Items: []string{"一项"}}, {Type: "image", AssetID: &assetID, Alt: "配图"}})
+	if err := editorial.ValidateDocument(*doc); err != nil {
+		t.Fatalf("document invalid: %v", err)
+	}
+	if len(doc.Content) != 5 || doc.Content[0].Type != "heading" || string(doc.Content[0].Attrs["level"]) != "3" {
+		t.Fatalf("unexpected document: %#v", doc)
 	}
 }
 

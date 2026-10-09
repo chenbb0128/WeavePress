@@ -1,6 +1,7 @@
 package aiwriting
 
 import (
+	"encoding/json"
 	"fmt"
 	"html"
 	"net/url"
@@ -9,6 +10,44 @@ import (
 	"github.com/chenbb0128/weavepress/server/internal/modules/editorial"
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace"
 )
+
+// BuildEditorDocument mirrors generated blocks into the structured editor model.
+// Image IDs initially refer to source article assets; the store maps them to draft assets.
+func BuildEditorDocument(blocks []GeneratedBlock) *editorial.Document {
+	doc := &editorial.Document{Type: "doc", Content: make([]editorial.Node, 0, len(blocks))}
+	for _, block := range blocks {
+		textNode := func(value string) editorial.Node { return editorial.Node{Type: "text", Text: value} }
+		switch block.Type {
+		case "heading":
+			level := block.Level
+			if level == 4 {
+				level = 3
+			}
+			if level != 2 && level != 3 {
+				level = 2
+			}
+			doc.Content = append(doc.Content, editorial.Node{Type: "heading", Attrs: map[string]json.RawMessage{"level": json.RawMessage(fmt.Sprintf("%d", level))}, Content: []editorial.Node{textNode(block.Text)}})
+		case "paragraph":
+			doc.Content = append(doc.Content, editorial.Node{Type: "paragraph", Content: []editorial.Node{textNode(block.Text)}})
+		case "quote":
+			doc.Content = append(doc.Content, editorial.Node{Type: "blockquote", Content: []editorial.Node{{Type: "paragraph", Content: []editorial.Node{textNode(block.Text)}}}})
+		case "list":
+			items := make([]editorial.Node, 0, len(block.Items))
+			for _, item := range block.Items {
+				items = append(items, editorial.Node{Type: "listItem", Content: []editorial.Node{{Type: "paragraph", Content: []editorial.Node{textNode(item)}}}})
+			}
+			doc.Content = append(doc.Content, editorial.Node{Type: "bulletList", Content: items})
+		case "image":
+			if block.AssetID == nil || *block.AssetID == 0 {
+				continue
+			}
+			doc.Content = append(doc.Content, editorial.Node{Type: "image", Attrs: map[string]json.RawMessage{
+				"draftAssetId": json.RawMessage(fmt.Sprintf("%d", *block.AssetID)), "width": json.RawMessage("100"), "align": json.RawMessage(`"center"`), "alt": json.RawMessage(marshalPromptJSON(block.Alt)), "caption": json.RawMessage(`""`),
+			}})
+		}
+	}
+	return doc
+}
 
 func RenderGeneration(article workspace.Article, blocks []GeneratedBlock) string {
 	var result strings.Builder

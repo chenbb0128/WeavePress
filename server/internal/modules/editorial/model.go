@@ -184,6 +184,7 @@ type GeneratedDraftInput struct {
 	ContentHTML     string
 	CoverAssetID    *uint64
 	ChangeNote      string
+	EditorDocument  *Document
 }
 
 type RestoreInput struct {

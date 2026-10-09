@@ -1062,6 +1062,9 @@ func TestHandleGenerateTaskLoadsOnlyReferencedAssetsAndCompletesDraft(t *testing
 	if store.completedDraft.Title != "新标题" || store.completedDraft.Digest != "新摘要" || !strings.Contains(store.completedDraft.ContentHTML, "参考来源") {
 		t.Fatalf("draft = %#v", store.completedDraft)
 	}
+	if store.completedDraft.EditorDocument == nil {
+		t.Fatal("generated draft did not include structured editor document")
+	}
 	if store.job.TotalTokens != 11 {
 		t.Fatalf("job usage = %#v", store.job.TokenUsage)
 	}

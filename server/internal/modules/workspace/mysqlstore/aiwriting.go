@@ -482,6 +482,18 @@ func (s *AIStore) CompleteGeneration(ctx context.Context, jobID uint64, output a
 	if err = ensureArticleAssets(ctx, tx, uint64(draftID), draftInput.SourceArticleID, draftInput.CreatedBy); err != nil {
 		return aiwriting.Generation{}, err
 	}
+	if draftInput.EditorDocument != nil {
+		editorDocument, documentErr := generatedEditorDocumentJSON(ctx, tx, uint64(draftID), draftInput.EditorDocument)
+		if documentErr != nil {
+			return aiwriting.Generation{}, documentErr
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE drafts SET editor_document = ?, theme_id = ?, theme_version = ? WHERE id = ?`, editorDocument, editorial.DefaultThemeID, editorial.DefaultThemeVersion, draftID); err != nil {
+			return aiwriting.Generation{}, err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE draft_versions SET editor_document = ?, theme_id = ?, theme_version = ? WHERE draft_id = ? AND version = 1`, editorDocument, editorial.DefaultThemeID, editorial.DefaultThemeVersion, draftID); err != nil {
+			return aiwriting.Generation{}, err
+		}
+	}
 	if draftInput.CoverAssetID != nil {
 		mappedCoverID, mapErr := getArticleDraftAssetID(ctx, tx, uint64(draftID), *draftInput.CoverAssetID)
 		if mapErr != nil {
@@ -521,6 +533,48 @@ func (s *AIStore) CompleteGeneration(ctx context.Context, jobID uint64, output a
 		return aiwriting.Generation{}, err
 	}
 	return s.GetGeneration(ctx, generation.ID)
+}
+
+func generatedEditorDocumentJSON(ctx context.Context, tx *sql.Tx, draftID uint64, document *editorial.Document) ([]byte, error) {
+	if document == nil {
+		return nil, nil
+	}
+	copyDocument := *document
+	copyDocument.Content = append([]editorial.Node(nil), document.Content...)
+	var mapImages func([]editorial.Node) error
+	mapImages = func(nodes []editorial.Node) error {
+		for index := range nodes {
+			node := &nodes[index]
+			if node.Type == "image" {
+				var sourceAssetID uint64
+				if err := json.Unmarshal(node.Attrs["draftAssetId"], &sourceAssetID); err != nil || sourceAssetID == 0 {
+					return fmt.Errorf("invalid generated image asset")
+				}
+				draftAssetID, err := getArticleDraftAssetID(ctx, tx, draftID, sourceAssetID)
+				if err != nil {
+					return err
+				}
+				node.Attrs = cloneRawAttrs(node.Attrs)
+				node.Attrs["draftAssetId"] = json.RawMessage(strconv.FormatUint(draftAssetID, 10))
+			}
+			if err := mapImages(node.Content); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := mapImages(copyDocument.Content); err != nil {
+		return nil, err
+	}
+	return json.Marshal(copyDocument)
+}
+
+func cloneRawAttrs(attrs map[string]json.RawMessage) map[string]json.RawMessage {
+	copyAttrs := make(map[string]json.RawMessage, len(attrs))
+	for key, value := range attrs {
+		copyAttrs[key] = append(json.RawMessage(nil), value...)
+	}
+	return copyAttrs
 }
 
 func (s *AIStore) SetJobFailure(ctx context.Context, id uint64, input aiwriting.JobFailureInput) error {

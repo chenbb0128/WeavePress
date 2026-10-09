@@ -543,6 +543,7 @@ func (s *Service) processGeneration(ctx context.Context, job Job) error {
 		ContentHTML:     contentHTML,
 		CoverAssetID:    preferredCover(article),
 		ChangeNote:      "AI 合规采编生成",
+		EditorDocument:  BuildEditorDocument(output.Blocks),
 	}
 	_, err = s.store.CompleteGeneration(ctx, job.ID, output, draftInput, usage)
 	if err != nil {
