@@ -483,14 +483,14 @@ func (s *AIStore) CompleteGeneration(ctx context.Context, jobID uint64, output a
 		return aiwriting.Generation{}, err
 	}
 	if draftInput.EditorDocument != nil {
-		editorDocument, documentErr := generatedEditorDocumentJSON(ctx, tx, uint64(draftID), draftInput.EditorDocument)
+		editorDocument, renderedHTML, documentErr := generatedEditorDocumentJSON(ctx, tx, uint64(draftID), draftInput.EditorDocument, draftInput.ContentHTML)
 		if documentErr != nil {
 			return aiwriting.Generation{}, documentErr
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE drafts SET editor_document = ?, theme_id = ?, theme_version = ? WHERE id = ?`, editorDocument, editorial.DefaultThemeID, editorial.DefaultThemeVersion, draftID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE drafts SET editor_document = ?, content_html = ?, theme_id = ?, theme_version = ? WHERE id = ?`, editorDocument, renderedHTML, editorial.DefaultThemeID, editorial.DefaultThemeVersion, draftID); err != nil {
 			return aiwriting.Generation{}, err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE draft_versions SET editor_document = ?, theme_id = ?, theme_version = ? WHERE draft_id = ? AND version = 1`, editorDocument, editorial.DefaultThemeID, editorial.DefaultThemeVersion, draftID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE draft_versions SET editor_document = ?, content_html = ?, theme_id = ?, theme_version = ? WHERE draft_id = ? AND version = 1`, editorDocument, renderedHTML, editorial.DefaultThemeID, editorial.DefaultThemeVersion, draftID); err != nil {
 			return aiwriting.Generation{}, err
 		}
 	}
@@ -535,16 +535,14 @@ func (s *AIStore) CompleteGeneration(ctx context.Context, jobID uint64, output a
 	return s.GetGeneration(ctx, generation.ID)
 }
 
-func generatedEditorDocumentJSON(ctx context.Context, tx *sql.Tx, draftID uint64, document *editorial.Document) ([]byte, error) {
+func generatedEditorDocumentJSON(ctx context.Context, tx *sql.Tx, draftID uint64, document *editorial.Document, sourceHTML string) ([]byte, string, error) {
 	if document == nil {
-		return nil, nil
+		return nil, "", nil
 	}
-	copyDocument := *document
-	copyDocument.Content = append([]editorial.Node(nil), document.Content...)
+	mapping := make(map[uint64]uint64)
 	var mapImages func([]editorial.Node) error
 	mapImages = func(nodes []editorial.Node) error {
-		for index := range nodes {
-			node := &nodes[index]
+		for _, node := range nodes {
 			if node.Type == "image" {
 				var sourceAssetID uint64
 				if err := json.Unmarshal(node.Attrs["draftAssetId"], &sourceAssetID); err != nil || sourceAssetID == 0 {
@@ -554,8 +552,7 @@ func generatedEditorDocumentJSON(ctx context.Context, tx *sql.Tx, draftID uint64
 				if err != nil {
 					return err
 				}
-				node.Attrs = cloneRawAttrs(node.Attrs)
-				node.Attrs["draftAssetId"] = json.RawMessage(strconv.FormatUint(draftAssetID, 10))
+				mapping[sourceAssetID] = draftAssetID
 			}
 			if err := mapImages(node.Content); err != nil {
 				return err
@@ -563,18 +560,23 @@ func generatedEditorDocumentJSON(ctx context.Context, tx *sql.Tx, draftID uint64
 		}
 		return nil
 	}
-	if err := mapImages(copyDocument.Content); err != nil {
-		return nil, err
+	if err := mapImages(document.Content); err != nil {
+		return nil, "", err
 	}
-	return json.Marshal(copyDocument)
-}
-
-func cloneRawAttrs(attrs map[string]json.RawMessage) map[string]json.RawMessage {
-	copyAttrs := make(map[string]json.RawMessage, len(attrs))
-	for key, value := range attrs {
-		copyAttrs[key] = append(json.RawMessage(nil), value...)
+	converted, err := editorial.ConvertLegacyHTML(sourceHTML, mapping)
+	if err != nil {
+		return nil, "", err
 	}
-	return copyAttrs
+	theme, err := editorial.ResolveTheme(editorial.DefaultThemeID, editorial.DefaultThemeVersion)
+	if err != nil {
+		return nil, "", err
+	}
+	rendered, err := editorial.RenderDocument(converted.Document, theme)
+	if err != nil {
+		return nil, "", err
+	}
+	encoded, err := json.Marshal(converted.Document)
+	return encoded, rendered, err
 }
 
 func (s *AIStore) SetJobFailure(ctx context.Context, id uint64, input aiwriting.JobFailureInput) error {
