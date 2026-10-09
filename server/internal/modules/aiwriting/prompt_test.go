@@ -1,12 +1,36 @@
 package aiwriting
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/chenbb0128/weavepress/server/internal/modules/workspace"
 )
+
+func TestGenerationContractShowsRequiredBlockFields(t *testing.T) {
+	start := strings.Index(generationJSONContract, "{")
+	var example GenerationOutput
+	if err := json.NewDecoder(strings.NewReader(generationJSONContract[start:])).Decode(&example); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, block := range example.Blocks {
+		seen[block.Type] = true
+		if block.Type == "heading" && (block.Level < 2 || block.Level > 4) {
+			t.Fatal("heading contract disagrees with validator")
+		}
+		if block.Type == "quote" && block.QuoteID == "" {
+			t.Fatal("quote example must show its required source ID")
+		}
+	}
+	for _, kind := range []string{"heading", "paragraph", "quote", "list", "image"} {
+		if !seen[kind] {
+			t.Fatalf("generation contract has no %s example", kind)
+		}
+	}
+}
 
 func TestAnalysisPromptTreatsArticleAsUntrustedData(t *testing.T) {
 	source := BuildSourceDocument(workspace.Article{

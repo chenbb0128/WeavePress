@@ -22,6 +22,7 @@ const (
 	GenerationPromptV2    = "generation-v2"
 	GenerationPromptV3    = "generation-v3"
 	GenerationPromptV4    = "generation-v4"
+	GenerationPromptV5    = "generation-v5"
 	FaithfulSourceAngleID = "SOURCE"
 
 	TaskAnalyze  = "ai:analyze"
