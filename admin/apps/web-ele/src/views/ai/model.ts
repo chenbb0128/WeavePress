@@ -44,7 +44,7 @@ export function sourceTargetWords(
     .filter((block) => block.type !== 'image' && block.text?.trim())
     .map((block) => block.text)
     .join('\n');
-  const compact = (value: string) => value.replace(/\s/g, '');
+  const compact = (value: string) => value.replaceAll(/\s/g, '');
   const plainText = article.plainText ?? '';
   const sourceText =
     plainText && compact(blockText) !== compact(plainText)
@@ -56,7 +56,7 @@ export function sourceTargetWords(
     if (/^(?:新闻来源|【每日一签】|【网友问网友】)$/.test(line.trim())) break;
     body.push(line);
   }
-  const length = characterCount(body.join('').replace(/\s/g, ''));
+  const length = characterCount(compact(body.join('')));
   return length ? Math.min(5000, Math.max(300, length)) : 1000;
 }
 
