@@ -36,6 +36,8 @@ type AIService interface {
 	Job(context.Context, uint64) (aiwriting.Job, error)
 	Retry(context.Context, uint64, uint64) (aiwriting.Job, error)
 	Delete(context.Context, uint64) error
+	Quality(context.Context, uint64, aiwriting.QualityInput) (aiwriting.QualityReport, error)
+	Rewrite(context.Context, uint64, aiwriting.RewriteInput) (aiwriting.RewriteSuggestion, error)
 }
 
 type analysisInput struct {

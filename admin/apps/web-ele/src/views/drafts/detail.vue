@@ -74,6 +74,8 @@ import {
 import LayoutEditor from '#/components/wechat-layout/layout-editor.vue';
 import PhonePreview from '#/components/wechat-layout/phone-preview.vue';
 
+import DraftComparison from './comparison.vue';
+
 defineOptions({ name: 'DraftDetail' });
 const route = useRoute();
 const router = useRouter();
@@ -750,6 +752,16 @@ onMounted(load);
           </ElFormItem>
         </ElForm>
       </ElCard>
+      <DraftComparison
+        v-if="draft.sourceArticle && !migrationFailed"
+        v-model:document="form.editorDocument"
+        v-model:title="form.title"
+        :article="draft.sourceArticle"
+        :assets="assets"
+        :editable="editable"
+        :can-check="hasAccessByCodes(['ai:generation:view'])"
+        :can-rewrite="hasAccessByCodes(['ai:generation:create'])"
+      />
       <LayoutEditor
         class="mt-4"
         v-model:document="form.editorDocument"

@@ -517,7 +517,7 @@ func TestStartGenerationCreatesAndEnqueues(t *testing.T) {
 	if got := enqueueOption(queue.options, asynq.TaskIDOpt); got != "ai:generation:9:0:0" {
 		t.Fatalf("TaskID = %v", got)
 	}
-	if store.createdGeneration.Provider != cfg.Provider || store.createdGeneration.Model != cfg.Model || store.createdGeneration.PromptVersion != "generation-v6" {
+	if store.createdGeneration.Provider != cfg.Provider || store.createdGeneration.Model != cfg.Model || store.createdGeneration.PromptVersion != "generation-v7" {
 		t.Fatalf("CreateGenerationJob input = %#v", store.createdGeneration)
 	}
 }
@@ -1160,7 +1160,7 @@ func TestHandleGenerateTaskNeverCreatesDraftBeforeAllValidationPasses(t *testing
 	}
 }
 
-func TestHandleGenerateTaskDoesNotRepairAssetOrOverlapOrParameterErrors(t *testing.T) {
+func TestHandleGenerateTaskDoesNotRepairAssetOrParameterErrors(t *testing.T) {
 	baseArticle := readyAIArticle()
 	baseAnalysis := validAnalysis()
 	baseAnalysis.ID, baseAnalysis.ArticleID, baseAnalysis.Job = 3, baseArticle.ID, &Job{Status: JobCompleted}
@@ -1180,17 +1180,6 @@ func TestHandleGenerateTaskDoesNotRepairAssetOrOverlapOrParameterErrors(t *testi
 			output:     validGenerationOutput(),
 			assets:     map[uint64]workspace.Asset{7: {ID: 7, ArticleID: 999, DownloadStatus: "completed"}},
 			wantCode:   "AI_ASSET_INVALID",
-			wantCalls:  1,
-		},
-		{
-			name: "overlap",
-			article: workspace.Article{
-				ID: 12, Status: "ready", PlainText: strings.Repeat("重", 80),
-				Blocks: []workspace.Block{{Type: "paragraph", Text: strings.Repeat("重", 80)}},
-			},
-			generation: Generation{AnalysisID: 3, AngleID: "A1", Audience: "技术团队", Tone: "professional", TargetWords: 1000},
-			output:     GenerationOutput{Title: "标题", Digest: "摘要", Blocks: []GeneratedBlock{{Type: "paragraph", Text: strings.Repeat("重", 80)}}},
-			wantCode:   "AI_EXCESSIVE_SOURCE_OVERLAP",
 			wantCalls:  1,
 		},
 		{
@@ -1331,15 +1320,6 @@ func TestHandleGenerateTaskPreservesDomainErrorsFromRepair(t *testing.T) {
 			output:   GenerationOutput{Title: "标题", Digest: "摘要", Blocks: []GeneratedBlock{{Type: "image", AssetID: &assetID}}},
 			assets:   map[uint64]workspace.Asset{assetID: {ID: assetID, ArticleID: 999, DownloadStatus: "completed"}},
 			wantCode: "AI_ASSET_INVALID",
-		},
-		{
-			name: "source overlap",
-			article: workspace.Article{
-				ID: 12, Status: "ready", PlainText: strings.Repeat("重", 80),
-				Blocks: []workspace.Block{{Type: "paragraph", Text: strings.Repeat("重", 80)}},
-			},
-			output:   GenerationOutput{Title: "标题", Digest: "摘要", Blocks: []GeneratedBlock{{Type: "paragraph", Text: strings.Repeat("重", 80)}}},
-			wantCode: "AI_EXCESSIVE_SOURCE_OVERLAP",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

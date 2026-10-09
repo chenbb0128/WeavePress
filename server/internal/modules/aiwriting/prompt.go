@@ -81,7 +81,7 @@ func BuildGenerationMessages(source SourceDocument, analysis Analysis, params Ge
 }
 
 func generationPrompt(params GenerationParams) string {
-	prompt := generationSystemPrompt
+	prompt := generationSystemPrompt + "\n标题不得与原文相同或仅更换标点。除已标记直接引用外，正文不得连续复用原文40字（忽略空白，拆段仍会检查）。所有语气都不得冒充原作者；原文的‘我’或‘哥’所述经历应明确写成原作者自述。"
 	if params.AngleID == FaithfulSourceAngleID {
 		prompt += "\n" + faithfulReplicationPrompt
 	} else {

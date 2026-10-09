@@ -100,6 +100,8 @@ func (a *API) Register(router *gin.Engine) {
 	protected.GET("/ai-analyses/:id", a.requireCode(codeAIAnalysisView), a.getAIAnalysis)
 	protected.POST("/ai-analyses/:id/generations", a.requireCode(codeAIGenerationCreate), a.startAIGeneration)
 	protected.GET("/ai-generations/:id", a.requireCode(codeAIGenerationView), a.getAIGeneration)
+	protected.POST("/articles/:id/ai-quality", a.requireCode(codeAIGenerationView), a.checkAIQuality)
+	protected.POST("/articles/:id/ai-rewrite", a.requireCode(codeAIGenerationCreate), a.rewriteAIBlock)
 	protected.GET("/ai-jobs", a.requireCode(codeAIAnalysisView), a.listAIJobs)
 	protected.GET("/ai-jobs/:id", a.requireCode(codeAIAnalysisView), a.getAIJob)
 	protected.POST("/ai-jobs/:id/retry", a.requireCode(codeAIJobRetry), a.retryAIJob)
@@ -953,6 +955,7 @@ func (a *API) writeError(c *gin.Context, err error) {
 	case errors.Is(err, aiwriting.ErrInputTooLarge):
 		response.Error(c, response.PayloadTooLarge(err))
 	case errors.Is(err, aiwriting.ErrInvalidParameters),
+		errors.Is(err, aiwriting.ErrQualityFailed),
 		errors.Is(err, aiwriting.ErrOutputInvalid),
 		errors.Is(err, aiwriting.ErrSourceReferenceInvalid),
 		errors.Is(err, aiwriting.ErrQuoteMismatch),

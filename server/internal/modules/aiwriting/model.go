@@ -24,6 +24,7 @@ const (
 	GenerationPromptV4    = "generation-v4"
 	GenerationPromptV5    = "generation-v5"
 	GenerationPromptV6    = "generation-v6"
+	GenerationPromptV7    = "generation-v7"
 	FaithfulSourceAngleID = "SOURCE"
 
 	TaskAnalyze  = "ai:analyze"
@@ -46,6 +47,7 @@ var (
 	ErrQuoteMismatch          = errors.New("AI quote does not match its source")
 	ErrAssetInvalid           = errors.New("AI asset is invalid")
 	ErrExcessiveSourceOverlap = errors.New("AI output overlaps the source excessively")
+	ErrQualityFailed          = errors.New("AI content quality check failed")
 	ErrJobNotRetryable        = errors.New("AI job is not retryable")
 	ErrJobNotDeletable        = errors.New("AI job is not deletable")
 )
@@ -250,6 +252,7 @@ func CanManuallyRetry(job Job) bool {
 	}
 	switch job.ErrorCode {
 	case ErrorCodeOutputInvalid,
+		"AI_CONTENT_QUALITY_FAILED",
 		"AI_SOURCE_REFERENCE_INVALID",
 		"AI_QUOTE_MISMATCH",
 		"AI_ASSET_INVALID",

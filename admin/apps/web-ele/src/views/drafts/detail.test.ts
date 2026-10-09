@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import DraftDetail from './detail.vue';
 
 const mocks = vi.hoisted(() => ({
+  checkAIQualityApi: vi.fn(),
+  rewriteAIBlockApi: vi.fn(),
   getDraftApi: vi.fn(),
   getDraftAssetsApi: vi.fn(),
   getDraftPreflightApi: vi.fn(),
@@ -154,5 +156,60 @@ describe('legacy reviewed draft migration', () => {
     const host = await mountDraft(legacyDraft(status, false));
     expect(button(host, '保存迁移稿并重新审核')).toBeUndefined();
     expect(button(host, '保存新版本')).toBeUndefined();
+  });
+
+  it('compares current content with the source and applies a rewrite without saving', async () => {
+    const original = legacyDraft('editing', false);
+    original.sourceArticle = {
+      id: 1,
+      title: '原文标题',
+      author: '',
+      sourceName: '来源',
+      sourceType: 'wechat',
+      status: 'ready',
+      plainText: '原文中的经历',
+      blocks: [{ type: 'paragraph', text: '原文中的经历' }],
+      canonicalUrl: '',
+      originalUrl: '',
+      language: 'zh',
+      createdAt: original.createdAt,
+      updatedAt: original.updatedAt,
+    };
+    mocks.checkAIQualityApi.mockResolvedValue({
+      issues: [
+        {
+          code: 'AUTHOR_ATTRIBUTION',
+          severity: 'warning',
+          message: '经历需要归因',
+          blockIndex: 0,
+          sourceBlockId: 'B1',
+          excerpt: '正文',
+          sourceExcerpt: '原文中的经历',
+        },
+      ],
+      semanticChecked: true,
+      totalTokens: 10,
+    });
+    mocks.rewriteAIBlockApi.mockResolvedValue({
+      targetIndex: 0,
+      type: 'paragraph',
+      text: '原作者自述这段经历。',
+      totalTokens: 8,
+    });
+    const host = await mountDraft(original);
+    expect(host.textContent).toContain('原文与成稿对照');
+    expect(host.textContent).toContain('原文中的经历');
+    button(host, '检查当前内容')?.click();
+    await settle();
+    expect(host.textContent).toContain('经历需要归因');
+    button(host, '改写此段')?.click();
+    await settle();
+    expect(host.textContent).toContain('原作者自述这段经历。');
+    expect(mocks.updateDraftApi).not.toHaveBeenCalled();
+    button(host, '应用建议')?.click();
+    await settle();
+    expect(host.textContent).toContain('有未保存修改');
+    expect(host.textContent).toContain('原作者自述这段经历。');
+    expect(mocks.updateDraftApi).not.toHaveBeenCalled();
   });
 });

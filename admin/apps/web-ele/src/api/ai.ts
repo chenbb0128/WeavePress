@@ -215,6 +215,65 @@ export interface GenerationInput {
   tone: AITone;
 }
 
+export interface AIQualityBlock {
+  text: string;
+  type: 'heading' | 'image' | 'list' | 'paragraph' | 'quote' | 'separator';
+}
+
+export interface AIQualityInput {
+  blocks: AIQualityBlock[];
+  faithful: boolean;
+  semantic: boolean;
+  title: string;
+}
+
+export interface AIQualityIssue {
+  blockIndex?: number;
+  code: string;
+  excerpt?: string;
+  message: string;
+  severity: 'error' | 'warning';
+  sourceBlockId?: string;
+  sourceExcerpt?: string;
+}
+
+export interface AIQualityReport {
+  issues: AIQualityIssue[];
+  semanticChecked: boolean;
+  totalTokens: number;
+}
+
+export interface AIRewriteSuggestion {
+  targetIndex: number;
+  text: string;
+  type: 'heading' | 'paragraph' | 'quote' | 'title';
+  totalTokens: number;
+}
+
+export function checkAIQualityApi(
+  articleId: number,
+  input: AIQualityInput,
+  signal?: AbortSignal,
+) {
+  return requestClient.post<AIQualityReport>(
+    `/articles/${articleId}/ai-quality`,
+    input,
+    { signal, timeout: 150_000 },
+  );
+}
+
+export function rewriteAIBlockApi(
+  articleId: number,
+  input: AIQualityInput & { targetIndex: number },
+  signal?: AbortSignal,
+) {
+  return requestClient.post<AIRewriteSuggestion>(
+    `/articles/${articleId}/ai-rewrite`,
+    input,
+    { signal, timeout: 150_000 },
+  );
+}
+
 export interface StartAnalysisResult {
   job: AIJob;
   reused: boolean;

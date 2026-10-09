@@ -241,7 +241,7 @@ func (s *Service) StartGeneration(ctx context.Context, analysisID, userID uint64
 		Params:           params,
 		Provider:         runtime.Provider,
 		Model:            runtime.Model,
-		PromptVersion:    GenerationPromptV6,
+		PromptVersion:    GenerationPromptV7,
 		InputFingerprint: inputFingerprint,
 	})
 	if err != nil {
@@ -304,11 +304,15 @@ func (s *Service) enqueue(ctx context.Context, job Job) error {
 		taskType = TaskGenerate
 	}
 	taskID := fmt.Sprintf("ai:%s:%d:%d:%d", job.Type, job.ID, job.Attempts, job.ManualRetries)
+	requestBudget := s.limits.RequestTimeout
+	if job.Type == JobTypeGeneration {
+		requestBudget *= 3
+	} // Initial output, one format repair, one content repair.
 	_, err = s.queue.EnqueueContext(ctx, asynq.NewTask(taskType, payload),
 		asynq.TaskID(taskID),
 		asynq.Queue("ai"),
 		asynq.MaxRetry(3),
-		asynq.Timeout(s.limits.RequestTimeout+30*time.Second),
+		asynq.Timeout(requestBudget+30*time.Second),
 	)
 	if errors.Is(err, asynq.ErrTaskIDConflict) {
 		return nil
@@ -504,10 +508,15 @@ func (s *Service) processGeneration(ctx context.Context, job Job) error {
 		return withUsage(err, usage)
 	}
 	output, validationErr := s.decodeAndValidateGeneration(ctx, source, analysis, response.Content)
+	if validationErr == nil || errors.Is(validationErr, ErrExcessiveSourceOverlap) {
+		if issues := qualityErrors(CheckQuality(source, generationQualityInput(output))); len(issues) > 0 {
+			validationErr = qualityFailure(issues)
+		}
+	}
 	if err := s.saveJobOutput(ctx, job.ID, JobOutputInitial, response.Content, validationErr, tokenUsage(response.Usage)); err != nil {
 		return withUsage(err, usage)
 	}
-	if validationErr != nil {
+	if validationErr != nil && !errors.Is(validationErr, ErrQualityFailed) {
 		if !errors.Is(validationErr, ErrOutputInvalid) {
 			return withUsage(validationErr, usage)
 		}
@@ -515,8 +524,14 @@ func (s *Service) processGeneration(ctx context.Context, job Job) error {
 			return withUsage(err, usage)
 		}
 		output, usage, validationErr = s.repairGeneration(ctx, job.ID, provider, source, analysis, response.Content, usage)
-		if validationErr != nil {
+		if validationErr != nil && !errors.Is(validationErr, ErrExcessiveSourceOverlap) {
 			return withUsage(normalizeRepairError(validationErr), usage)
+		}
+	}
+	if issues := qualityErrors(CheckQuality(source, generationQualityInput(output))); len(issues) > 0 {
+		output, usage, validationErr = s.repairGenerationQuality(ctx, job.ID, provider, source, analysis, output, issues, usage)
+		if validationErr != nil {
+			return withUsage(validationErr, usage)
 		}
 	}
 	contentHTML := RenderGeneration(article, output.Blocks)
@@ -551,10 +566,7 @@ func (s *Service) repairGeneration(ctx context.Context, jobID uint64, provider l
 	if err := s.saveJobOutput(ctx, jobID, JobOutputRepair, response.Content, validationErr, tokenUsage(response.Usage)); err != nil {
 		return GenerationOutput{}, usage, err
 	}
-	if validationErr != nil {
-		return GenerationOutput{}, usage, validationErr
-	}
-	return output, usage, nil
+	return output, usage, validationErr
 }
 
 func (s *Service) saveJobOutput(ctx context.Context, jobID uint64, stage, content string, validationErr error, usage TokenUsage) error {
@@ -597,6 +609,9 @@ func (s *Service) decodeAndValidateGeneration(ctx context.Context, source Source
 		return GenerationOutput{}, err
 	}
 	if err := validateGenerationStructure(source, analysis, output); err != nil {
+		if errors.Is(err, ErrExcessiveSourceOverlap) {
+			return output, err
+		}
 		return GenerationOutput{}, err
 	}
 	assets, err := s.loadReferencedAssets(ctx, output)
@@ -711,6 +726,8 @@ func classifyAIError(err error) (string, string, bool) {
 		return "AI_ASSET_INVALID", "AI 返回内容引用了无效素材", false
 	case errors.Is(err, ErrExcessiveSourceOverlap):
 		return "AI_EXCESSIVE_SOURCE_OVERLAP", "AI 返回内容与来源文章重合过多", false
+	case errors.Is(err, ErrQualityFailed):
+		return "AI_CONTENT_QUALITY_FAILED", "局部改写后仍存在标题重复、正文复用或引用超量，请调整要求后手动重试", false
 	case errors.Is(err, ErrJobNotRetryable):
 		return "AI_JOB_NOT_RETRYABLE", "AI 任务不可重试", false
 	default:
