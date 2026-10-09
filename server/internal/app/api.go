@@ -122,7 +122,7 @@ func NewAPI(cfg config.Config, logger *slog.Logger) (*API, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create AI settings service: %w", err)
 	}
-	aiService := aiwriting.NewWithSettings(aiStore, store, queueClient, aiSettingsService, nil, aiwriting.DefaultLimits())
+	aiService := newAPIAIWritingService(aiStore, store, queueClient, aiSettingsService)
 	businessAPI := weaveapi.NewWithAISettings(store, authService, contentService, editorialService, aiService, aiSettingsService, cfg)
 
 	router, err := httpapi.NewRouter(httpapi.RouterOptions{
@@ -162,6 +162,13 @@ func NewAPI(cfg config.Config, logger *slog.Logger) (*API, error) {
 		redis:           redis,
 		queue:           queueClient,
 	}, nil
+}
+
+func newAPIAIWritingService(store aiwriting.Store, articles aiwriting.ArticleStore, queue aiwriting.Enqueuer, settings aiwriting.SettingsResolver) *aiwriting.Service {
+	limits := aiwriting.DefaultLimits()
+	return aiwriting.NewWithSettings(store, articles, queue, settings, func(runtime aisettings.RuntimeConfig) llm.Provider {
+		return newAIProvider(runtime, limits.RequestTimeout)
+	}, limits)
 }
 
 func (a *API) Run(ctx context.Context) (err error) {
